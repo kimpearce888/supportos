@@ -3,6 +3,43 @@
 All notable changes to SupportOS are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-09-27
+
+The real-time release: **incoming webhook push for conversations, semantic docs search via local Qdrant (with a no-Qdrant fallback), and per-mailbox SLA/business-hours reporting** — plus two serious latent bugs found and fixed in the job pipeline underneath the webhook path. 224/224 tests green (+52).
+
+### Added — Incoming webhook push for conversations
+- **Webhook registration from the app**: `POST /api/webhooks/register` creates the webhook in Help Scout with the locally configured secret (provider interface grows `createWebhook` / `deleteWebhook`, implemented by real + fake providers); `DELETE /api/webhooks/:remoteId` removes it; Sync Health gains a registration card with the default event set (convo.created/updated/assigned/status/customer+agent reply/note + satisfaction.ratings)
+- **Real-time conversation updates over SSE**: webhook-source sync jobs now emit `conversation-updated` events (conversation id/number/mailbox/subject + honest `reason: webhook|sync|manual`) on the existing `/api/events` stream; the client bridge invalidates the open conversation, lists, nav counts and dashboard, and raises a toast for webhook pushes
+- **Demo simulation through the REAL pipeline**: `POST /api/demo/simulate-webhook` mutates the simulated remote, then HMAC-signs and self-POSTs to the production `/api/webhooks/helpscout` endpoint — persist → dedup → job → worker tick → mirror update → SSE, exactly the path production events travel (a per-push nonce mirrors Help Scout's unique payloads so repeated demos are not deduplicated)
+- **Restart safety**: `WorkerManager.start()` now drains persisted-but-unprocessed webhook events on boot (the endpoint persists first and acknowledges, so a crash in between previously left events pending forever)
+
+### Added — Semantic docs search (Qdrant + local fallback)
+- **Docs chunking**: mirror articles are chunked (`docs_chunks`, migration 008) on every sync; a background `embed_docs_chunks` job (enqueued by the coordinator after the docs pass) embeds chunks with the configured LM Studio embedding model
+- **Vectors are always stored locally** (mirroring knowledge_chunks): semantic search works with OR without Qdrant — Qdrant serves ANN retrieval when connected; otherwise a local cosine scan over the stored embeddings answers the same queries
+- **Hybrid retrieval**: `GET /api/docs/search?q=&semantic=` fuses FTS5 and semantic result lists with Reciprocal Rank Fusion (rank-based, scale-free); every hit carries `why: [fts, semantic]` provenance and a human-readable `mode_note` explains exactly which retrievers ran
+- **Honest degradation**: no embedding model → FTS only with setup instructions; model configured but nothing embedded yet → FTS only with an explicit note; provider unreachable on a query → FTS only, retried next search
+- **Docs page UI**: Semantic toggle (URL-state), per-hit keyword/semantic badges, fused score, embedding readiness counters in stats
+
+### Added — SLA / business-hours reporting per mailbox
+- **Business-hours engine** (pure, unit-tested): `businessMinutesBetween` counts only minutes inside a per-mailbox schedule (IANA timezone, active weekdays, start/end minute-of-day) — DST transitions handled via the platform tz database (guess-and-correct wall→instant), half-hour zones supported, nights/weekends contribute zero, invalid input returns null (never a fabricated number)
+- **Per-mailbox schedules + SLA targets**: `mailbox_business_hours` storage (migration 008) with zod-validated `GET/PUT/DELETE /api/settings/business-hours(/:mailboxId)`; a Settings → Business hours editor (timezone with suggestions, weekday chips, time inputs, first-response and resolution targets in business minutes)
+- **SLA report**: `GET /api/reports/sla?days=&mailboxIds=` — per mailbox: first-response and resolution measured in BOTH wall and business minutes (median included), met/missed against configured targets, and live "currently waiting" aging (avg/oldest business minutes, at-risk past target); unconfigured mailboxes are labeled wall-clock honestly. Reports gains an SLA & business hours tab
+
+### Fixed — latent job-pipeline bugs (found while wiring the webhook e2e)
+- **Queued jobs were never claimable**: `jobs.run_at` was stored in ISO-8601 (`2026-09-27T07:35:43.424Z`) while `claimNext` compares against SQLite `datetime('now')` (`2026-09-27 07:35:43`); `'T' > ' '` lexicographically, so every job stayed invisible forever — silently disabling webhook-triggered syncs, attachment downloads, AI jobs and embedding passes at runtime (tests passed because they called the components directly). `run_at` is now written in SQLite's own format; regression test included
+- **Job payloads reached the worker as JSON strings**: `claimNext` cast the raw row to `QueueJob` without parsing the `payload` TEXT column, so `payload.remoteId` read as `undefined` → `syncSingleConversation(NaN)` "completed" without syncing anything. Payload is now parsed like every other getter; regression tests assert the parsed payload AND that a webhook-source job lands the thread through the real claim→execute path
+
+### Changed
+- Migration 008 `semantic_docs_sla`: `docs_chunks` (+ article/state indexes) and `mailbox_business_hours`; migrations unit test updated
+- `GET /api/docs/stats` reports embedding readiness (`docs_chunks`, `docs_chunks_indexed/pending/failed`); `api` client helper gains `put`
+- Webhook event routing tags sync jobs with `source: 'webhook'` (drives the honest SSE reason)
+- Capability matrix: webhooks row documents in-app registration, push semantics and restart drain
+
+### Tests (172 → 224)
+- Unit: business-hours engine (window edges, weekend exclusion, DST spring-forward in America/New_York, Asia/Kolkata half-hour zone, invalid-input nulls, span cap, slaStatus) and docs semantic helpers (RRF fusion ordering + provenance, cosine including Float32 buffer views)
+- Integration `tests/integration/v14_features.test.ts`: docs chunking + idempotency + embedding round-trip + job wiring, business-hours storage, SLA report before/after configuration (24/7 schedule ⇒ business == wall) + scope filter, webhook drainPending, source-tagged jobs, job-claim REGRESSION tests
+- E2E `tests/e2e/v14_features.e2e.test.ts`: full webhook push over the wire (SSE conversation event with reason webhook + thread landing), created-conversation webhook appearance, validation paths, hybrid docs search flags + mode notes, SLA report before/after business-hours configuration, CRUD validation
+
 ## [1.3.0] — 2026-09-27
 
 The roadmap-closing release: **Help Scout Chat / Docs / Beacon API coverage, real-time ratings refresh, multi-mailbox dashboards and packaged desktop installers** — the entire original public roadmap, delivered. 172/172 tests green (22 new).

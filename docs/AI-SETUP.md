@@ -47,3 +47,21 @@ Then **Settings → Qdrant** → test → save. Index knowledge and (when an emb
 ## Golden test set / evaluation mode
 
 AI Center → **Evaluation** lists the golden scenarios (simple question, multi-question, ambiguous, known issue, new issue, customer history, timezone, integration, billing, escalation). **AI evaluation mode** disables all Help Scout writes (no notes, replies, status or assignment changes) so you can compare analysis outputs safely. Automated runs of the deterministic pipeline parts are covered by the test suite (see TESTING.md).
+
+## Semantic docs search (v1.4.0)
+
+The Docs mirror is searchable two ways, fused automatically:
+
+1. **FTS5 keywords** — always available, zero configuration.
+2. **Semantic vectors** — requires an embedding model in LM Studio (Settings → LM Studio → embedding model). After a sync, a background job chunks every mirrored Docs article and embeds the chunks. Vectors are stored **locally in SQLite** (`docs_chunks`), so semantic search works even without Qdrant; when Qdrant is running it serves the same vectors with ANN speed.
+
+The Docs page's search box runs hybrid retrieval: both result lists are fused with Reciprocal Rank Fusion, each hit shows whether keyword search, semantic search, or both found it, and a mode note explains exactly which retrievers ran. If no embedding model is configured the note says so and keyword search answers alone — nothing silently pretends to be semantic.
+
+Degrading honestly at every layer:
+
+| State | Behavior |
+|---|---|
+| No embedding model | FTS only; note explains how to enable semantic search |
+| Model configured, nothing embedded yet | FTS only; note tells you to run a sync |
+| Qdrant down | Local cosine scan over stored embeddings — semantic still works |
+| Embedding provider unreachable mid-query | FTS only for that query; retried next search |

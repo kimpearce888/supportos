@@ -5,8 +5,10 @@ import { tableStats } from '../database/connection.js';
 import { migrationsApplied } from '../database/migrator.js';
 import { CAPABILITY_MATRIX } from './capabilities.js';
 import { serverEventBus } from '../services/eventBus.js';
+import { demoWebhookSchema } from '../../shared/schemas.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   // ---------------- Health (spec #98) ----------------
@@ -174,6 +176,70 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
     });
     serverEventBus.emit('ratings-refreshed', { processed: 1, fresh: 1, at: new Date().toISOString() });
     return { ok: true, message: `Simulated a ${hs.rating ?? '(no)'} rating on conversation #${convRow?.number ?? hs.conversationId}. Connected dashboards update instantly via /api/events.` };
+  });
+
+  // v1.4.0: simulate an incoming WEBHOOK PUSH through the REAL pipeline -
+  // HMAC-signed self-POST to /api/webhooks/helpscout -> persist -> dedup ->
+  // sync_conversation job -> worker tick -> mirror update -> SSE
+  // conversation-updated. This is the same path production events travel.
+  app.post('/api/demo/simulate-webhook', async (request, reply) => {
+    if (ctx.provider.kind !== 'fake') return { ok: false, message: 'Not in demo mode.' };
+    const parsed = demoWebhookSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(422);
+      return { ok: false, message: 'Invalid simulation request: event must be one of the supported convo.* types.' };
+    }
+    const { event, conversationRemoteId, replyText } = parsed.data;
+
+    // 1. Mutate the simulated remote FIRST (the webhook tells us something changed)
+    let remoteId = conversationRemoteId ?? 0;
+    if (event === 'convo.created') {
+      const conv = ctx.fakeProvider!.createConversationOnRemote({
+        subject: 'Webhook push: SSO callback rejected',
+        preview: 'Our identity provider logs show a rejected assertion after the 2.5 rollout…',
+        mailboxId: 201,
+        customerRemoteId: 3004,
+        body: replyText ?? 'Our identity provider logs show a rejected SAML assertion right after the 2.5 rollout. SSO logins fail for about half our users. Is this a known issue?',
+        tags: ['sso']
+      });
+      remoteId = conv.remoteId;
+    } else {
+      if (!remoteId) {
+        const first = ctx.db.prepare('SELECT remote_id FROM conversations WHERE deleted_at IS NULL AND status = \'active\' ORDER BY id LIMIT 1').get() as { remote_id: number } | undefined;
+        if (!first) {
+          reply.code(404);
+          return { ok: false, message: 'No conversation available to push an event for.' };
+        }
+        remoteId = first.remote_id;
+      }
+      if (event === 'convo.customer.reply.created' || event === 'convo.agent.reply.created') {
+        ctx.fakeProvider!.customerReplies(remoteId, replyText ?? 'Any update on this? Our team is blocked until SSO works again.');
+      }
+      // convo.note.created mutates nothing customer-visible; the sync still refreshes the thread.
+    }
+
+    // 2. Self-POST through the REAL webhook endpoint with a valid HMAC when a
+    //    secret is configured (unsigned is accepted only when no secret is set,
+    //    exactly like production). A per-push nonce mirrors Help Scout's
+    //    unique payloads so repeated demos are NOT swallowed by dedup.
+    const payload = JSON.stringify({ conversationId: remoteId, objectID: remoteId, id: remoteId, nonce: Date.now() });
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-HelpScout-Event': event };
+    const secret = ctx.config.helpscout.webhookSecret;
+    if (secret) headers['X-HelpScout-Signature'] = crypto.createHmac('sha1', secret).update(Buffer.from(payload, 'utf8')).digest('base64');
+    try {
+      const res = await fetch(`http://127.0.0.1:${ctx.config.port}/api/webhooks/helpscout`, { method: 'POST', headers, body: payload, signal: AbortSignal.timeout(8000) });
+      const body = (await res.json().catch(() => ({}))) as { received?: boolean; duplicate?: boolean };
+      if (!res.ok || !body.received) {
+        return { ok: false, message: `Webhook endpoint rejected the simulated event (HTTP ${res.status}).` };
+      }
+      return {
+        ok: true,
+        message: `${event} pushed through the real webhook pipeline${body.duplicate ? ' (deduplicated)' : ''}. The sync job runs on the next worker tick (~2s); connected clients get an SSE conversation-updated event.`,
+        remoteId
+      };
+    } catch (e) {
+      return { ok: false, message: `Could not reach the local webhook endpoint: ${e instanceof Error ? e.message : String(e)}` };
+    }
   });
 
   // ---------------- Attachment file serving (safe: no execution, path constrained) ----------------

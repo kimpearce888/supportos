@@ -7,7 +7,7 @@
 **Fast support tooling with a privacy guarantee: your customer data never leaves your machine.**
 
 [![CI](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml/badge.svg)](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-172%2F172-brightgreen)](docs/TESTING.md)
+[![Tests](https://img.shields.io/badge/tests-224%2F224-brightgreen)](docs/TESTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-green)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](tsconfig.base.json)
@@ -26,9 +26,10 @@
 SupportOS is a **self-hosted help desk companion and support intelligence platform**. It mirrors your Help Scout inbox into a local SQLite database on your own machine and layers a professional support workspace on top:
 
 - **⚡ Instant everything** — search your entire local archive in milliseconds with local full-text search; no API round-trips, no rate limits, no spinners
+- **📡 Real-time by default** — new CSAT ratings *and* webhook-pushed conversation changes arrive over Server-Sent Events the moment they land; dashboards and the inbox update without polling or refresh
 - **🎧 Every channel, one inbox** — email and Beacon chat sessions live side by side, filterable by channel, with honest chat-vs-email speed analytics
-- **📚 Your Docs, mirrored** — Help Scout Docs collections and articles synced locally and searchable offline, next to your tickets
-- **📡 Real-time by default** — new CSAT ratings arrive over Server-Sent Events the moment they land; dashboards update without polling or refresh
+- **📚 Your Docs, mirrored — and semantically searchable** — Help Scout Docs synced locally, searched with hybrid keyword + vector retrieval (local embeddings, optional Qdrant)
+- **⏱️ SLA reporting in business minutes** — per-mailbox schedules (timezones, weekdays, targets) make first-response and resolution times mean what customers actually experience
 - **🤖 Local AI assistance** — ticket analysis, evidence-backed reply drafts, issue clustering and report narratives via [LM Studio](https://lmstudio.ai) on your own hardware. **No OpenAI. No cloud. No data leakage.**
 - **🧠 Client Interaction Intelligence** — knows how each client *normally* communicates and flags when today's ticket is different (urgency ↑, detail ↓), with an evidence-backed support approach and per-client playbook. Behavior, never psychology.
 - **📦 Desktop installers** — MSI, DMG and AppImage with the Node runtime and SQLite bundled in: install and run, no prerequisites
@@ -59,6 +60,8 @@ v1.2.0 is the unglamorous, essential chapter: an independent audit of every writ
 
 v1.3.0 closes the original public roadmap — and each item earned its place the same way. **Chat/Docs/Beacon coverage** started with an honest question: what does a *mirror* actually need from those APIs? Beacon chats already arrive as conversations (type=`chat`, source via=`beacon`) — so instead of bolting on a second sync system, SupportOS unified them into the existing mirror and built the channel filter and chat-speed analytics on top. Docs *did* need a real second surface (a separate API key on a separate host), so it got one: a read-only mirror with offline FTS search. **Real-time ratings** chose Server-Sent Events over WebSockets because server→client notifications don't need bidirectional complexity — and the new event bus deliberately pushes *facts* (a rating landed), leaving every computation local. **Multi-mailbox dashboards** reuse the same deterministic SQL with a scope parameter rather than a parallel "multi-mailbox mode", so metric definitions can never drift between single- and multi-mailbox views. And **packaged installers** came from a simple constraint: the app is a Node process, so the package must ship a Node runtime — an esbuild bundle, one native module, and a stock official Node binary, assembled per-platform in CI.
 
+v1.4.0 is the real-time release, and its most important fix is one nobody planned. Wiring the webhook-push e2e test exposed that the background job queue had been **silently dead at runtime since v1.0.0** — two bugs (an ISO-vs-SQLite timestamp format mismatch that made every job permanently unclaimable, and job payloads reaching the worker as unparsed JSON strings) meant webhook-triggered syncs, attachment downloads and embedding passes all "completed" without doing anything. The green test suite never caught it because tests called the components directly instead of through the claim loop; the new regression tests now do exactly that. On top of that honest foundation: conversation webhooks push through the real HMAC pipeline and land as SSE events within seconds; Docs search became hybrid (FTS + semantic vectors fused with Reciprocal Rank Fusion — vectors stored locally so Qdrant is an accelerator, not a dependency); and SLA reporting grew business-hours math built on the platform's timezone database, because "responded in 3 hours" means something different on a Friday night.
+
 ### The decision log — the logic behind every major choice
 
 | # | Decision | The reasoning |
@@ -82,6 +85,10 @@ v1.3.0 closes the original public roadmap — and each item earned its place the
 | 17 | **Scope parameters, not a parallel dashboard (v1.3.0)** | Multi-mailbox dashboards reuse the exact same deterministic SQL with a `scope` argument (mailboxes + channel). One code path means the single-mailbox numbers and the comparison rows can never disagree, and metric definitions stay honest. |
 | 18 | **Ship a boring runtime (v1.3.0)** | The desktop package bundles a stock official Node binary matched to the CI runner's ABI, an esbuild bundle of the server, and exactly one native module (`better-sqlite3`). Node SEA/pkg were rejected: unmaintained or hostile to native addons. Boring is a feature — it's the runtime you can debug with `node --inspect`. |
 | 19 | **Cross-platform builds belong in CI (v1.3.0)** | A Windows MSI cannot be built on Linux. The desktop workflow runs the same assembly script on all three GitHub runners, so every installer is built and booted on its native OS — and the resources are *assembled*, never committed. |
+| 20 | **Push what happened, compute what it means (v1.4.0)** | The webhook layer persists the event, verifies the HMAC, dedups, and enqueues a sync of exactly one conversation — then the SSE stream announces "conversation #N changed, reason: webhook". The event never carries computed metrics; every number stays a local SQL computation. Push notifications and honest numbers stay separable. |
+| 21 | **Local vectors beat a vector dependency (v1.4.0)** | Semantic docs search stores embeddings in SQLite and treats Qdrant as an accelerator, not a requirement: Qdrant up when available (ANN speed), local cosine scan when not. Fusing with Reciprocal Rank Fusion (rank-based) means keyword ranks and cosine scores never need to be normalized against each other, and every hit records which retriever found it. |
+| 22 | **Business minutes via the platform tz database (v1.4.0)** | Hand-rolled DST arithmetic is how SLA reports lie. The business-hours engine converts wall-clock times through Intl's timezone data (guess-and-correct, DST-safe), returns null instead of a guess on invalid input, and the report always shows wall minutes *next to* business minutes so nothing pretends to be adjusted that isn't. |
+| 23 | **Test the seam, not just the parts (v1.4.0)** | The job pipeline was green in tests and dead in production for four versions because tests called components directly, skipping the claim loop where two format bugs lived. The new regression tests enqueue → claim → execute exactly as the worker does. Every integration point deserves a test that travels the real path. |
 
 ---
 
@@ -116,6 +123,24 @@ All screenshots are the **real application** running in demo mode (simulated mai
 **Docs mirror — your Help Scout Docs, synced locally, searchable offline with FTS5**
 
 [![SupportOS Docs mirror with offline full-text search](docs/screenshots/v130-docs-search.png)](docs/screenshots/v130-docs-search.png)
+
+### 🆕 v1.4.0 — webhook push, semantic docs search, SLA
+
+**SLA & business hours — first-response and resolution measured in business minutes per mailbox, with met/missed against targets and live waiting aging**
+
+[![SupportOS SLA report with business minutes per mailbox](docs/screenshots/v140-sla-configured.png)](docs/screenshots/v140-sla-configured.png)
+
+**Business-hours editor — per-mailbox timezone, active weekdays, window and SLA targets**
+
+[![SupportOS business hours editor](docs/screenshots/v140-business-hours.png)](docs/screenshots/v140-business-hours.png)
+
+**Docs search with the semantic layer — hybrid keyword + vector retrieval, per-hit provenance, honest mode notes**
+
+[![SupportOS semantic docs search](docs/screenshots/v140-docs-semantic.png)](docs/screenshots/v140-docs-semantic.png)
+
+**Webhook push — register conversation webhooks and watch events land in real time (with demo buttons that exercise the exact production pipeline)**
+
+[![SupportOS webhook push registration](docs/screenshots/v140-webhook-push.png)](docs/screenshots/v140-webhook-push.png)
 
 ### 📥 Support workspace
 
@@ -176,9 +201,15 @@ npm run build
 npm run start               # → http://127.0.0.1:3000
 ```
 
-Demo mode spins up a simulated Help Scout mailbox (20 conversations across email and Beacon chat, 9 Docs articles, customers, tags, known issues, knowledge and sample AI analyses) and runs the **real sync engine** against it — nothing is mocked at the UI level, so you're evaluating the actual product. While you're there, open a second terminal and fire a rating to watch it arrive live:
+Demo mode spins up a simulated Help Scout mailbox (20 conversations across email and Beacon chat, 9 Docs articles, customers, tags, known issues, knowledge and sample AI analyses) and runs the **real sync engine** against it — nothing is mocked at the UI level, so you're evaluating the actual product. While you're there, open a second terminal and watch updates arrive live:
 
 ```bash
+# Push a conversation event through the REAL webhook pipeline (HMAC → dedup → job → sync → SSE)
+curl -X POST http://127.0.0.1:3000/api/demo/simulate-webhook \
+  -H 'Content-Type: application/json' \
+  -d '{"event": "convo.customer.reply.created"}'
+
+# Or fire a CSAT rating
 curl -X POST http://127.0.0.1:3000/api/demo/simulate-rating \
   -H 'Content-Type: application/json' \
   -d '{"conversationRemoteId": 105015, "rating": "great", "comments": "Shipped in the demo!"}'
@@ -220,7 +251,10 @@ The packaging pipeline (`scripts/build-desktop.mjs`) bundles the server with esb
 | **📥 Local mirror** | Account, users, teams, inboxes, folders, tags, custom fields, customers, organizations, conversations, threads, attachments, ratings, saved replies, workflows, routing — synced via polling with checkpoints, resumable after restart, with drift reconciliation |
 | **🎧 Channels (v1.3.0)** | Beacon chat sessions sync as first-class conversations (`type=chat`, source `via=beacon`) — unified inbox channel filter, chat badges, and honest chat-vs-email speed analytics. The conversations endpoint has no documented type filter, so filtering happens locally (stated openly in the capability matrix) |
 | **📚 Docs mirror (v1.3.0)** | Help Scout Docs collections, categories and articles mirrored read-only from docsapi.helpscout.net (separate Docs API key) — offline FTS search, status/view stats, channel-mix overview; without a key the mirror stays empty and says so |
-| **📡 Real-time events (v1.3.0)** | Server-Sent Events (`/api/events`) push new CSAT ratings and sync completions the moment they land; a lightweight ratings watcher decoupled from full sync feeds it; dashboards and toasts react without polling |
+| **📡 Real-time events (v1.3.0)** | Server-Sent Events (`/api/events`) push new CSAT ratings, sync completions and webhook-driven conversation updates the moment they land; a lightweight ratings watcher decoupled from full sync feeds it; dashboards and toasts react without polling |
+| **🪝 Webhook push (v1.4.0)** | Register/unregister conversation webhooks from Sync Health; events arrive HMAC-verified, deduped, persisted-first and pushed through the job pipeline within seconds — with real-time `conversation-updated` SSE events, restart draining of unprocessed events, and a demo simulator that exercises the exact production path |
+| **🔎 Semantic docs search (v1.4.0)** | Hybrid retrieval over the Docs mirror: FTS5 + vector similarity fused with Reciprocal Rank Fusion; embeddings stored locally (works without Qdrant, faster with it); per-hit provenance and honest mode notes; graceful degradation at every layer |
+| **⏱️ SLA & business hours (v1.4.0)** | Per-mailbox schedules (IANA timezone, weekdays, window) + first-response/resolution targets; reports measure wall AND business minutes (DST-safe via the platform tz database), met/missed classification, and live waiting-age risk |
 | **📊 Multi-mailbox dashboards (v1.3.0)** | Scope every dashboard metric by any combination of mailboxes and channel; per-mailbox comparison rows (new/active/closed/backlog/first-response/resolution/ratings) — same deterministic SQL as single-mailbox views |
 | **📦 Desktop installers (v1.3.0)** | MSI, NSIS, universal DMG and AppImage built in CI with the Node runtime + SQLite bundled — no prerequisites; or build your own with `npm run desktop:build` |
 | **🎧 Support inbox** | 3-pane workspace: views, filters, bulk actions, sanitized HTML threads, customer + AI context panes, rich composer (reply / note / draft / cc / bcc / status-after-send / saved replies / AI draft insertion) |
@@ -311,7 +345,7 @@ No — by design and by enforcement. It reports **observable support-communicati
 <details>
 <summary><b>How is this tested?</b></summary>
 
-172 automated tests (unit / integration / e2e) run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The v1.3.0 additions ship with their own integration + e2e coverage: channel filters, docs mirror sync and FTS, multi-mailbox scoping, and a real SSE stream test that asserts a rating event arrives over the wire. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
+172 automated tests (unit / integration / e2e) — grown to **224** with the v1.4.0 webhook-push, semantic-docs-search and SLA coverage — run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The v1.4.0 additions include the full webhook pipeline over the wire (HMAC self-POST → dedup → job → sync → SSE), regression tests for two latent job-queue bugs, and the DST-safe business-hours engine. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
 </details>
 
 <details>
@@ -327,10 +361,11 @@ Yes for everything local: the mirror, search, analytics, knowledge base and prev
 - [x] v1.0.0 — local mirror, inbox workspace, FTS5 search, local AI pipeline, Issue Radar, reports, automation, backups, 108-test CI ([changelog](CHANGELOG.md))
 - [x] v1.1.0 — Client Interaction Intelligence: current-vs-normal change detection, evidence-linked signals, support approaches, human overrides, playbooks, effort/friction metrics
 - [x] v1.2.0 — the hardening release: full independent audit, 40+ fixes (security, data integrity, correctness), 150-test CI with named regression tests ([changelog](CHANGELOG.md))
-- [x] v1.3.0 — Help Scout **Chat / Docs / Beacon** API coverage, **real-time ratings refresh (SSE)**, **multi-mailbox dashboards**, **packaged desktop installers (MSI / DMG / AppImage)** — the complete original roadmap, closed ([changelog](CHANGELOG.md))
-- [ ] Incoming webhook push for conversations (currently polling; the ratings webhook path already exists)
-- [ ] Semantic docs search via local Qdrant (FTS5 today)
-- [ ] More granular SLA / business-hours reporting per mailbox
+- [x] v1.3.0 — Help Scout **Chat / Docs / Beacon** API coverage, **real-time ratings refresh (SSE)**, **multi-mailbox dashboards**, **packaged desktop installers (MSI / DMG / AppImage)** ([changelog](CHANGELOG.md))
+- [x] v1.4.0 — **incoming webhook push for conversations** (register from the app, real-time SSE updates, restart drain), **semantic docs search** (local embeddings + optional Qdrant, hybrid RRF), **per-mailbox SLA / business-hours reporting** — plus two latent job-pipeline bugs found and fixed ([changelog](CHANGELOG.md))
+- [ ] Vector search over tickets/threads (the retrieval layer exists; chunking + job wiring to come)
+- [ ] Business-hours-aware SLA alerts on the Issue Radar
+- [ ] Optional end-to-end encrypted sync for multi-device use
 
 Ideas and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 

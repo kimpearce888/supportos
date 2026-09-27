@@ -46,11 +46,12 @@ export async function registerEventsRoutes(app: FastifyInstance, _ctx: AppContex
       return;
     }
 
-    send('hello', { at: new Date().toISOString(), channels: ['ratings', 'sync'], version: APP_VERSION });
+    send('hello', { at: new Date().toISOString(), channels: ['ratings', 'sync', 'conversations'], version: APP_VERSION });
 
     const offRating = serverEventBus.on('rating-received', (p) => send('ratings', p));
     const offRefresh = serverEventBus.on('ratings-refreshed', (p) => send('ratings', p));
     const offSync = serverEventBus.on('sync-completed', (p) => send('sync', p));
+    const offConversation = serverEventBus.on('conversation-updated', (p) => send('conversation', p));
     const ping = setInterval(() => write(': ping\n\n'), 25_000);
 
     function cleanup(): void {
@@ -60,6 +61,7 @@ export async function registerEventsRoutes(app: FastifyInstance, _ctx: AppContex
       offRating();
       offRefresh();
       offSync();
+      offConversation();
     }
 
     request.raw.on('close', cleanup);

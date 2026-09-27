@@ -71,6 +71,15 @@ export interface SyncEventData {
   at: string;
 }
 
+export interface ConversationEventData {
+  conversationId: number | null;
+  conversationNumber: number | null;
+  mailboxId: number | null;
+  subject: string | null;
+  reason: 'webhook' | 'sync' | 'manual';
+  at: string;
+}
+
 const RATING_LABEL: Record<string, string> = { great: 'Great', okay: 'Okay', 'not-good': 'Not good' };
 
 /** Mount once: wires server events into query invalidation + rating toasts. */
@@ -102,6 +111,19 @@ export function ServerEventsBridge(): null {
         void qc.invalidateQueries({ queryKey: ['nav-counts'] });
         if (d.kind === 'incremental' && d.processed > 0) {
           void qc.invalidateQueries({ queryKey: ['docs'] });
+        }
+      } else if (event === 'conversation') {
+        // v1.4.0: a single conversation changed (webhook push / sync / manual).
+        const d = data as ConversationEventData;
+        void qc.invalidateQueries({ queryKey: ['conversations'] });
+        void qc.invalidateQueries({ queryKey: ['conversation', d.conversationId] });
+        void qc.invalidateQueries({ queryKey: ['nav-counts'] });
+        void qc.invalidateQueries({ queryKey: ['dashboard'] });
+        if (d.reason === 'webhook' && d.conversationNumber != null) {
+          pushToast({
+            kind: 'info',
+            message: `#${d.conversationNumber} updated — pushed by webhook${d.subject ? `: ${d.subject.slice(0, 80)}` : ''}`
+          });
         }
       }
     });

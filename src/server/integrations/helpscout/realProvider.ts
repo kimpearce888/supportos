@@ -172,6 +172,13 @@ export class RealHelpScoutProvider implements HelpScoutProvider {
   async listWebhooks(): Promise<HsWebhookConfig[]> {
     return this.webhooks.list();
   }
+  async createWebhook(url: string, events: string[], secret: string, label: string): Promise<number> {
+    return this.webhooks.create(url, events, secret, label);
+  }
+  async deleteWebhook(remoteId: number): Promise<boolean> {
+    await this.webhooks.delete(remoteId);
+    return true;
+  }
   async listCustomerPropertyDefinitions(): Promise<HsPropertyDef[]> {
     return this.fields.listPropertyDefinitions('customer');
   }

@@ -87,6 +87,22 @@ export class FakeHelpScoutProvider implements HelpScoutProvider {
     this.log('/v2/webhooks');
     return this.world.webhooks;
   }
+
+  async createWebhook(url: string, events: string[], secret: string, label: string): Promise<number> {
+    this.log('/v2/webhooks');
+    const nextId = Math.max(0, ...this.world.webhooks.map((w) => w.remoteId)) + 1;
+    this.world.webhooks.push({ remoteId: nextId, url, events, status: 'enabled' });
+    void secret;
+    void label;
+    return nextId;
+  }
+
+  async deleteWebhook(remoteId: number): Promise<boolean> {
+    this.log(`/v2/webhooks/${remoteId}`);
+    const before = this.world.webhooks.length;
+    this.world.webhooks = this.world.webhooks.filter((w) => w.remoteId !== remoteId);
+    return this.world.webhooks.length < before;
+  }
   async listCustomerPropertyDefinitions(): Promise<HsPropertyDef[]> {
     this.log('/v2/customer-properties');
     return this.world.customerProps;

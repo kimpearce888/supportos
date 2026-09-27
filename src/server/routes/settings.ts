@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
-import { lmStudioSettingsSchema, settingsPatchSchema } from '../../shared/schemas.js';
+import { lmStudioSettingsSchema, settingsPatchSchema, businessHoursSchema } from '../../shared/schemas.js';
+import { isValidTimezone } from '../analytics/businessHours.js';
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number): number {
   const n = value != null && value !== '' ? Number(value) : fallback;
@@ -57,6 +58,71 @@ export async function registerSettingsRoutes(app: FastifyInstance, ctx: AppConte
 
   // Qdrant settings + test
   app.get('/api/settings/qdrant', async () => ctx.settingsRepo.getQdrant());
+
+  // ---------------- Business hours per mailbox (v1.4.0 SLA) ----------------
+
+  app.get('/api/settings/business-hours', async () => {
+    const rows = ctx.docsRepo.listBusinessHours();
+    const mailboxes = ctx.referenceRepo.getMailboxes();
+    return {
+      mailboxes: mailboxes.map((m) => {
+        const row = rows.find((r) => r.mailbox_local_id === m.id);
+        return {
+          mailbox_id: m.id,
+          name: m.name,
+          configured: row != null,
+          timezone: row?.timezone ?? null,
+          days: row ? (JSON.parse(row.days) as number[]) : null,
+          start_minute: row?.start_minute ?? null,
+          end_minute: row?.end_minute ?? null,
+          first_response_target_min: row?.first_response_target_min ?? null,
+          resolution_target_min: row?.resolution_target_min ?? null
+        };
+      })
+    };
+  });
+
+  app.put('/api/settings/business-hours/:mailboxId', async (request, reply) => {
+    const mailboxId = Number((request.params as { mailboxId: string }).mailboxId);
+    if (!Number.isInteger(mailboxId) || mailboxId <= 0) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'mailboxId must be a positive integer.' });
+      return;
+    }
+    const mailbox = ctx.referenceRepo.getMailboxes().find((m) => m.id === mailboxId);
+    if (!mailbox) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Mailbox not found in the local mirror.' });
+      return;
+    }
+    const parsed = businessHoursSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(422);
+      return { ok: false, message: 'Invalid business hours: check timezone, days (0-6), and that the end time is after the start time.' };
+    }
+    if (!isValidTimezone(parsed.data.timezone)) {
+      reply.code(422);
+      return { ok: false, message: 'Unknown IANA timezone (e.g. America/New_York, Europe/Berlin, Asia/Kolkata).' };
+    }
+    ctx.docsRepo.setBusinessHours(mailboxId, {
+      timezone: parsed.data.timezone,
+      days: parsed.data.days,
+      startMinute: parsed.data.start_minute,
+      endMinute: parsed.data.end_minute,
+      firstResponseTargetMin: parsed.data.first_response_target_min,
+      resolutionTargetMin: parsed.data.resolution_target_min
+    });
+    ctx.jobsRepo.audit({ actor: 'user', action: 'business_hours_updated', after_state: { mailboxId, ...parsed.data } });
+    return { ok: true, message: `Business hours saved for ${mailbox.name}. SLA reports now measure this mailbox in business minutes.` };
+  });
+
+  app.delete('/api/settings/business-hours/:mailboxId', async (request, reply) => {
+    const mailboxId = Number((request.params as { mailboxId: string }).mailboxId);
+    if (!Number.isInteger(mailboxId) || mailboxId <= 0) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'mailboxId must be a positive integer.' });
+      return;
+    }
+    ctx.docsRepo.clearBusinessHours(mailboxId);
+    return { ok: true, message: 'Business hours cleared - this mailbox falls back to wall-clock minutes in SLA reports.' };
+  });
 
   app.patch('/api/settings/qdrant', async (request, reply) => {
     const body = (request.body ?? {}) as { url?: string; enabled?: boolean };

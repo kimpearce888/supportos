@@ -8,7 +8,7 @@ import { SyncRepository } from '../database/repositories/syncRepo.js';
 import { JobRepository } from '../database/repositories/jobRepo.js';
 import type { HsConversation, HsThread } from '../integrations/helpscout/provider.js';
 import { HelpScoutApiError } from '../integrations/helpscout/client.js';
-import { INITIAL_SYNC_ORDER, SYNC_OVERLAP_MINUTES } from '../../shared/constants.js';
+import { INITIAL_SYNC_ORDER, SYNC_OVERLAP_MINUTES, PRIORITY } from '../../shared/constants.js';
 import { serverEventBus } from '../services/eventBus.js';
 import type { SyncState } from '../../shared/types.js';
 
@@ -450,6 +450,9 @@ export class SyncCoordinator {
               processed++;
             }
           }
+          // v1.4.0: semantic docs search - chunk embeddings are built after the
+          // mirror pass (the job is a no-op until an embedding model is configured).
+          if (processed > 0) this.jobs.enqueue('embeddings', 'embed_docs_chunks', {}, PRIORITY.INDEXING, 2);
           return { resource, processed, failed: 0 };
         }
         case 'attachments': {

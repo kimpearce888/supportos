@@ -19,6 +19,7 @@ import { AiToolRegistry } from '../ai/tools.js';
 import { QdrantAdapter } from '../integrations/qdrant/qdrantAdapter.js';
 import { LmStudioClient } from '../integrations/lmstudio/lmStudioClient.js';
 import { AnalyticsService } from '../analytics/analyticsService.js';
+import { SlaService } from '../analytics/slaService.js';
 import { AutomationEngine } from '../automation/engine.js';
 import { KnowledgeIngestor } from '../knowledge/ingestor.js';
 import { BackupService } from './backupService.js';
@@ -54,6 +55,7 @@ export class AppContext {
   lmStudio: LmStudioClient;
   qdrant: QdrantAdapter;
   analytics: AnalyticsService;
+  sla: SlaService;
   automation: AutomationEngine;
   knowledge: KnowledgeIngestor;
   backup: BackupService;
@@ -125,6 +127,7 @@ export class AppContext {
     this.toolRegistry = new AiToolRegistry(this.db);
     this.qdrant = new QdrantAdapter({ url: this.settingsRepo.getQdrant().url, enabled: this.settingsRepo.getQdrant().enabled });
     this.analytics = new AnalyticsService(this.db);
+    this.sla = new SlaService(this.db);
     this.automation = new AutomationEngine(this.db);
     this.knowledge = new KnowledgeIngestor(this.db);
     this.backup = new BackupService(this.db, getDatabasePath(), this.settingsRepo, this.config.backupsPath);

@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { RefreshCw, Play, Scale, Trash2, Database, Webhook, ListRestart } from 'lucide-react';
 import { api } from '../api/client.js';
@@ -31,6 +31,7 @@ const STATE_LABELS: Record<string, string> = {
 
 export function SyncHealthPage(): ReactNode {
   const pushToast = useUiStore((s) => s.pushToast);
+  const [webhookUrl, setWebhookUrl] = useState('');
   const { data: status, error: statusError, refetch, isFetching } = useQuery({ queryKey: ['sync-status'], queryFn: () => api.get<SyncStatusData>('/api/sync/status'), refetchInterval: 5000 });
   const { data: health } = useQuery({ queryKey: ['health-detailed'], queryFn: () => api.get<HealthStatus>('/health/detailed'), refetchInterval: 30_000 });
   const { data: db } = useQuery({ queryKey: ['db-stats'], queryFn: () => api.get<{ path: string; size_bytes: number; migrations: number; tables: { table: string; rows: number }[] }>('/api/system/db') });
@@ -39,6 +40,30 @@ export function SyncHealthPage(): ReactNode {
     mutationFn: (input: { path: string }) => api.post<{ ok: boolean; message: string; detail?: string }>(input.path, {}),
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message, detail: r.detail });
+      void refetch();
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
+
+  // v1.4.0: register a real webhook with Help Scout (push instead of poll)
+  const registerWebhook = useMutation({
+    mutationFn: (url: string) =>
+      api.post<{ ok: boolean; message: string }>(`/api/webhooks/register`, {
+        url,
+        events: ['convo.created', 'convo.updated', 'convo.assigned', 'convo.status', 'convo.customer.reply.created', 'convo.agent.reply.created', 'convo.note.created', 'satisfaction.ratings']
+      }),
+    onSuccess: (r) => {
+      pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
+      void refetch();
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
+
+  // v1.4.0: demo-mode webhook push simulation through the REAL pipeline
+  const simulateWebhook = useMutation({
+    mutationFn: (event: string) => api.post<{ ok: boolean; message: string; remoteId?: number }>(`/api/demo/simulate-webhook`, { event }),
+    onSuccess: (r) => {
+      pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       void refetch();
     },
     onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
@@ -121,14 +146,31 @@ export function SyncHealthPage(): ReactNode {
           <KV k="Workers" v={health?.workers.running ? 'running' : 'stopped'} />
         </div>
         <div className="card">
-          <h3 className="card-title"><Webhook size={13} /> Webhooks (optional)</h3>
+          <h3 className="card-title"><Webhook size={13} /> Webhook push (v1.4.0)</h3>
           <KV k="Events received" v={status.webhook.events.total} />
           <KV k="Processed" v={status.webhook.events.processed} />
           <KV k="Duplicates (deduped)" v={status.webhook.events.duplicates} />
           <KV k="Pending/failed" v={`${status.webhook.events.pending}/${status.webhook.events.failed}`} />
           <KV k="Secret" v={status.webhook.secret_configured ? 'configured' : 'not configured'} />
           {status.webhook.configured.length > 0 ? <KV k="Remote configs" v={status.webhook.configured.map((w) => w.url).join(', ')} /> : null}
-          <p className="text-xs muted mt-8">A localhost app cannot receive webhooks directly - a network-accessible relay is required. Polling remains the primary sync mechanism either way.</p>
+          <div className="form-row mt-8">
+            <label className="field" htmlFor="wh-url">Register a webhook (relay URL, https)</label>
+            <div className="flex" style={{ gap: 6 }}>
+              <input id="wh-url" className="input mono" placeholder="https://your-relay.example.com/hook" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
+              <button className="btn small" onClick={() => registerWebhook.mutate(webhookUrl)} disabled={registerWebhook.isPending || webhookUrl.trim() === ''}>Register</button>
+            </div>
+          </div>
+          {health?.helpscout.demo_mode ? (
+            <div className="mt-8">
+              <div className="text-xs muted" style={{ marginBottom: 4 }}>Demo mode: push a simulated event through the REAL webhook pipeline (HMAC → dedup → job → sync → SSE):</div>
+              <div className="flex wrap" style={{ gap: 4 }}>
+                <button className="btn small" onClick={() => simulateWebhook.mutate('convo.created')} disabled={simulateWebhook.isPending}>convo.created</button>
+                <button className="btn small" onClick={() => simulateWebhook.mutate('convo.customer.reply.created')} disabled={simulateWebhook.isPending}>customer reply</button>
+                <button className="btn small" onClick={() => simulateWebhook.mutate('convo.note.created')} disabled={simulateWebhook.isPending}>note added</button>
+              </div>
+            </div>
+          ) : null}
+          <p className="text-xs muted mt-8">A localhost app cannot receive webhooks directly - a network-accessible relay is required. Registered webhooks push conversation changes within seconds; polling remains the fallback and reconciliation keeps the mirror honest either way.</p>
         </div>
         <div className="card">
           <h3 className="card-title">Jobs</h3>

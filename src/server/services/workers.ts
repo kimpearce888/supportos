@@ -4,6 +4,7 @@ import type { AiPipeline } from '../ai/pipeline.js';
 import { ConversationOperations } from './operations.js';
 import { PRIORITY, RATINGS_REFRESH_DEFAULT_SECONDS } from '../../shared/constants.js';
 import { serverEventBus } from './eventBus.js';
+import { WebhookEndpoint } from './webhookEndpoint.js';
 import { createLogger, type StructuredLogger } from '../config/logger.js';
 
 /**
@@ -19,6 +20,7 @@ export class WorkerManager {
   private coordinator: SyncCoordinator;
   private pipeline: AiPipeline;
   private operations: ConversationOperations;
+  private webhook: WebhookEndpoint;
   private running = false;
   private processing = false;
   private stopped = false;
@@ -30,6 +32,9 @@ export class WorkerManager {
     this.coordinator = ctx.coordinator;
     this.pipeline = ctx.aiPipeline;
     this.operations = ctx.operations;
+    // Webhook drain endpoint shares the same secret + repositories as the HTTP one
+    // (v1.4.0: leftover pending events after a crash are re-processed on boot).
+    this.webhook = new WebhookEndpoint(ctx.db, ctx.config.helpscout.webhookSecret);
   }
 
   rebindCoordinator(coordinator: SyncCoordinator): void {
@@ -48,6 +53,12 @@ export class WorkerManager {
     // Recover stale jobs from a previous run (spec: survive restart)
     const recovered = this.ctx.jobsRepo.recoverStaleJobs();
     if (recovered > 0) this.logger.info('Recovered stale jobs after restart', { operation: 'recover', count: recovered });
+    // Recover webhook events that were persisted but never processed (v1.4.0):
+    // the endpoint persists FIRST and acknowledges, so a crash in between used
+    // to leave events pending forever.
+    void this.webhook.drainPending().then((n) => {
+      if (n > 0) this.logger.info('Drained pending webhook events after restart', { operation: 'webhook_drain', count: n });
+    });
     // Main job loop every 2s
     this.loopTimer = setInterval(() => void this.tick(), 2000);
     this.timers.push(this.loopTimer);
@@ -228,7 +239,18 @@ export class WorkerManager {
           await this.coordinator.syncSingleConversation(Number(payload.remoteId));
           if (type === 'sync_conversation') {
             const local = this.ctx.conversationRepo.getConversationByRemoteId(Number(payload.remoteId));
-            if (local) await this.onConversationChanged(local.id, 'sync');
+            if (local) {
+              // v1.4.0: real-time push for single-conversation updates (webhook path)
+              serverEventBus.emit('conversation-updated', {
+                conversationId: local.id,
+                conversationNumber: local.number,
+                mailboxId: local.mailbox_local_id ?? null,
+                subject: local.subject ?? null,
+                reason: payload.source === 'webhook' ? 'webhook' : 'sync',
+                at: new Date().toISOString()
+              });
+              await this.onConversationChanged(local.id, 'sync');
+            }
           }
           break;
         }
@@ -333,6 +355,11 @@ export class WorkerManager {
           await this.embedPendingKnowledge();
           break;
         }
+        case 'embed_docs_chunks': {
+          // v1.4.0: semantic docs search - chunk embeddings, Qdrant + local fallback
+          await this.embedPendingDocs();
+          break;
+        }
         // ---------- reports queue ----------
         case 'refresh_report': {
           await this.ctx.analytics.dashboard(String(payload.from ?? new Date(Date.now() - 30 * 86400000).toISOString()), String(payload.to ?? new Date().toISOString()));
@@ -433,6 +460,59 @@ export class WorkerManager {
       }
     } catch {
       /* automation failures never break sync */
+    }
+  }
+
+  /**
+   * v1.4.0: embed docs-mirror chunks. Vectors are ALWAYS stored locally
+   * (docs_chunks.embedding) so semantic search works without Qdrant; when
+   * Qdrant is connected the same vectors are upserted for ANN retrieval.
+   * Without an embedding model configured this is a documented no-op.
+   */
+  private async embedPendingDocs(): Promise<void> {
+    const chunks = this.ctx.docsRepo.listDocChunksNeedingEmbedding(60);
+    if (chunks.length === 0) return;
+    const settings = this.ctx.settingsRepo.getLmStudio();
+    if (!settings.embedding_model) return; // no embedding model configured - FTS remains the search path
+    const qdrantHealth = await this.ctx.qdrant.health();
+    try {
+      const vectors = await this.ctx.aiProvider.embed(chunks.map((c) => c.content.slice(0, 4000)));
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i]!;
+        const v = vectors[i];
+        if (!v || v.length === 0) {
+          this.ctx.docsRepo.setDocChunkEmbeddingState(c.id, 'failed', null);
+          continue;
+        }
+        this.ctx.docsRepo.updateDocChunkEmbedding(c.id, settings.embedding_model, new Float32Array(v), 'indexed');
+      }
+      if (qdrantHealth.connected) {
+        const points = chunks
+          .map((c, i) => ({ c, v: vectors[i] }))
+          .filter((x) => x.v && x.v.length > 0)
+          .map((x) => ({
+            id: x.c.id,
+            vector: x.v!,
+            payload: {
+              entity_type: 'docs_chunk' as const,
+              entity_id: x.c.article_id,
+              chunk_id: x.c.id,
+              title: x.c.title,
+              text: x.c.content.slice(0, 2000),
+              visibility: x.c.visibility,
+              embedding_model: settings.embedding_model ?? 'unknown',
+              index_version: 1
+            }
+          }));
+        if (points.length > 0) {
+          await this.ctx.qdrant.ensureCollection(points[0]!.vector.length);
+          await this.ctx.qdrant.upsert(points as Parameters<typeof this.ctx.qdrant.upsert>[0]);
+        }
+      }
+      this.logger.info('Docs chunk embedding pass completed', { operation: 'embed_docs', chunks: chunks.length, qdrant: qdrantHealth.connected });
+    } catch (e) {
+      for (const c of chunks) this.ctx.docsRepo.setDocChunkEmbeddingState(c.id, 'failed', null);
+      this.logger.warn('Docs embedding pass failed', { operation: 'embed_docs', error: String(e) });
     }
   }
 

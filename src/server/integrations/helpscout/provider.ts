@@ -322,6 +322,13 @@ export interface HelpScoutProvider {
   listTags(): Promise<HsTag[]>;
   listWorkflows(mailboxId?: number): Promise<HsWorkflow[]>;
   listWebhooks(): Promise<HsWebhookConfig[]>;
+  /**
+   * v1.4.0: register a webhook with Help Scout so conversation pushes arrive
+   * instead of waiting for the poll. The secret MUST equal the locally
+   * configured HELPSCOUT_WEBHOOK_SECRET so signatures verify.
+   */
+  createWebhook(url: string, events: string[], secret: string, label: string): Promise<number>;
+  deleteWebhook(remoteId: number): Promise<boolean>;
 
   // Properties
   listCustomerPropertyDefinitions(): Promise<HsPropertyDef[]>;

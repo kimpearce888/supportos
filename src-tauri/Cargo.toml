@@ -1,6 +1,6 @@
 [package]
 name = "supportos"
-version = "1.3.0"
+version = "1.4.0"
 description = "SupportOS - local-first AI-powered support operating system for Help Scout"
 edition = "2021"
 

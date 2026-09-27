@@ -1,7 +1,7 @@
 import { type ReactNode, useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { BookMarked, Search as SearchIcon, Eye, MessageCircle, Mail, FileText } from 'lucide-react';
-import { useDocsStats, useDocsCollections, useDocsArticles, useDocsArticle } from '../api/hooks.js';
+import { BookMarked, Search as SearchIcon, Eye, MessageCircle, Mail, FileText, Sparkles } from 'lucide-react';
+import { useDocsStats, useDocsCollections, useDocsArticles, useDocsArticle, useDocsSearch } from '../api/hooks.js';
 import { Spinner, EmptyState, ErrorState, RelativeTime } from '../components/common/ui.js';
 import { Modal } from '../components/common/overlays.js';
 
@@ -35,10 +35,13 @@ export function DocsPage(): ReactNode {
   const collectionId = collectionParam != null && Number.isFinite(Number(collectionParam)) ? Number(collectionParam) : null;
   const [q, setQ] = useState(searchParams.get('q') ?? '');
   const [status, setStatus] = useState<string | null>(searchParams.get('status'));
+  // v1.4.0: hybrid search - semantic layer toggled on by default when available.
+  const [semantic, setSemantic] = useState(searchParams.get('semantic') !== '0');
 
   const { data: stats, error: statsError } = useDocsStats();
   const { data: collections } = useDocsCollections();
   const { data: list, isLoading, error } = useDocsArticles(collectionId, q, status);
+  const { data: search, isFetching: searching } = useDocsSearch(q, semantic);
   const { data: detail } = useDocsArticle(reading);
 
   if (statsError) return <div className="page"><ErrorState message="Could not load docs stats" detail={statsError instanceof Error ? statsError.message : 'The request failed.'} /></div>;
@@ -74,7 +77,7 @@ export function DocsPage(): ReactNode {
             <input
               className="input"
               style={{ flex: 1 }}
-              placeholder="Search articles (title + full text, offline FTS)"
+              placeholder="Search articles (hybrid: keywords + semantic when embeddings exist)"
               value={q}
               onChange={(e) => {
                 setQ(e.target.value);
@@ -85,6 +88,19 @@ export function DocsPage(): ReactNode {
               }}
             />
           </div>
+          <button
+            className={`btn small ${semantic ? 'primary' : ''}`}
+            aria-pressed={semantic}
+            onClick={() => {
+              setSemantic(!semantic);
+              const next = new URLSearchParams(searchParams);
+              next.set('semantic', semantic ? '0' : '1');
+              setSearchParams(next, { replace: true });
+            }}
+            title="Semantic retrieval adds vector similarity to keyword search"
+          >
+            <Sparkles size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Semantic {search?.semantic_available ? '' : '(needs setup)'}
+          </button>
           <div className="flex" role="group" aria-label="Status filter">
             <button className={`btn small ${status == null ? 'primary' : ''}`} onClick={() => setStatus(null)}>All</button>
             <button className={`btn small ${status === 'published' ? 'primary' : ''}`} onClick={() => setStatus('published')}>Published</button>
@@ -92,6 +108,20 @@ export function DocsPage(): ReactNode {
             <button className={`btn small ${status === 'internal' ? 'primary' : ''}`} onClick={() => setStatus('internal')}>Internal</button>
           </div>
         </div>
+        {q.trim() && search ? (
+          <div className="text-xs muted mt-8">
+            {search.mode_note}{' '}
+            {search.hits.length > 0 ? `· ${search.hits.length} result(s)` : ''}
+            {searching ? ' · searching…' : ''}
+          </div>
+        ) : null}
+        {q.trim() && stats && stats.docs_chunks ? (
+          <div className="text-xs muted mt-8" style={{ opacity: 0.8 }}>
+            Embeddings: {stats.docs_chunks_indexed ?? 0}/{stats.docs_chunks} chunks indexed
+            {(stats.docs_chunks_pending ?? 0) > 0 ? ` · ${stats.docs_chunks_pending} pending` : ''}
+            {(stats.docs_chunks_failed ?? 0) > 0 ? ` · ${stats.docs_chunks_failed} failed` : ''}
+          </div>
+        ) : null}
         <div className="flex wrap mt-8" style={{ gap: 6 }}>
           <button
             className={`btn small ${collectionId == null ? 'primary' : ''}`}
@@ -120,11 +150,38 @@ export function DocsPage(): ReactNode {
       </div>
 
       {error ? <ErrorState message="Could not load articles" detail={error instanceof Error ? error.message : 'The request failed.'} /> : null}
-      {isLoading ? <Spinner label="Loading articles" /> : null}
-      {!isLoading && (list?.articles.length ?? 0) === 0 && q ? <EmptyState title={`No articles match "${q}"`} hint="Search covers article titles and full text (offline FTS)." /> : null}
+      {isLoading && !q ? <Spinner label="Loading articles" /> : null}
+      {!isLoading && !q && (list?.articles.length ?? 0) === 0 ? <EmptyState title="No articles" hint="Adjust the filters or run a sync with a Docs API key configured." /> : null}
 
-      {(list?.articles.length ?? 0) > 0 ? (
+      {q.trim() && search ? (
         <div className="card" style={{ padding: 0 }}>
+          <table className="table">
+            <thead>
+              <tr><th>Article</th><th>Collection</th><th>Matched by</th><th>Score</th><th>Updated</th></tr>
+            </thead>
+            <tbody>
+              {search.hits.map((h) => (
+                <tr key={h.article.id} className="clickable" onClick={() => openArticle(h.article.id)}>
+                  <td>
+                    <strong>{h.article.name}</strong>
+                    {(h.matched_chunk ?? h.snippet) ? <div className="text-xs muted">{(h.matched_chunk ?? h.snippet)!.slice(0, 130)}…</div> : null}
+                  </td>
+                  <td>{h.article.collection_name ?? '—'}</td>
+                  <td>
+                    {h.why.map((w) => (
+                      <span key={w} className={`badge ${w === 'semantic' ? 'ai' : 'ok'}`} style={{ marginRight: 4 }}>{w === 'semantic' ? 'semantic' : 'keyword'}</span>
+                    ))}
+                  </td>
+                  <td className="text-xs">{h.score.toFixed(3)}</td>
+                  <td><RelativeTime iso={h.article.remote_updated_at ?? h.article.remote_created_at} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {search.hits.length === 0 ? <div style={{ padding: 14 }}><EmptyState title={`No articles match "${q}"`} hint="Keyword search covers titles and full text; semantic search adds meaning-based matches once embeddings exist." /></div> : null}
+        </div>
+      ) : !q ? (
+      <div className="card" style={{ padding: 0 }}>
           <table className="table">
             <thead>
               <tr><th>Article</th><th>Collection</th><th>Status</th><th>Views</th><th>Updated</th></tr>

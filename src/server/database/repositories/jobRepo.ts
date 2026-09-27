@@ -1,5 +1,4 @@
 import type { DB } from '../connection.js';
-import { nowIso } from './helpers.js';
 import type { QueueJob, AuditEntry } from '../../../shared/types.js';
 
 /** Generic background job queue + outbound remote-write queue + audit log. */
@@ -8,14 +7,28 @@ export class JobRepository {
 
   // ---------------- Generic job queue ----------------
   enqueue(queue: string, type: string, payload: Record<string, unknown>, priority = 2, maxAttempts = 3): number {
+    // run_at MUST be in SQLite's own datetime('now') format ('YYYY-MM-DD HH:MM:SS').
+    // It was previously stored as ISO-8601 with 'T'/'Z' separators, which compares
+    // GREATER than every datetime('now') value forever - making every queued job
+    // invisible to claimNext and silently disabling the whole job pipeline
+    // (webhook-triggered syncs, attachment downloads, AI jobs, embeddings).
     const r = this.db
-      .prepare("INSERT INTO jobs (queue, type, priority, payload, max_attempts, status, run_at, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, datetime('now'))")
-      .run(queue, type, priority, JSON.stringify(payload), maxAttempts, nowIso());
+      .prepare("INSERT INTO jobs (queue, type, priority, payload, max_attempts, status, run_at, created_at) VALUES (?, ?, ?, ?, ?, 'queued', datetime('now'), datetime('now'))")
+      .run(queue, type, priority, JSON.stringify(payload), maxAttempts);
     return Number(r.lastInsertRowid);
   }
 
   /** Claim the next runnable job (priority asc, FIFO). Uses atomic UPDATE ... RETURNING semantics. */
   claimNext(queue?: string): QueueJob | null {
+    // The payload column stores JSON TEXT; claimNext previously cast the raw
+    // row straight to QueueJob, handing the worker a STRING where it expected
+    // an object. Every payload field read as undefined (remoteId -> NaN), so
+    // sync jobs "completed" without syncing anything. Parsed here like every
+    // other job getter.
+    const parseJob = (row: unknown): QueueJob => {
+      const r = row as QueueJob & { payload: string | Record<string, unknown> | null };
+      return { ...r, payload: r.payload == null ? null : typeof r.payload === 'string' ? (JSON.parse(r.payload) as Record<string, unknown>) : r.payload };
+    };
     const tx = this.db.transaction(() => {
       const filter = queue ? 'AND queue = ?' : '';
       const rows = this.db
@@ -23,12 +36,12 @@ export class JobRepository {
           `SELECT * FROM jobs WHERE status = 'queued' AND (run_at IS NULL OR run_at <= datetime('now')) ${filter}
            ORDER BY priority ASC, id ASC LIMIT 1`
         )
-        .all(...(queue ? [queue] : [])) as QueueJob[];
+        .all(...(queue ? [queue] : []));
       const job = rows[0];
       if (!job) return null;
-      this.db.prepare("UPDATE jobs SET status='running', started_at=datetime('now'), attempt = attempt + 1 WHERE id = ?").run(job.id);
-      const updated = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id) as QueueJob;
-      return updated;
+      this.db.prepare("UPDATE jobs SET status='running', started_at=datetime('now'), attempt = attempt + 1 WHERE id = ?").run((job as QueueJob).id);
+      const updated = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get((job as QueueJob).id);
+      return parseJob(updated);
     });
     return tx() as QueueJob | null;
   }

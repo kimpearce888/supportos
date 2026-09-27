@@ -1,11 +1,13 @@
 import { type ReactNode, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState, KV } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, KV } from '../components/common/ui.js';
 import { useUiStore } from '../state/uiStore.js';
+import { useSlaReport } from '../api/hooks.js';
+import type { SlaMailboxRowInfo } from '../../shared/types.js';
 
 export function ReportsPage(): ReactNode {
-  const [tab, setTab] = useState<'overview' | 'questions' | 'intelligence' | 'definitions' | 'helpscout' | 'releases'>('overview');
+  const [tab, setTab] = useState<'overview' | 'sla' | 'questions' | 'intelligence' | 'definitions' | 'helpscout' | 'releases'>('overview');
   const [days, setDays] = useState(30);
   const pushToast = useUiStore((s) => s.pushToast);
   const { data: dashboard } = useQuery({ queryKey: ['dashboard', days], queryFn: () => api.get<Record<string, unknown>>(`/api/analytics/dashboard?days=${days}`) });
@@ -39,6 +41,7 @@ export function ReportsPage(): ReactNode {
       </div>
       <div className="tabs">
         <button className={`tab ${tab === 'overview' ? 'active' : ''}`} onClick={() => setTab('overview')}>Overview</button>
+        <button className={`tab ${tab === 'sla' ? 'active' : ''}`} onClick={() => setTab('sla')}>SLA & business hours</button>
         <button className={`tab ${tab === 'questions' ? 'active' : ''}`} onClick={() => setTab('questions')}>Why customers contact us</button>
         <button className={`tab ${tab === 'intelligence' ? 'active' : ''}`} onClick={() => setTab('intelligence')}>Support intelligence</button>
         <button className={`tab ${tab === 'helpscout' ? 'active' : ''}`} onClick={() => setTab('helpscout')}>Help Scout reports</button>
@@ -71,6 +74,8 @@ export function ReportsPage(): ReactNode {
           </div>
         )
       ) : null}
+
+      {tab === 'sla' ? <SlaReports days={days} /> : null}
 
       {tab === 'questions' ? (
         <div className="grid-2">
@@ -209,6 +214,78 @@ function IntelligenceReports(): ReactNode {
           </>
         ) : <Spinner />}
       </div>
+    </div>
+  );
+}
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function fmtMin(m: number | null): string {
+  if (m == null) return '—';
+  if (m < 60) return `${Math.round(m)}m`;
+  if (m < 60 * 24) return `${Math.round(m / 60)}h`;
+  return `${Math.round(m / (60 * 24))}d`;
+}
+
+function SlaStats({ label, s }: { label: string; s: SlaMailboxRowInfo['first_response'] }): ReactNode {
+  const total = s.met + s.missed + s.no_target;
+  return (
+    <div style={{ padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
+      <div className="flex-between">
+        <strong className="text-sm">{label}</strong>
+        <span className="text-xs muted">{s.count} measured{s.target_min != null ? ` · target ${fmtMin(s.target_min)}` : ' · no target set'}</span>
+      </div>
+      <div className="text-xs muted" style={{ marginTop: 2 }}>
+        avg {fmtMin(s.avg_wall_min)} wall{s.avg_business_min != null ? ` · ${fmtMin(s.avg_business_min)} business (median ${fmtMin(s.median_business_min)})` : ''}
+      </div>
+      {total > 0 && s.target_min != null ? (
+        <div className="flex" style={{ gap: 4, marginTop: 4 }}>
+          <span className="badge ok">{s.met} met</span>
+          <span className={`badge ${s.missed > 0 ? 'err' : ''}`}>{s.missed} missed</span>
+          <span className="badge">{s.no_target} n/a</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** v1.4.0: SLA report - first response / resolution in business minutes per mailbox. */
+function SlaReports({ days }: { days: number }): ReactNode {
+  const { data, isLoading, error } = useSlaReport(days);
+  if (error) return <ErrorState message="Could not load the SLA report" detail={error instanceof Error ? error.message : 'The request failed.'} />;
+  if (isLoading || !data) return <Spinner label="Computing SLA report" />;
+  return (
+    <div>
+      {data.unconfigured_mailboxes.length > 0 ? (
+        <div className="alert info mb-16">
+          <strong>Wall-clock mode:</strong> {data.unconfigured_mailboxes.join(', ')} {data.unconfigured_mailboxes.length === 1 ? 'has' : 'have'} no business hours configured, so {data.unconfigured_mailboxes.length === 1 ? 'its' : 'their'} numbers are measured in wall-clock minutes. Configure schedules in <strong>Settings → Business hours</strong> for business-minute measurement.
+        </div>
+      ) : null}
+      <div className="grid-2">
+        {data.mailboxes.map((m) => (
+          <div className="card" key={m.mailbox_id}>
+            <h3 className="card-title">{m.mailbox_name}</h3>
+            <KV k="Schedule" v={m.schedule ? `${DAY_NAMES.filter((_, i) => m.schedule!.days.includes(i)).join(' ')} · ${String(Math.floor(m.schedule.startMinute / 60)).padStart(2, '0')}:${String(m.schedule.startMinute % 60).padStart(2, '0')}–${String(Math.floor(m.schedule.endMinute / 60)).padStart(2, '0')}:${String(m.schedule.endMinute % 60).padStart(2, '0')} · ${m.schedule.timezone}` : 'not configured (wall-clock)'} />
+            <KV k="Conversations in range" v={String(m.conversations_in_range)} />
+            <SlaStats label="First response" s={m.first_response} />
+            <SlaStats label="Resolution" s={m.resolution} />
+            <div style={{ padding: '6px 0' }}>
+              <div className="flex-between">
+                <strong className="text-sm">Currently waiting</strong>
+                <span className="badge">{m.waiting.count} open</span>
+              </div>
+              <div className="text-xs muted" style={{ marginTop: 2 }}>
+                avg age {fmtMin(m.waiting.avg_business_min)} · oldest {fmtMin(m.waiting.oldest_business_min)}
+                {m.waiting.at_risk > 0 ? ` · ${m.waiting.at_risk} past first-response target` : ''}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {data.mailboxes.length === 0 ? <EmptyState title="No mailboxes in the local mirror" hint="Run an initial sync first." /> : null}
+      <p className="text-xs muted mt-16">
+        Business minutes count only time inside each mailbox's configured schedule (nights, weekends and holidays excluded); wall minutes are shown alongside for honesty. Waiting ages are measured since each conversation's last activity. All numbers are local calculations from the mirror.
+      </p>
     </div>
   );
 }

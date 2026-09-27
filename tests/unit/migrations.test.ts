@@ -19,7 +19,9 @@ describe('database migrations (spec #143)', () => {
       'ai_runs', 'ai_extracted_facts', 'ai_sources', 'ai_drafts', 'ai_verifications', 'ai_feedback', 'customer_memories',
       'knowledge_sources', 'knowledge_documents', 'knowledge_chunks', 'issue_clusters', 'issue_cluster_conversations',
       'known_issues', 'known_issue_conversations', 'known_issue_refs', 'support_cases', 'report_snapshots', 'daily_metrics',
-      'metric_definitions', 'release_events', 'automation_rules', 'automation_runs'
+      'metric_definitions', 'release_events', 'automation_rules', 'automation_runs',
+      // v1.3.0 + v1.4.0
+      'docs_collections', 'docs_categories', 'docs_articles', 'docs_chunks', 'mailbox_business_hours'
     ]) {
       expect(tables).toContain(expected);
     }
@@ -30,7 +32,7 @@ describe('database migrations (spec #143)', () => {
     const db = openTestDatabase();
     applyMigrations(db);
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((t) => t.name);
-    for (const fts of ['fts_conversations', 'fts_threads', 'fts_knowledge', 'fts_known_issues', 'fts_saved_replies', 'fts_ai_analyses']) {
+    for (const fts of ['fts_conversations', 'fts_threads', 'fts_knowledge', 'fts_known_issues', 'fts_saved_replies', 'fts_ai_analyses', 'docs_fts']) {
       expect(tables).toContain(fts);
     }
     closeDatabase();

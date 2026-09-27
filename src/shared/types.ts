@@ -522,6 +522,75 @@ export interface DocsStats {
   chat_sessions: number;
   email_conversations: number;
   last_synced_at: string | null;
+  /** v1.4.0 semantic-search readiness (may be 0 until an embedding model runs). */
+  docs_chunks?: number;
+  docs_chunks_indexed?: number;
+  docs_chunks_pending?: number;
+  docs_chunks_failed?: number;
+}
+
+// ---------------------------------------------------------------- Docs semantic search (v1.4.0)
+
+export interface DocsSearchHit {
+  article: DocsArticleSummary;
+  /** RRF-fused relevance; higher is better. NOT a cosine score. */
+  score: number;
+  why: ('fts' | 'semantic')[];
+  snippet: string | null;
+  /** Best matching chunk content when semantic retrieval contributed. */
+  matched_chunk?: string | null;
+}
+
+export interface DocsSearchResponse {
+  query: string;
+  hits: DocsSearchHit[];
+  total: number;
+  used_semantic: boolean;
+  semantic_available: boolean;
+  /** Human-readable explanation of the retrieval mode that actually ran. */
+  mode_note: string;
+}
+
+// ---------------------------------------------------------------- SLA / business hours (v1.4.0)
+
+export interface BusinessHoursPayload {
+  mailbox_id: number;
+  timezone: string;
+  days: number[];
+  start_minute: number;
+  end_minute: number;
+  first_response_target_min: number | null;
+  resolution_target_min: number | null;
+  updated_at?: string;
+}
+
+export interface SlaDurationStatsInfo {
+  count: number;
+  avg_wall_min: number | null;
+  avg_business_min: number | null;
+  median_business_min: number | null;
+  met: number;
+  missed: number;
+  no_target: number;
+  target_min: number | null;
+}
+
+export interface SlaMailboxRowInfo {
+  mailbox_id: number;
+  mailbox_name: string;
+  business_hours_configured: boolean;
+  schedule: { timezone: string; days: number[]; startMinute: number; endMinute: number } | null;
+  conversations_in_range: number;
+  first_response: SlaDurationStatsInfo;
+  resolution: SlaDurationStatsInfo;
+  waiting: { count: number; oldest_business_min: number | null; avg_business_min: number | null; at_risk: number };
+}
+
+export interface SlaReportInfo {
+  range: { from: string; to: string };
+  mailboxes: SlaMailboxRowInfo[];
+  unconfigured_mailboxes: string[];
+  source: ('helpscout' | 'local' | 'ai')[];
 }
 
 export interface AiAnalytics {

@@ -435,6 +435,50 @@ export const schedulePublishRequestSchema = z.object({
   threadId: z.number().int()
 });
 
+/** v1.4.0: per-mailbox business hours + SLA targets (validated before storage). */
+export const businessHoursSchema = z
+  .object({
+    timezone: z.string().min(1).max(64),
+    days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+    start_minute: z.number().int().min(0).max(1439),
+    end_minute: z.number().int().min(1).max(1440),
+    first_response_target_min: z.number().int().min(1).max(100000).nullable(),
+    resolution_target_min: z.number().int().min(1).max(100000).nullable()
+  })
+  .strict()
+  .refine((v) => v.end_minute > v.start_minute, { message: 'end_minute must be after start_minute' });
+
+/** v1.4.0: webhook registration request. */
+export const webhookRegisterSchema = z
+  .object({
+    url: z.string().url().max(500),
+    events: z.array(z.enum([
+      'convo.created',
+      'convo.updated',
+      'convo.assigned',
+      'convo.status',
+      'convo.tags',
+      'convo.custom-fields',
+      'convo.moved',
+      'convo.merged',
+      'convo.deleted',
+      'convo.customer.reply.created',
+      'convo.agent.reply.created',
+      'convo.note.created',
+      'satisfaction.ratings'
+    ])).min(1)
+  })
+  .strict();
+
+/** v1.4.0: demo webhook simulation (exercises the REAL HMAC + job path). */
+export const demoWebhookSchema = z
+  .object({
+    event: z.enum(['convo.created', 'convo.customer.reply.created', 'convo.agent.reply.created', 'convo.note.created']),
+    conversationRemoteId: z.number().int().optional(),
+    replyText: z.string().max(4000).optional()
+  })
+  .strict();
+
 export const knowledgeImportFileRequestSchema = z.object({
   path: z.string().min(1).max(1024),
   sourceName: z.string().max(200).optional(),

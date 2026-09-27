@@ -1,12 +1,13 @@
 import { type ReactNode, useState } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { Spinner, ErrorState, KV } from '../components/common/ui.js';
 import { useUiStore } from '../state/uiStore.js';
+import { useBusinessHours, type BusinessHoursRow } from '../api/hooks.js';
 import type { AppSettings } from '../../shared/types.js';
 
 export function SettingsPage(): ReactNode {
-  const [tab, setTab] = useState<'general' | 'helpscout' | 'lmstudio' | 'qdrant' | 'backups' | 'capability'>('general');
+  const [tab, setTab] = useState<'general' | 'helpscout' | 'lmstudio' | 'qdrant' | 'hours' | 'backups' | 'capability'>('general');
   const pushToast = useUiStore((s) => s.pushToast);
   const { data: settings, error: settingsError, refetch } = useQuery({ queryKey: ['settings'], queryFn: () => api.get<AppSettings>('/api/settings') });
   const { data: oauth } = useQuery({ queryKey: ['oauth-status'], queryFn: () => api.get<{ configured: boolean; authenticated: boolean; demo_mode: boolean; expires_at: string | null; me: { name: string; email: string | null } | null }>('/api/oauth/status') });
@@ -36,9 +37,9 @@ export function SettingsPage(): ReactNode {
         </div>
       </div>
       <div className="tabs">
-        {['general', 'helpscout', 'lmstudio', 'qdrant', 'backups', 'capability'].map((t) => (
+        {['general', 'helpscout', 'lmstudio', 'qdrant', 'hours', 'backups', 'capability'].map((t) => (
           <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t as typeof tab)}>
-            {t === 'general' ? 'Synchronization & AI' : t === 'capability' ? 'Capability matrix' : t === 'helpscout' ? 'Help Scout' : t === 'lmstudio' ? 'LM Studio' : t === 'qdrant' ? 'Qdrant' : 'Backups & export'}
+            {t === 'general' ? 'Synchronization & AI' : t === 'capability' ? 'Capability matrix' : t === 'helpscout' ? 'Help Scout' : t === 'lmstudio' ? 'LM Studio' : t === 'qdrant' ? 'Qdrant' : t === 'hours' ? 'Business hours' : 'Backups & export'}
           </button>
         ))}
       </div>
@@ -47,6 +48,7 @@ export function SettingsPage(): ReactNode {
       {tab === 'helpscout' ? <HelpScoutSettings oauth={oauth} pushToast={pushToast} /> : null}
       {tab === 'lmstudio' ? <LmStudioSettings lm={lm} pushToast={pushToast} /> : null}
       {tab === 'qdrant' ? <QdrantSettings qdrant={qdrant} pushToast={pushToast} /> : null}
+      {tab === 'hours' ? <BusinessHoursSettings pushToast={pushToast} /> : null}
       {tab === 'backups' ? <BackupsSettings backups={backups?.backups ?? []} refetch={refetchBackups} pushToast={pushToast} /> : null}
       {tab === 'capability' ? (
         <div className="card" style={{ padding: 0 }}>
@@ -311,6 +313,157 @@ function BackupsSettings({ backups, refetch, pushToast }: { backups: { file: str
       <p className="text-xs muted mt-16">
         Restore from the CLI: <span className="mono">npm run db:restore -- backups/&lt;file&gt;.db</span> (the app must be stopped). Exports contain customer data - handle carefully. See docs/BACKUP-RESTORE.md.
       </p>
+    </div>
+  );
+}
+
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const TIMEZONE_SUGGESTIONS = ['UTC', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'America/Santiago', 'Europe/London', 'Europe/Berlin', 'Europe/Stockholm', 'Asia/Kolkata', 'Asia/Tokyo', 'Australia/Sydney'];
+
+function minutesToHHMM(m: number | null): string {
+  if (m == null) return '';
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+function hhmmToMinutes(v: string): number | null {
+  const m = v.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 24 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/** v1.4.0: per-mailbox business hours + SLA targets editor. */
+function BusinessHoursSettings({ pushToast }: { pushToast: (t: { kind: 'success' | 'error' | 'warning' | 'info'; message: string }) => void }): ReactNode {
+  const qc = useQueryClient();
+  const { data, isLoading } = useBusinessHours();
+  const [editing, setEditing] = useState<BusinessHoursRow | null>(null);
+
+  const save = useMutation({
+    mutationFn: (input: { mailboxId: number; body: Record<string, unknown> }) => api.put<{ ok: boolean; message: string }>(`/api/settings/business-hours/${input.mailboxId}`, input.body),
+    onSuccess: (r) => {
+      pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
+      setEditing(null);
+      void qc.invalidateQueries({ queryKey: ['business-hours'] });
+      void qc.invalidateQueries({ queryKey: ['sla-report'] });
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
+
+  const clear = useMutation({
+    mutationFn: (mailboxId: number) => api.delete<{ ok: boolean; message: string }>(`/api/settings/business-hours/${mailboxId}`),
+    onSuccess: (r) => {
+      pushToast({ kind: 'success', message: r.message });
+      void qc.invalidateQueries({ queryKey: ['business-hours'] });
+      void qc.invalidateQueries({ queryKey: ['sla-report'] });
+    }
+  });
+
+  if (isLoading || !data) return <Spinner label="Loading business hours" />;
+
+  return (
+    <div className="card" style={{ maxWidth: 720 }}>
+      <h3 className="card-title">Business hours & SLA targets (per mailbox)</h3>
+      <p className="text-xs muted" style={{ marginTop: 0 }}>
+        SLA reports measure first-response and resolution times in <strong>business minutes</strong> - nights, weekends and non-configured weekdays contribute zero. Without a schedule the mailbox is measured in wall-clock minutes and labeled as such in Reports → SLA.
+      </p>
+      <table className="table">
+        <thead><tr><th>Mailbox</th><th>Schedule</th><th>First-response target</th><th></th></tr></thead>
+        <tbody>
+          {data.mailboxes.map((m) => (
+            <tr key={m.mailbox_id}>
+              <td><strong>{m.name}</strong></td>
+              <td className="text-xs">
+                {m.configured && m.days
+                  ? `${m.days.map((d) => DAY_LABELS[d]).join(' ')} · ${minutesToHHMM(m.start_minute)}–${minutesToHHMM(m.end_minute)} · ${m.timezone}`
+                  : <span className="badge">wall-clock (not configured)</span>}
+              </td>
+              <td className="text-xs">{m.first_response_target_min != null ? `${m.first_response_target_min} business min` : '—'}</td>
+              <td>
+                <div className="flex" style={{ gap: 4 }}>
+                  <button className="btn small" onClick={() => setEditing(m)}>Edit</button>
+                  {m.configured ? <button className="btn ghost small" onClick={() => clear.mutate(m.mailbox_id)}>Clear</button> : null}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.mailboxes.length === 0 ? <p className="muted text-sm" style={{ padding: '8px 0' }}>No mailboxes yet - run an initial sync first.</p> : null}
+      {editing ? <BusinessHoursEditor row={editing} onSave={(body) => save.mutate({ mailboxId: editing.mailbox_id, body })} onCancel={() => setEditing(null)} saving={save.isPending} /> : null}
+    </div>
+  );
+}
+
+function BusinessHoursEditor({ row, onSave, onCancel, saving }: { row: BusinessHoursRow; onSave: (body: Record<string, unknown>) => void; onCancel: () => void; saving: boolean }): ReactNode {
+  const [timezone, setTimezone] = useState(row.timezone ?? 'UTC');
+  const [days, setDays] = useState<number[]>(row.days ?? [1, 2, 3, 4, 5]);
+  const [start, setStart] = useState(minutesToHHMM(row.start_minute ?? 540));
+  const [end, setEnd] = useState(minutesToHHMM(row.end_minute ?? 1020));
+  const [frTarget, setFrTarget] = useState<string>(row.first_response_target_min != null ? String(row.first_response_target_min) : '');
+  const [resTarget, setResTarget] = useState<string>(row.resolution_target_min != null ? String(row.resolution_target_min) : '');
+
+  const toggleDay = (d: number): void => {
+    setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort((a, b) => a - b)));
+  };
+
+  const submit = (): void => {
+    const startMin = hhmmToMinutes(start);
+    const endMin = hhmmToMinutes(end);
+    if (startMin == null || endMin == null || endMin <= startMin) return;
+    onSave({
+      timezone,
+      days,
+      start_minute: startMin,
+      end_minute: endMin,
+      first_response_target_min: frTarget.trim() !== '' && Number.isFinite(Number(frTarget)) && Number(frTarget) > 0 ? Number(frTarget) : null,
+      resolution_target_min: resTarget.trim() !== '' && Number.isFinite(Number(resTarget)) && Number(resTarget) > 0 ? Number(resTarget) : null
+    });
+  };
+
+  return (
+    <div className="mt-16" style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+      <strong className="text-sm">Business hours for {row.name}</strong>
+      <div className="form-row mt-8">
+        <label className="field" htmlFor="bh-tz">Timezone (IANA)</label>
+        <input id="bh-tz" className="input mono" list="bh-tz-list" value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Europe/Berlin" />
+        <datalist id="bh-tz-list">
+          {TIMEZONE_SUGGESTIONS.map((t) => <option key={t} value={t} />)}
+        </datalist>
+      </div>
+      <div className="form-row">
+        <label className="field">Active weekdays</label>
+        <div className="flex wrap" style={{ gap: 4 }}>
+          {DAY_LABELS.map((d, i) => (
+            <button key={d} className={`btn small ${days.includes(i) ? 'primary' : ''}`} aria-pressed={days.includes(i)} onClick={() => toggleDay(i)}>{d}</button>
+          ))}
+        </div>
+      </div>
+      <div className="grid-2">
+        <div className="form-row">
+          <label className="field" htmlFor="bh-start">Day starts</label>
+          <input id="bh-start" type="time" className="input" value={start} onChange={(e) => setStart(e.target.value)} />
+        </div>
+        <div className="form-row">
+          <label className="field" htmlFor="bh-end">Day ends</label>
+          <input id="bh-end" type="time" className="input" value={end} onChange={(e) => setEnd(e.target.value)} />
+        </div>
+      </div>
+      <div className="grid-2">
+        <div className="form-row">
+          <label className="field" htmlFor="bh-fr">First-response SLA target (business minutes, blank = none)</label>
+          <input id="bh-fr" type="number" min={1} className="input" value={frTarget} onChange={(e) => setFrTarget(e.target.value)} placeholder="e.g. 240 for 4 business hours" />
+        </div>
+        <div className="form-row">
+          <label className="field" htmlFor="bh-res">Resolution SLA target (business minutes, blank = none)</label>
+          <input id="bh-res" type="number" min={1} className="input" value={resTarget} onChange={(e) => setResTarget(e.target.value)} placeholder="e.g. 2880 for 2 business days" />
+        </div>
+      </div>
+      <div className="flex mt-8">
+        <button className="btn primary" onClick={submit} disabled={saving || days.length === 0}>Save schedule</button>
+        <button className="btn ghost" onClick={onCancel}>Cancel</button>
+      </div>
     </div>
   );
 }

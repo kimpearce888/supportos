@@ -34,6 +34,23 @@ export async function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppCont
 
   app.get('/api/analytics/ai', async () => ctx.analytics.aiAnalytics());
 
+  // v1.4.0: SLA + business-hours report (per mailbox, business minutes)
+  app.get('/api/reports/sla', async (request, reply) => {
+    const q = request.query as Record<string, string>;
+    const days = q.days ? Number(q.days) : 30;
+    let mailboxIds: number[] | null = null;
+    if (q.mailboxIds != null && q.mailboxIds !== '') {
+      mailboxIds = q.mailboxIds.split(',').map((t) => Number(t.trim()));
+      if (mailboxIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'mailboxIds must be a comma-separated list of positive integers.' });
+        return;
+      }
+    }
+    const from = q.from ?? isoDaysAgo(days);
+    const to = q.to ?? new Date().toISOString();
+    return ctx.sla.slaReport(from, to, mailboxIds);
+  });
+
   // Support intelligence reports (spec #49)
   app.get('/api/reports/why-contacting', async (request) => {
     const q = request.query as Record<string, string>;

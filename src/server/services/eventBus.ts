@@ -36,10 +36,22 @@ export interface SyncCompletedEvent {
   at: string;
 }
 
+/** v1.4.0: a single conversation changed in the mirror (webhook push, manual refresh or sync). */
+export interface ConversationUpdatedEvent {
+  conversationId: number | null;
+  conversationNumber: number | null;
+  mailboxId: number | null;
+  subject: string | null;
+  /** Where the update came from - lets the UI phrase toasts honestly. */
+  reason: 'webhook' | 'sync' | 'manual';
+  at: string;
+}
+
 export interface ServerEventMap {
   'rating-received': RatingReceivedEvent;
   'ratings-refreshed': RatingsRefreshedEvent;
   'sync-completed': SyncCompletedEvent;
+  'conversation-updated': ConversationUpdatedEvent;
 }
 
 type Handler<K extends keyof ServerEventMap> = (payload: ServerEventMap[K]) => void;

@@ -48,14 +48,17 @@ Help Scout rate limits per account (plan-dependent). SupportOS:
 - tracks `X-RateLimit-Limit-Minute` / `X-RateLimit-Remaining-Minute` / `X-RateLimit-Retry-After`, counts writes double, applies a safety margin, and backs off automatically on 429
 - never hammers: background sync is serialized and concurrency is configurable (Settings)
 
-## Webhooks (optional)
+## Webhooks (optional — conversation push since v1.4.0)
 
 Endpoint: `POST /api/webhooks/helpscout`
 
 - Signature: `X-HelpScout-Signature` = **base64(HMAC-SHA1(raw body, secret))** — verified with a timing-safe comparison on the **raw** body
 - Events are persisted first, acknowledged fast (200), processed **asynchronously**; duplicates are deduplicated by event hash; processing is idempotent
 - Supported current V2 payload events: `convo.*` (created/updated/assigned/status/tags/custom-fields/moved/merged/deleted/customer reply/agent reply/note/AI answers), `customer.*`, `organization.*`, `satisfaction.ratings`, `tag.*`, `user.status.changed`
-- **A localhost application cannot receive external webhooks directly** — you need a network-accessible relay (e.g. a tiny HTTPS forwarder) pointed at your local instance. Polling remains the primary sync mechanism either way; the app is fully functional with webhooks disabled.
+- **Registration from the app (v1.4.0)**: with `HELPSCOUT_WEBHOOK_SECRET` set, `POST /api/webhooks/register {"url": "https://your-relay/hook", "events": [...]}` creates the webhook in Help Scout with that secret (Sync Health → Webhook push has a UI for this); `DELETE /api/webhooks/:remoteId` removes it
+- **Push semantics (v1.4.0)**: a `convo.*` event enqueues a single-conversation sync tagged `source: "webhook"`; when the sync lands, an SSE `conversation-updated` event (id/number/mailbox/subject + `reason: "webhook"`) is pushed to every connected client on `/api/events` — the inbox updates within seconds. Persisted-but-unprocessed events are drained automatically on restart.
+- **A localhost application cannot receive external webhooks directly** — you need a network-accessible relay (e.g. a tiny HTTPS forwarder) pointed at your local instance. Polling remains the fallback and reconciliation keeps the mirror honest either way; the app is fully functional with webhooks disabled.
+- Demo mode: `POST /api/demo/simulate-webhook` drives an event through the exact production path (HMAC-signed self-POST → persist → dedup → job → worker → mirror → SSE), so you can watch the push pipeline work end-to-end without a relay.
 
 ## Error handling
 

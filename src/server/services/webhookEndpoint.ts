@@ -82,7 +82,7 @@ export class WebhookEndpoint {
         case 'convo.agent.reply.created':
         case 'convo.note.created':
         case 'convo.ai-answers.created':
-          if (conversationId) this.jobs.enqueue('sync', 'sync_conversation', { remoteId: conversationId }, 2, 3);
+          if (conversationId) this.jobs.enqueue('sync', 'sync_conversation', { remoteId: conversationId, source: 'webhook' }, 2, 3);
           break;
         case 'convo.merged':
           if (conversationId) this.jobs.enqueue('sync', 'sync_conversation_merge', { remoteId: conversationId }, 2, 3);

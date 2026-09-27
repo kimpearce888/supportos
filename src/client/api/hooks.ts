@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client.js';
-import type { ConversationSummary, ConversationListResponse, DashboardStats, DocsCollectionInfo, DocsArticleSummary, DocsArticleDetail, DocsStats } from '../../shared/types.js';
+import type { ConversationSummary, ConversationListResponse, DashboardStats, DocsCollectionInfo, DocsArticleSummary, DocsArticleDetail, DocsStats, DocsSearchResponse, SlaReportInfo } from '../../shared/types.js';
 
 export function useConversations(view: string, page: number, tag?: string | null, channel?: string | null) {
   return useQuery({
@@ -107,6 +107,42 @@ export function useDocsArticle(id: number | null) {
     queryFn: () => api.get<{ article: DocsArticleDetail }>(`/api/docs/articles/${id}`),
     enabled: id != null && id > 0
   });
+}
+
+/** v1.4.0: hybrid docs search (FTS5 + semantic when embeddings exist). */
+export function useDocsSearch(q: string, semantic: boolean) {
+  return useQuery({
+    queryKey: ['docs', 'search', q, semantic],
+    queryFn: () =>
+      api.get<DocsSearchResponse>(
+        `/api/docs/search?q=${encodeURIComponent(q)}&semantic=${semantic ? '1' : '0'}&limit=25`
+      ),
+    enabled: q.trim().length > 0
+  });
+}
+
+/** v1.4.0: SLA report (per mailbox, business minutes). */
+export function useSlaReport(days: number) {
+  return useQuery({
+    queryKey: ['sla-report', days],
+    queryFn: () => api.get<SlaReportInfo>(`/api/reports/sla?days=${days}`)
+  });
+}
+
+export interface BusinessHoursRow {
+  mailbox_id: number;
+  name: string;
+  configured: boolean;
+  timezone: string | null;
+  days: number[] | null;
+  start_minute: number | null;
+  end_minute: number | null;
+  first_response_target_min: number | null;
+  resolution_target_min: number | null;
+}
+
+export function useBusinessHours() {
+  return useQuery({ queryKey: ['business-hours'], queryFn: () => api.get<{ mailboxes: BusinessHoursRow[] }>('/api/settings/business-hours') });
 }
 
 // ---------------- Client Interaction Intelligence ----------------

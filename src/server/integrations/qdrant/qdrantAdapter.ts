@@ -4,7 +4,7 @@ export interface VectorPoint {
   id: number; // deterministic numeric id from entity mapping
   vector: number[];
   payload: {
-    entity_type: 'conversation' | 'thread' | 'knowledge_chunk' | 'known_issue' | 'saved_reply' | 'support_case';
+    entity_type: 'conversation' | 'thread' | 'knowledge_chunk' | 'known_issue' | 'saved_reply' | 'support_case' | 'docs_chunk';
     entity_id: number;
     chunk_id?: number | null;
     title: string;
