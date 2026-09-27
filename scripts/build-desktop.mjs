@@ -137,7 +137,9 @@ async function downloadNode(url, label) {
   execFileSync('tar', ['-xf', file, '-C', tmp]);
   const extractedDir = fs.readdirSync(tmp).find((e) => e.startsWith(`node-v${NODE_VERSION}`));
   if (!extractedDir) throw new Error(`extraction produced no node dir in ${tmp}`);
-  return path.join(tmp, extractedDir, 'bin', platform === 'win32' ? 'node.exe' : 'node');
+  // Layout differs: tarballs put the binary in bin/, the Windows zip at the root.
+  const binRelative = platform === 'win32' ? ['node.exe'] : ['bin', platform === 'win32' ? 'node.exe' : 'node'];
+  return path.join(tmp, extractedDir, ...binRelative);
 }
 
 async function fetchNodeRuntime() {
