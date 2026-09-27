@@ -8,7 +8,7 @@ on:
 
 jobs:
   verify:
-    name: Lint, Typecheck, Test, Build
+    name: Lint, Typecheck, Build, Test, Smoke
     runs-on: ubuntu-latest
 
     steps:
@@ -30,14 +30,15 @@ jobs:
       - name: Typecheck (strict)
         run: npm run typecheck
 
-      - name: Unit + Integration + E2E tests
-        run: npm run test:all
-
+      # E2E tests boot the real server and expect the built SPA in dist/client,
+      # so the production build must exist before running the suite.
       - name: Production build
         run: npm run build
 
+      - name: Unit + Integration + E2E tests
+        run: npm run test:all
+
       - name: Smoke test (server boots in demo mode)
         run: |
-          cp .env.example .env
-          PORT=3999 timeout 25 node dist/server/index.js & sleep 8
-          curl -sf http://127.0.0.1:3999/api/health > /dev/null && echo "HEALTH OK"
+          LOCAL_DEMO_MODE=true PORT=3999 HOST=127.0.0.1 timeout 25 node dist/server/index.js & sleep 8
+          curl -sf http://127.0.0.1:3999/health | tee /dev/stderr | rg -q '"status":"ok"' && echo "HEALTH OK"
