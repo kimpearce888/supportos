@@ -111,7 +111,7 @@ export class AiToolRegistry {
             `SELECT COUNT(*) AS conversations,
               SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
               SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed
-             FROM conversations WHERE deleted_at IS NULL AND remote_created_at >= datetime('now', '-' || ? || ' days')`
+             FROM conversations WHERE deleted_at IS NULL AND julianday(remote_created_at) >= julianday('now', '-' || ? || ' days')`
           )
           .get(days) as Record<string, number>;
         return { window_days: days, ...r };

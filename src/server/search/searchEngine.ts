@@ -44,7 +44,7 @@ export class SearchEngine {
       args.tag = filters.tag;
     }
     if (filters.since_days) {
-      where.push("c.remote_created_at >= datetime('now', '-' || @days || ' days')");
+      where.push("julianday(c.remote_created_at) >= julianday('now', '-' || @days || ' days')");
       args.days = filters.since_days;
     }
     if (filters.assignee_id) {

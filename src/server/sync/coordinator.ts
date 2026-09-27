@@ -122,7 +122,13 @@ export class SyncCoordinator {
     const results: ResourceSyncResult[] = [];
     try {
       // 1. Reference data refresh (cheap) + docs mirror (separate Docs API key)
-      for (const resource of ['mailboxes', 'folders', 'tags', 'users', 'workflows', 'saved_replies', 'inbox_fields', 'docs_collections', 'docs_articles']) {
+      // v1.6.0 audit fix: organizations and both property-definition sets used to
+      // sync ONLY during the initial pass - a property or org created later in
+      // Help Scout never appeared locally, which silently starved segmentation
+      // (conditions on those properties could never match). They join the cheap
+      // incremental refresh now, still ordered before the customers pass so
+      // customer rows can resolve their organization FK.
+      for (const resource of ['mailboxes', 'folders', 'tags', 'users', 'teams', 'workflows', 'saved_replies', 'inbox_fields', 'customer_property_definitions', 'organization_property_definitions', 'organizations', 'docs_collections', 'docs_articles']) {
         if (this.cancellationRequested) break;
         const r = await this.syncResource(resource, false);
         results.push(r);
@@ -685,8 +691,14 @@ export class SyncCoordinator {
       const localThreads = this.db.prepare('SELECT id, remote_id FROM threads WHERE conversation_id = ? AND remote_id IS NOT NULL').all(local.id) as { id: number; remote_id: number }[];
       const stale = localThreads.filter((lt) => !seenRemoteIds.has(lt.remote_id));
       if (stale.length > 0) {
+        // v1.6.0 audit fix (FTS drift): hard-deleting threads without cleaning
+        // fts_threads left ghost search hits for messages that no longer exist.
         const del = this.db.prepare('DELETE FROM threads WHERE id = ?');
-        const tx = this.db.transaction(() => stale.forEach((s) => del.run(s.id)));
+        const delFts = this.db.prepare('DELETE FROM fts_threads WHERE thread_id = ?');
+        const tx = this.db.transaction(() => stale.forEach((s) => {
+          delFts.run(s.id);
+          del.run(s.id);
+        }));
         tx();
       }
     }

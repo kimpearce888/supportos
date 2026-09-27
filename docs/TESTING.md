@@ -29,7 +29,7 @@ Documented honestly rather than claimed: connecting a real Help Scout account, r
 - `tests/integration/interaction.test.ts` — full engine over the real sync engine: returning vs first-time clients, change directions vs baseline, preference overfit guard (3+ observations), human override precedence + revert, outcome metrics, repeat-issue detection, profile/playbook assembly
 - e2e — all six `/api/interaction/*` endpoints over the real Fastify app, including the 422 validation path, safety labeling and 404s
 
-Total: 259 tests (`npm run test:all`).
+Total: 288 tests (`npm run test:all`).
 
 ## v1.2.0 audit regression tests
 
@@ -47,3 +47,15 @@ Total: 259 tests (`npm run test:all`).
 - `tests/unit/docsSemantic.test.ts` — RRF fusion (both-retriever articles outrank single-retriever hits, provenance labels, limits, determinism) and cosine similarity (identical/orthogonal/opposite, Float32 buffer views of stored embeddings)
 - `tests/integration/v14_features.test.ts` — docs chunking + idempotent re-sync + embedding round-trip + job wiring; business-hours storage round-trip; SLA report before/after configuration (24/7 schedule ⇒ business minutes equal wall minutes) + scope filter; webhook drainPending; and **REGRESSION tests for the two latent job-queue bugs** (run_at ISO-vs-SQLite format, claimNext returning unparsed JSON payloads) that had silently disabled the whole job pipeline at runtime since v1.0.0
 - `tests/e2e/v14_features.e2e.test.ts` — the full webhook push over the wire: `simulate-webhook` HMAC-self-POSTs to the production endpoint, the worker claims the job within one 2s tick, the mirror gains the thread, and the open SSE stream delivers a `conversation` event with `reason: "webhook"`; plus created-conversation appearance, 422 paths, hybrid docs-search flags and mode notes, and the SLA report before/after business-hours configuration
+
+## v1.5.0 — segmentation, outreach, ticket vectors, SLA alerts, encrypted sync
+
+- `tests/integration/v15_features.test.ts` — segment-engine critical semantics (the spec's #60-#62 test cases: conversation-level ALL/ANY/NONE before contact resolution, "open = 0" over all customers, absence-as-emptiness semantics for properties), campaign lifecycle / duplicate-send refusal / DNC enforcement / personalization mirror, the ticket-chunk state machine, SLA-alert computation before/after business-hours configuration, and the encrypted-sync round trip (export → verify → import, wrong-passphrase refusal, tamper detection)
+- `tests/e2e/v15_features.e2e.test.ts` — the full campaign flow over HTTP with SSE progress events, segment CRUD, DNC add/remove, SLA alerts before/after config, hybrid ticket search with honest mode notes, and encrypted-bundle upload rejection paths
+- `tests/integration/audit-v15.test.ts` — regression locks for the 7 findings of the first v1.5 neutral audit (recursion-depth caps, mid-batch crash recovery, aggregate counts, property-backfill shape acceptance, conversation-id link resolution)
+
+## v1.6.0 — the second neutral audit (three adversarial passes + human-like testing)
+
+- `tests/integration/audit-v16.test.ts` — locks the audit's data-layer findings: the outreach send-queue **livelock** (attempts-capped rows swept to failed, not re-enqueued forever), **Retry failed resets the attempt budget**, **re-upserting an unchanged article preserves its chunk embeddings** (content-hash gating), approval jobs **parked then approved then executed** (never silently dropped), **absence IS emptiness** for `is_empty` segment conditions, **two brand-new tags in one update both persist** (monotonic local ids), **backup pruning** keeps only the newest N, the ratings worker **fetches and stores the real rating** (reads conversationId, not the phantom remoteId), and **incremental sync refreshes organizations + property definitions**
+- `tests/e2e/audit-v16.e2e.test.ts` — clean-response probes for every crash input the server-core audit found (`?page=abc`, `?pageSize=xyz`, `?days=abc`, `?limit=abc` all 200 with fallbacks; missing/mistyped bodies all 400/422; the 2MB FTS killer now 422; queue retry/cancel 404 on nonsense ids; knowledge import confined to `knowledge-import/`), outreach sends enqueue the single-conversation mirror sync immediately, the **rate limiter keys on the socket address** (310 rotating-X-Forwarded-For requests share ONE budget and throttle), and — the finding of the human-like pass — **write-behind bulk writes notify clients**: bulk tag over HTTP → worker tick → `conversation` SSE frame on the open stream → tag visible in the conversation payload
+- `scripts/audit-phase1.mjs` — the 320-check black-box audit script (malformed bodies, injection-shaped trees, depth attacks, hostile campaign creation, path traversal, wrong-passphrase/tampered bundles, rate limiting, log hygiene) is committed so anyone can re-run the whole audit against their own instance: `node scripts/audit-phase1.mjs`

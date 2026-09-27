@@ -367,7 +367,7 @@ export class AiPipeline {
       .prepare(
         `SELECT c.id, c.number, c.subject, c.preview,
            (SELECT GROUP_CONCAT(t.name) FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = c.id) AS tags
-         FROM conversations c WHERE c.deleted_at IS NULL AND c.remote_created_at >= datetime('now', '-' || @days || ' days') ORDER BY c.number`
+         FROM conversations c WHERE c.deleted_at IS NULL AND julianday(c.remote_created_at) >= julianday('now', '-' || @days || ' days') ORDER BY c.number`
       )
       .all({ days }) as { id: number; number: number; subject: string | null; preview: string | null; tags: string | null }[];
     if (conversations.length < 3) return { clusters: [] };

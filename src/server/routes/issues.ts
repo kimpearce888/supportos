@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
+import { z } from 'zod';
 
 export async function registerIssueRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/api/issues/clusters', async () => ({ clusters: ctx.issueRepo.listClusters() }));
@@ -27,20 +28,23 @@ export async function registerIssueRoutes(app: FastifyInstance, ctx: AppContext)
   app.get('/api/issues/known', async () => ({ known_issues: ctx.issueRepo.listKnownIssues() }));
 
   app.post('/api/issues/known', async (request) => {
-    const body = request.body as {
-      title: string;
-      symptoms?: string;
-      product?: string | null;
-      feature?: string | null;
-      known_cause?: string | null;
-      workaround?: string | null;
-      customer_safe_explanation?: string | null;
-      internal_explanation?: string | null;
-      status?: string;
-      conversation_ids?: number[];
-      provenance?: 'human_local' | 'ai_generated';
-    };
-    if (!body.title) return { ok: false, message: 'A title is required.' };
+    // v1.6.0 audit fix: the loose cast let numeric/garbage fields through (a
+    // numeric title was stored verbatim) and a missing body crashed. zod now.
+    const body = z
+      .object({
+        title: z.string().min(1).max(300),
+        symptoms: z.string().max(5000).optional(),
+        product: z.string().max(200).nullable().optional(),
+        feature: z.string().max(200).nullable().optional(),
+        known_cause: z.string().max(10000).nullable().optional(),
+        workaround: z.string().max(10000).nullable().optional(),
+        customer_safe_explanation: z.string().max(10000).nullable().optional(),
+        internal_explanation: z.string().max(20000).nullable().optional(),
+        status: z.enum(['open', 'investigating', 'identified', 'monitoring', 'resolved']).optional(),
+        conversation_ids: z.array(z.number().int().positive()).optional(),
+        provenance: z.enum(['human_local', 'ai_generated']).optional()
+      })
+      .parse(request.body ?? {});
     const id = ctx.issueRepo.createKnownIssue(body);
     ctx.jobsRepo.audit({ actor: 'user', action: 'known_issue_created', after_state: { id, title: body.title } });
     return { ok: true, message: 'Known issue created.', id };
@@ -59,7 +63,7 @@ export async function registerIssueRoutes(app: FastifyInstance, ctx: AppContext)
   });
 
   app.patch('/api/issues/known/:id', async (request) => {
-    const raw = request.body as Record<string, unknown>;
+    const raw = (request.body ?? {}) as Record<string, unknown>;
     const patch: Partial<{ title: string; symptoms: string; product: string | null; feature: string | null; known_cause: string | null; workaround: string | null; customer_safe_explanation: string | null; internal_explanation: string | null; status: string }> = {};
     for (const key of ['title', 'symptoms', 'product', 'feature', 'known_cause', 'workaround', 'customer_safe_explanation', 'internal_explanation', 'status']) {
       if (key in raw) {
@@ -91,8 +95,9 @@ export async function registerIssueRoutes(app: FastifyInstance, ctx: AppContext)
   });
 
   app.post('/api/issues/known/:id/refs', async (request) => {
-    const body = request.body as { system: string; reference_id: string; url?: string; title?: string; status?: string; notes?: string };
-    if (!body.system || !body.reference_id) return { ok: false, message: 'system and reference_id are required.' };
+    const body = z
+      .object({ system: z.string().min(1).max(100), reference_id: z.string().min(1).max(200), url: z.string().max(2000).optional(), title: z.string().max(500).optional(), status: z.string().max(100).optional(), notes: z.string().max(5000).optional() })
+      .parse(request.body ?? {});
     ctx.issueRepo.addEngineeringRef(Number((request.params as { id: string }).id), body);
     return { ok: true, message: 'Engineering reference added.' };
   });

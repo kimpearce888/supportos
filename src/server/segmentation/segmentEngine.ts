@@ -135,7 +135,13 @@ export class SegmentEngine {
     const val = (c.value ?? '').trim();
     switch (c.op) {
       case 'is_empty':
-        return this.ids(`SELECT cp.customer_id AS cid FROM customer_properties cp WHERE cp.definition_id = ? AND (cp.value IS NULL OR cp.value = '')`, [c.definitionId]);
+        // v1.6.0 audit fix: "Plan is empty" must include customers with NO property
+        // row at all (the common case - the property was never set), not only rows
+        // stored as NULL/''. Absence IS emptiness.
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND c.id NOT IN (SELECT cp.customer_id FROM customer_properties cp WHERE cp.definition_id = ? AND cp.value IS NOT NULL AND cp.value <> '')`,
+          [c.definitionId]
+        );
       case 'is_not_empty':
         return this.ids(`SELECT cp.customer_id AS cid FROM customer_properties cp WHERE cp.definition_id = ? AND cp.value IS NOT NULL AND cp.value <> ''`, [c.definitionId]);
       case 'equals':
@@ -317,11 +323,11 @@ export class SegmentEngine {
       }
     }
     if (t.createdWithinDays != null && Number.isFinite(t.createdWithinDays)) {
-      where.push(`c.remote_created_at >= datetime('now', ?)`);
+      where.push(`julianday(c.remote_created_at) >= julianday('now', ?)`);
       params.push(`-${Math.max(0, t.createdWithinDays)} days`);
     }
     if (t.modifiedWithinDays != null && Number.isFinite(t.modifiedWithinDays)) {
-      where.push(`COALESCE(c.remote_updated_at, c.remote_created_at) >= datetime('now', ?)`);
+      where.push(`julianday(COALESCE(c.remote_updated_at, c.remote_created_at)) >= julianday('now', ?)`);
       params.push(`-${Math.max(0, t.modifiedWithinDays)} days`);
     }
     if (t.numberMin != null && Number.isFinite(t.numberMin)) {
@@ -380,12 +386,12 @@ export class SegmentEngine {
         return this.ids(`SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND ${countCond(" AND cv.status = 'closed'")}`, [v]);
       case 'last_contact_within_days':
         return this.ids(
-          `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c JOIN customers cu ON cu.id = c.customer_local_id WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND COALESCE(c.last_activity_at, c.remote_created_at) >= datetime('now', ?)`,
+          `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c JOIN customers cu ON cu.id = c.customer_local_id WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND julianday(COALESCE(c.last_activity_at, c.remote_created_at)) >= julianday('now', ?)`,
           [`-${Math.max(0, v)} days`]
         );
       case 'first_contact_before_days':
         return this.ids(
-          `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c JOIN customers cu ON cu.id = c.customer_local_id WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND c.remote_created_at < datetime('now', ?)`,
+          `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c JOIN customers cu ON cu.id = c.customer_local_id WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND julianday(c.remote_created_at) < julianday('now', ?)`,
           [`-${Math.max(0, v)} days`]
         );
       default:
@@ -401,7 +407,7 @@ export class SegmentEngine {
         `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c
            JOIN conversation_tags ct ON ct.conversation_id = c.id JOIN tags tg ON tg.id = ct.tag_local_id
            JOIN customers cu ON cu.id = c.customer_local_id
-         WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND LOWER(tg.name) = ? AND c.remote_created_at >= datetime('now', ?)`,
+         WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND LOWER(tg.name) = ? AND julianday(c.remote_created_at) >= julianday('now', ?)`,
         [tag, `-${Math.max(0, h.withinDays)} days`]
       );
     }
@@ -560,11 +566,11 @@ export class SegmentEngine {
       params.push(...statuses);
     }
     if (t.createdWithinDays != null && Number.isFinite(t.createdWithinDays)) {
-      where.push(`c.remote_created_at >= datetime('now', ?)`);
+      where.push(`julianday(c.remote_created_at) >= julianday('now', ?)`);
       params.push(`-${Math.max(0, t.createdWithinDays)} days`);
     }
     if (t.modifiedWithinDays != null && Number.isFinite(t.modifiedWithinDays)) {
-      where.push(`COALESCE(c.remote_updated_at, c.remote_created_at) >= datetime('now', ?)`);
+      where.push(`julianday(COALESCE(c.remote_updated_at, c.remote_created_at)) >= julianday('now', ?)`);
       params.push(`-${Math.max(0, t.modifiedWithinDays)} days`);
     }
     const tags = (t.tags ?? []).map((s) => s.trim()).filter(Boolean);

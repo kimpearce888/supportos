@@ -18,6 +18,7 @@ import { migration006 } from '../../src/server/database/migrations/006_interacti
 import { migration007 } from '../../src/server/database/migrations/007_channels_docs.js';
 import { migration008 } from '../../src/server/database/migrations/008_semantic_docs_sla.js';
 import { migration009 } from '../../src/server/database/migrations/009_outreach_semantic_sync.js';
+import { migration010 } from '../../src/server/database/migrations/010_audit_hardening.js';
 import { CampaignService } from '../../src/server/outreach/campaignService.js';
 import { ConversationRepository } from '../../src/server/database/repositories/conversationRepo.js';
 import { getContext, resetContext } from '../../src/server/services/context.js';
@@ -56,6 +57,8 @@ describe('neutral audit phase 3: v1.4 -> v1.5 upgrade', () => {
     // ---- THE UPGRADE (runs at boot, before any sync) ----
     migration009.up(db);
     migration009.up(db); // idempotency: a double-run must not throw or duplicate
+    migration010.up(db); // v1.6.0 hardening (docs content_hash + embedding attempts)
+    migration010.up(db); // idempotency
 
     // Rows survived; new columns are NULL on old rows (not garbage)
     expect((db.prepare('SELECT COUNT(*) AS n FROM conversations').get() as { n: number }).n).toBe(conversationsBefore);

@@ -47,7 +47,11 @@ export const useUiStore = create<UiState>((set) => ({
     set((s) => {
       const id = toastId++;
       setTimeout(() => set((s2) => ({ toasts: s2.toasts.filter((x) => x.id !== id) })), t.kind === 'error' ? 10000 : 5000);
-      return { toasts: [...s.toasts, { ...t, id }] };
+      // v1.6.0 audit fix: the toast stack was unbounded - a burst of errors (or
+      // a tight event loop) stacked hundreds of toasts over the UI. Keep the
+      // newest 5; older ones are dismissed.
+      const next = [...s.toasts, { ...t, id }];
+      return { toasts: next.length > 5 ? next.slice(next.length - 5) : next };
     }),
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
 }));

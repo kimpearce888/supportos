@@ -9,8 +9,9 @@ import { migration006 } from './006_interaction_integrity.js';
 import { migration007 } from './007_channels_docs.js';
 import { migration008 } from './008_semantic_docs_sla.js';
 import { migration009 } from './009_outreach_semantic_sync.js';
+import { migration010 } from './010_audit_hardening.js';
 
-export const migrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009];
+export const migrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010];
 
 export function applyMigrations(db: DB): { applied: number; total: number } {
   return runMigrations(db, migrations);

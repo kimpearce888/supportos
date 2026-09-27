@@ -41,6 +41,9 @@ export class ConversationOperations {
     this.ai = new AiRepository(db);
   }
 
+  /** Shared coordinator (bound by AppContext; see refreshOne). */
+  private sharedCoordinator: { syncSingleConversation(remoteId: number): Promise<boolean> } | null = null;
+
   private requireAuth(): { ok: false; message: string } | null {
     if (this.provider.kind === 'fake') return null; // demo mode always "authenticated"
     const tokens = this.settings.getOAuthTokens();
@@ -502,8 +505,22 @@ export class ConversationOperations {
 
   /** Refresh one conversation from remote (used after writes + manual refresh button). */
   async refreshOne(remoteId: number): Promise<void> {
+    // v1.6.0 audit fix: this used to instantiate a PRIVATE SyncCoordinator on
+    // every call, bypassing the shared instance the rest of the app uses (and
+    // rebuilding its dependency graph per refresh). When the app context has
+    // bound the shared coordinator, use it - syncSingleConversation is the same
+    // concurrency-safe path webhooks already use.
+    if (this.sharedCoordinator) {
+      await this.sharedCoordinator.syncSingleConversation(remoteId);
+      return;
+    }
     const { SyncCoordinator } = await import('../sync/coordinator.js');
     const coordinator = new SyncCoordinator(this.db, this.provider);
     await coordinator.syncSingleConversation(remoteId);
+  }
+
+  /** Bound by AppContext so single-conversation refreshes reuse the shared coordinator. */
+  bindCoordinator(coordinator: { syncSingleConversation(remoteId: number): Promise<boolean> }): void {
+    this.sharedCoordinator = coordinator;
   }
 }

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { BookOpen, FilePlus2, Trash2, RefreshCw, FileText } from 'lucide-react';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState, RelativeTime, KV } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, RelativeTime, KV } from '../components/common/ui.js';
 import { Modal } from '../components/common/overlays.js';
 import { useUiStore } from '../state/uiStore.js';
 
@@ -33,7 +33,9 @@ export function KnowledgePage(): ReactNode {
     setSearchParams(next, { replace: true });
   };
   const pushToast = useUiStore((s) => s.pushToast);
-  const { data, refetch, isFetching } = useQuery({ queryKey: ['knowledge-docs'], queryFn: () => api.get<{ documents: KnowledgeDoc[] }>('/api/knowledge/documents') });
+  // v1.6.0 audit fix: the document list query had no error state - a failed
+  // fetch showed neither list nor error.
+  const { data, refetch, isFetching, isError, error } = useQuery({ queryKey: ['knowledge-docs'], queryFn: () => api.get<{ documents: KnowledgeDoc[] }>('/api/knowledge/documents') });
   const { data: sources } = useQuery({ queryKey: ['knowledge-sources'], queryFn: () => api.get<{ sources: { id: number; name: string; kind: string; visibility: string; document_count: number }[] }>('/api/knowledge/sources') });
   const { data: importable } = useQuery({ queryKey: ['knowledge-importable'], queryFn: () => api.get<{ dir: string; files: string[] }>('/api/knowledge/importable') });
 
@@ -61,12 +63,15 @@ export function KnowledgePage(): ReactNode {
     onSuccess: () => {
       pushToast({ kind: 'success', message: 'Document deleted.' });
       void refetch();
-    }
+    },
+    // v1.6.0 audit fix: failed deletes/reindexes were silent no-ops.
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
   });
 
   const reindex = useMutation({
     mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/knowledge/reindex'),
-    onSuccess: (r) => pushToast({ kind: 'success', message: r.message })
+    onSuccess: (r) => pushToast({ kind: 'success', message: r.message }),
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
   });
 
   return (
@@ -89,7 +94,8 @@ export function KnowledgePage(): ReactNode {
       {tab === 'documents' ? (
         <>
           {isFetching && !data ? <Spinner /> : null}
-          {data && data.documents.length === 0 ? (
+          {isError ? <ErrorState message="Could not load documents." detail={error instanceof Error ? error.message : undefined} /> : null}
+          {data && data.documents.length === 0 && !isError ? (
             <EmptyState icon="knowledge" title="No knowledge documents yet" hint="Import Markdown/TXT/CSV/JSON/HTML/PDF/DOCX files or paste content directly. Knowledge feeds AI drafts and search." />
           ) : null}
           <div className="card" style={{ padding: 0 }}>
@@ -104,7 +110,7 @@ export function KnowledgePage(): ReactNode {
                     <td>{d.chunk_count}</td>
                     <td><RelativeTime iso={d.updated_at} /></td>
                     <td>
-                      <button className="btn ghost small" aria-label={`Delete ${d.title}`} onClick={(e) => { e.stopPropagation(); del.mutate(d.id); }}>
+                      <button className="btn ghost small" aria-label={`Delete ${d.title}`} onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${d.title}"? This also removes its search-index entries.`)) del.mutate(d.id); }}>
                         <Trash2 size={12} />
                       </button>
                     </td>
@@ -173,10 +179,13 @@ function ImportForm({ onSubmit }: { onSubmit: (body: { sourceName: string; visib
 }
 
 function DocReader({ id, onClose }: { id: number; onClose: () => void }): ReactNode {
-  const { data } = useQuery({ queryKey: ['knowledge-doc', id], queryFn: () => api.get<{ document: KnowledgeDoc & { content: string; source_name: string }; related_ticket_estimate: number; related_known_issues: { id: number; title: string }[] }>(`/api/knowledge/documents/${id}`) });
+  // v1.6.0 audit fix: a failed/deleted document fetch (or a stale ?doc= deep
+  // link) previously left an infinite Spinner; show an error instead. The
+  // dialog still closes cleanly when dismissed (Escape/backdrop/X -> onClose).
+  const { data, isError, error } = useQuery({ queryKey: ['knowledge-doc', id], queryFn: () => api.get<{ document: KnowledgeDoc & { content: string; source_name: string }; related_ticket_estimate: number; related_known_issues: { id: number; title: string }[] }>(`/api/knowledge/documents/${id}`) });
   return (
     <Modal title={data?.document.title ?? 'Document'} onClose={onClose} wide>
-      {!data ? <Spinner /> : (
+      {isError ? <ErrorState message="Could not open this document." detail={error instanceof Error ? error.message : undefined} /> : !data ? <Spinner /> : (
         <>
           <div className="flex wrap mb-16" style={{ gap: 6 }}>
             <span className={`badge ${data.document.visibility === 'customer_safe' ? 'ok' : ''}`}>{data.document.visibility === 'customer_safe' ? 'customer-safe' : 'internal-only'}</span>

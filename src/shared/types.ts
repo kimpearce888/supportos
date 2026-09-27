@@ -669,7 +669,9 @@ export interface QueueJob {
   queue: string;
   type: string;
   priority: number;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  // v1.6.0: 'awaiting_approval' = a parked automation write action a human
+  // must approve (Retry in the Queue panel) or reject (Cancel).
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting_approval';
   payload: Record<string, unknown> | null;
   attempt: number;
   max_attempts: number;

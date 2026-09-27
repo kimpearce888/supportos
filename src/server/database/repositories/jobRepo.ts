@@ -64,12 +64,46 @@ export class JobRepository {
     }
   }
 
-  cancelJob(id: number): void {
-    this.db.prepare("UPDATE jobs SET status='cancelled', completed_at=datetime('now') WHERE id = ? AND status IN ('queued','running')").run(id);
+  // v1.6.0 audit fix: return whether a row actually changed so routes can 404
+  // instead of reporting success for nonexistent/NaN ids.
+  cancelJob(id: number): boolean {
+    const r = this.db.prepare("UPDATE jobs SET status='cancelled', completed_at=datetime('now') WHERE id = ? AND status IN ('queued','running','awaiting_approval')").run(id);
+    return r.changes > 0;
   }
 
-  retryJob(id: number): void {
-    this.db.prepare("UPDATE jobs SET status='queued', attempt=0, error=NULL, run_at=datetime('now') WHERE id = ?").run(id);
+  retryJob(id: number, payloadPatch: Record<string, unknown> | null = null): boolean {
+    const existing = this.db
+      .prepare("SELECT payload, status FROM jobs WHERE id = ? AND status IN ('failed','cancelled','awaiting_approval')")
+      .get(id) as { payload: string | null; status: string } | undefined;
+    if (!existing) return false;
+    if (payloadPatch && existing.payload) {
+      // Approving an awaiting_approval job flags the payload so the worker
+      // executes the parked action instead of parking it again.
+      let merged: Record<string, unknown>;
+      try {
+        merged = { ...(JSON.parse(existing.payload) as Record<string, unknown>), ...payloadPatch };
+      } catch {
+        merged = { ...payloadPatch };
+      }
+      this.db.prepare('UPDATE jobs SET payload = ? WHERE id = ?').run(JSON.stringify(merged), id);
+    }
+    const r = this.db.prepare("UPDATE jobs SET status='queued', attempt=0, error=NULL, run_at=datetime('now') WHERE id = ?").run(id);
+    return r.changes > 0;
+  }
+
+  // v1.6.0 audit fix: awaiting-approval automation jobs used to be completed as
+  // no-ops by the worker (the write action silently dropped). Parked jobs keep
+  // a distinct status: visible in the Queue panel, never claimed, approve via
+  // retry / reject via cancel.
+  parkJob(id: number): void {
+    this.db.prepare("UPDATE jobs SET status='awaiting_approval', completed_at=NULL WHERE id = ?").run(id);
+  }
+
+  getJob(id: number): QueueJob | null {
+    const row = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
+    if (!row) return null;
+    const r = row as QueueJob & { payload: string | Record<string, unknown> | null };
+    return { ...r, payload: r.payload == null ? null : typeof r.payload === 'string' ? (JSON.parse(r.payload) as Record<string, unknown>) : r.payload };
   }
 
   clearCompleted(): number {

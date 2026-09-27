@@ -3,7 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Radar, Layers, BookPlus, Trash2, Link2 } from 'lucide-react';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState, ErrorState, RelativeTime } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, RelativeTime, safeExternalHref } from '../components/common/ui.js';
 import { Modal, ConfirmDialog } from '../components/common/overlays.js';
 import { useUiStore } from '../state/uiStore.js';
 import type { IssueRadarAlert, DocGap, AnswerReuseCandidate } from '../../shared/types.js';
@@ -232,12 +232,16 @@ function KnownIssues(): ReactNode {
           {ki.engineering_refs.length > 0 ? (
             <div className="mt-8 text-xs">
               <strong>Engineering references:</strong>{' '}
-              {ki.engineering_refs.map((r) => (
-                <span key={r.id} className="source-chip">
-                  {r.url ? <a href={r.url} target="_blank" rel="noopener noreferrer">{r.system} {r.reference_id}</a> : `${r.system} ${r.reference_id}`}
-                  {r.status ? ` (${r.status})` : ''}
-                </span>
-              ))}
+              {/* v1.6.0 audit fix: scheme-check engineering-ref URLs (from the local DB) before rendering as links. */}
+              {ki.engineering_refs.map((r) => {
+                const href = r.url != null ? safeExternalHref(r.url) : undefined;
+                return (
+                  <span key={r.id} className="source-chip">
+                    {href ? <a href={href} target="_blank" rel="noopener noreferrer">{r.system} {r.reference_id}</a> : `${r.system} ${r.reference_id}`}
+                    {r.status ? ` (${r.status})` : ''}
+                  </span>
+                );
+              })}
             </div>
           ) : null}
           <div className="flex wrap mt-8" style={{ gap: 4 }}>

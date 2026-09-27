@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Search as SearchIcon, Filter } from 'lucide-react';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState } from '../components/common/ui.js';
 import type { SearchResponse, SearchScope } from '../../shared/types.js';
 
 /** Escape untrusted snippet text, then apply FTS highlight markers ([ ] -> <mark>). */
@@ -30,7 +30,10 @@ export function SearchPage(): ReactNode {
   const [filters, setFilters] = useState<{ status: string; tag: string; mailbox: string; sinceDays: string }>({ status: '', tag: '', mailbox: '', sinceDays: '' });
   const navigate = useNavigate();
 
-  const { data, isFetching } = useQuery({
+  // v1.6.0 audit fix: the POST-based search query had no error state - a failed
+  // search silently blanked the page (a 429 from the mutation rate limit is
+  // realistic mid-session).
+  const { data, isFetching, isError, error } = useQuery({
     queryKey: ['search', submitted, scope, filters],
     queryFn: () =>
       api.post<SearchResponse>('/api/search', {
@@ -135,6 +138,7 @@ export function SearchPage(): ReactNode {
         />
       ) : null}
       {isFetching ? <Spinner label="Searching" /> : null}
+      {isError ? <ErrorState message="Search failed." detail={error instanceof Error ? error.message : undefined} /> : null}
       {data?.used_semantic === false && data?.semantic_available === true ? <div className="alert info">Semantic search unavailable right now - showing keyword (FTS) results.</div> : null}
       {data && !data.semantic_available && submitted ? <div className="alert info">Keyword search (FTS5). Enable Qdrant + an embedding model for semantic matching.</div> : null}
       {(data?.hits ?? []).map((hit) => (
@@ -161,7 +165,7 @@ export function SearchPage(): ReactNode {
           </div>
         </div>
       ))}
-      {data && data.hits.length === 0 && submitted && !isFetching ? <EmptyState icon="search" title={`No results for “${submitted}”`} hint="Try fewer words, another scope, or check the filters." /> : null}
+      {data && data.hits.length === 0 && submitted && !isFetching && !isError ? <EmptyState icon="search" title={`No results for “${submitted}”`} hint="Try fewer words, another scope, or check the filters." /> : null}
       {data && data.hits.length > 0 ? (
         <p className="text-xs muted">
           {data.total} results · {data.used_semantic ? 'hybrid (keyword + semantic)' : 'keyword (FTS5)'} · <Link to="/inbox">back to inbox</Link>

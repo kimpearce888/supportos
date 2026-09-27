@@ -22,8 +22,10 @@ export function AiCenterPage(): ReactNode {
   }>('/api/ai/status'), refetchInterval: 30_000 });
 
   const { data: analytics, error: analyticsError } = useQuery<AiAnalytics>({ queryKey: ['ai-analytics'], queryFn: () => api.get('/api/ai/analytics') });
-  const { data: jobs, refetch: refetchJobs } = useQuery({ queryKey: ['ai-jobs'], queryFn: () => api.get<{ jobs: { id: number; type: string; status: string; conversation_id: number | null; model: string | null; error: string | null; created_at: string; latency_ms: number | null }[] }>('/api/ai/jobs') });
-  const { data: evaluation } = useQuery({ queryKey: ['ai-evaluation'], queryFn: () => api.get<{ tests: { name: string; category: string; payload: { subject: string; body: string } }[]; evaluation_mode: boolean }>('/api/ai/evaluation') });
+  // v1.6.0 audit fix: the jobs and evaluation queries had no error states
+  // (missed in the v1.2 fix wave that covered status/analytics).
+  const { data: jobs, refetch: refetchJobs, isError: jobsIsError, error: jobsError } = useQuery({ queryKey: ['ai-jobs'], queryFn: () => api.get<{ jobs: { id: number; type: string; status: string; conversation_id: number | null; model: string | null; error: string | null; created_at: string; latency_ms: number | null }[] }>('/api/ai/jobs') });
+  const { data: evaluation, isError: evaluationIsError, error: evaluationError } = useQuery({ queryKey: ['ai-evaluation'], queryFn: () => api.get<{ tests: { name: string; category: string; payload: { subject: string; body: string } }[]; evaluation_mode: boolean }>('/api/ai/evaluation') });
 
   const cluster = useMutation({
     mutationFn: () => api.post<{ ok: boolean; clusters: unknown[]; error?: string }>('/api/ai/cluster-issues', { days: 60 }),
@@ -134,6 +136,7 @@ export function AiCenterPage(): ReactNode {
             <h3 className="card-title" style={{ margin: 0 }}>AI job history</h3>
             <button className="btn small" onClick={() => void refetchJobs()}><RefreshCw size={11} /> Refresh</button>
           </div>
+          {jobsIsError ? <div style={{ padding: '0 14px' }}><ErrorState message="Could not load AI jobs." detail={jobsError instanceof Error ? jobsError.message : undefined} /></div> : null}
           <table className="table">
             <thead>
               <tr><th>ID</th><th>Type</th><th>Status</th><th>Conversation</th><th>Model</th><th>Latency</th><th>When</th></tr>
@@ -158,6 +161,8 @@ export function AiCenterPage(): ReactNode {
 
       {tab === 'evaluation' ? (
         <>
+          {/* v1.6.0 audit fix: error state for the evaluation-set query. */}
+          {evaluationIsError ? <ErrorState message="Could not load the evaluation set." detail={evaluationError instanceof Error ? evaluationError.message : undefined} /> : null}
           <div className="card">
             <h3 className="card-title"><FlaskConical size={13} /> Offline AI evaluation mode</h3>
             <p className="text-sm" style={{ marginTop: 0 }}>

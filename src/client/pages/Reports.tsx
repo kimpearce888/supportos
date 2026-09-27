@@ -10,9 +10,11 @@ export function ReportsPage(): ReactNode {
   const [tab, setTab] = useState<'overview' | 'sla' | 'questions' | 'intelligence' | 'definitions' | 'helpscout' | 'releases'>('overview');
   const [days, setDays] = useState(30);
   const pushToast = useUiStore((s) => s.pushToast);
-  const { data: dashboard } = useQuery({ queryKey: ['dashboard', days], queryFn: () => api.get<Record<string, unknown>>(`/api/analytics/dashboard?days=${days}`) });
-  const { data: topQuestions } = useQuery({ queryKey: ['top-questions', days], queryFn: () => api.get<{ questions: { question: string; count: number; conversation_ids: number[] }[] }>('/api/reports/top-questions?days=' + days) });
-  const { data: whyContacting } = useQuery({ queryKey: ['why-contacting', days], queryFn: () => api.get<{ categories: { category: string; count: number; conversation_ids: number[] }[] }>('/api/reports/why-contacting?days=' + days) });
+  // v1.6.0 audit fix: every tab query lacked an error state - a failed fetch
+  // left the overview tab spinning forever (or silently empty lists).
+  const { data: dashboard, isError: dashboardIsError, error: dashboardError } = useQuery({ queryKey: ['dashboard', days], queryFn: () => api.get<Record<string, unknown>>(`/api/analytics/dashboard?days=${days}`) });
+  const { data: topQuestions, isError: topQuestionsIsError, error: topQuestionsError } = useQuery({ queryKey: ['top-questions', days], queryFn: () => api.get<{ questions: { question: string; count: number; conversation_ids: number[] }[] }>('/api/reports/top-questions?days=' + days) });
+  const { data: whyContacting, isError: whyContactingIsError, error: whyContactingError } = useQuery({ queryKey: ['why-contacting', days], queryFn: () => api.get<{ categories: { category: string; count: number; conversation_ids: number[] }[] }>('/api/reports/why-contacting?days=' + days) });
 
   const hsReport = useMutation({
     mutationFn: (key: string) => api.get<{ ok: boolean; report: { name: string; data: unknown } | null; message?: string }>(`/api/reports/helpscout/${key}?days=${days}`),
@@ -23,8 +25,8 @@ export function ReportsPage(): ReactNode {
     onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
   });
 
-  const { data: definitions } = useQuery({ queryKey: ['metric-defs'], queryFn: () => api.get<{ definitions: { key: string; name: string; description: string | null; formula: string | null; source: string; limitations: string | null }[] }>('/api/reports/metric-definitions') });
-  const { data: releases } = useQuery({ queryKey: ['release-corr'], queryFn: () => api.get<{ releases: { release: string; version: string | null; occurred_at: string; before_7d: number; after_7d: number }[]; note: string }>('/api/reports/release-correlation') });
+  const { data: definitions, isError: definitionsIsError, error: definitionsError } = useQuery({ queryKey: ['metric-defs'], queryFn: () => api.get<{ definitions: { key: string; name: string; description: string | null; formula: string | null; source: string; limitations: string | null }[] }>('/api/reports/metric-definitions') });
+  const { data: releases, isError: releasesIsError, error: releasesError } = useQuery({ queryKey: ['release-corr'], queryFn: () => api.get<{ releases: { release: string; version: string | null; occurred_at: string; before_7d: number; after_7d: number }[]; note: string }>('/api/reports/release-correlation') });
 
   return (
     <div className="page">
@@ -49,8 +51,9 @@ export function ReportsPage(): ReactNode {
         <button className={`tab ${tab === 'releases' ? 'active' : ''}`} onClick={() => setTab('releases')}>Release correlation</button>
       </div>
 
+      {/* v1.6.0 audit fix: overview tab spun on a Spinner forever when the dashboard query failed. */}
       {tab === 'overview' ? (
-        !dashboard ? <Spinner /> : (
+        dashboardIsError ? <ErrorState message="This report failed to load." detail={dashboardError instanceof Error ? dashboardError.message : undefined} /> : !dashboard ? <Spinner /> : (
           <div className="grid-2">
             <div className="card">
               <h3 className="card-title">Volume (local)</h3>
@@ -82,6 +85,8 @@ export function ReportsPage(): ReactNode {
           <div className="card">
             <h3 className="card-title">Why are customers contacting us? (AI-derived categories)</h3>
             <p className="text-xs muted" style={{ marginTop: 0 }}>Categories are discovered from actual ticket data - never hard-coded.</p>
+            {/* v1.6.0 audit fix: error state for the why-contacting report query. */}
+            {whyContactingIsError ? <ErrorState message="This report failed to load." detail={whyContactingError instanceof Error ? whyContactingError.message : undefined} /> : null}
             {whyContacting?.categories.length === 0 ? <EmptyState icon="ai" title="Run AI analysis first" hint="Categories derive from AI ticket analyses (AI Center → Analyze)." /> : null}
             {whyContacting?.categories.map((c) => (
               <div key={c.category} className="flex-between" style={{ padding: '5px 0', borderBottom: '1px dashed var(--border)' }}>
@@ -92,6 +97,8 @@ export function ReportsPage(): ReactNode {
           </div>
           <div className="card">
             <h3 className="card-title">Top customer questions</h3>
+            {/* v1.6.0 audit fix: error state for the top-questions report query. */}
+            {topQuestionsIsError ? <ErrorState message="This report failed to load." detail={topQuestionsError instanceof Error ? topQuestionsError.message : undefined} /> : null}
             {topQuestions?.questions.length === 0 ? <span className="muted text-sm">No AI analyses yet.</span> : null}
             {topQuestions?.questions.slice(0, 12).map((q) => (
               <div key={q.question} style={{ padding: '5px 0', borderBottom: '1px dashed var(--border)' }}>
@@ -128,6 +135,8 @@ export function ReportsPage(): ReactNode {
 
       {tab === 'definitions' ? (
         <div className="card" style={{ padding: 0 }}>
+          {/* v1.6.0 audit fix: error state for the metric-definitions query. */}
+          {definitionsIsError ? <div style={{ padding: '10px 14px 0' }}><ErrorState message="This report failed to load." detail={definitionsError instanceof Error ? definitionsError.message : undefined} /></div> : null}
           <table className="table">
             <thead><tr><th>Metric</th><th>Source</th><th>Formula</th><th>Limitations</th></tr></thead>
             <tbody>
@@ -148,6 +157,8 @@ export function ReportsPage(): ReactNode {
         <div className="card">
           <h3 className="card-title">Release correlation (extensible)</h3>
           <p className="text-xs muted" style={{ marginTop: 0 }}>{releases?.note}</p>
+          {/* v1.6.0 audit fix: error state for the release-correlation query. */}
+          {releasesIsError ? <ErrorState message="This report failed to load." detail={releasesError instanceof Error ? releasesError.message : undefined} /> : null}
           <table className="table">
             <thead><tr><th>Release</th><th>When</th><th>7d before</th><th>7d after</th></tr></thead>
             <tbody>
@@ -169,14 +180,18 @@ export function ReportsPage(): ReactNode {
 }
 
 function IntelligenceReports(): ReactNode {
-  const { data: gaps } = useQuery({ queryKey: ['doc-gaps'], queryFn: () => api.get<{ gaps: { question: string; conversation_count: number; coverage: string }[] }>('/api/reports/doc-gaps') });
-  const { data: reuse } = useQuery({ queryKey: ['answer-reuse'], queryFn: () => api.get<{ candidates: { question: string; conversation_count: number }[] }>('/api/reports/answer-reuse') });
-  const { data: radar } = useQuery({ queryKey: ['issue-radar'], queryFn: () => api.get<{ alerts: { title: string; detail: string; severity: string }[] }>('/api/reports/issue-radar') });
-  const { data: aiAnalytics } = useQuery({ queryKey: ['ai-analytics'], queryFn: () => api.get<Record<string, number | { pattern: string; count: number }[]>>('/api/analytics/ai') });
+  // v1.6.0 audit fix: the intelligence tab queries had no error states - the
+  // AI assistance card spun forever on failure and the other cards silently
+  // rendered empty.
+  const { data: gaps, isError: gapsIsError, error: gapsError } = useQuery({ queryKey: ['doc-gaps'], queryFn: () => api.get<{ gaps: { question: string; conversation_count: number; coverage: string }[] }>('/api/reports/doc-gaps') });
+  const { data: reuse, isError: reuseIsError, error: reuseError } = useQuery({ queryKey: ['answer-reuse'], queryFn: () => api.get<{ candidates: { question: string; conversation_count: number }[] }>('/api/reports/answer-reuse') });
+  const { data: radar, isError: radarIsError, error: radarError } = useQuery({ queryKey: ['issue-radar'], queryFn: () => api.get<{ alerts: { title: string; detail: string; severity: string }[] }>('/api/reports/issue-radar') });
+  const { data: aiAnalytics, isError: aiAnalyticsIsError, error: aiAnalyticsError } = useQuery({ queryKey: ['ai-analytics'], queryFn: () => api.get<Record<string, number | { pattern: string; count: number }[]>>('/api/analytics/ai') });
   return (
     <div className="grid-2">
       <div className="card">
         <h3 className="card-title">Documentation gaps</h3>
+        {gapsIsError ? <ErrorState message="This report failed to load." detail={gapsError instanceof Error ? gapsError.message : undefined} /> : null}
         {(gaps?.gaps ?? []).slice(0, 6).map((g) => (
           <div key={g.question} className="flex-between" style={{ padding: '4px 0' }}>
             <span className="text-sm" style={{ maxWidth: '75%' }}>{g.question}</span>
@@ -187,6 +202,7 @@ function IntelligenceReports(): ReactNode {
       </div>
       <div className="card">
         <h3 className="card-title">Answer reuse candidates</h3>
+        {reuseIsError ? <ErrorState message="This report failed to load." detail={reuseError instanceof Error ? reuseError.message : undefined} /> : null}
         {(reuse?.candidates ?? []).slice(0, 6).map((c) => (
           <div key={c.question} className="flex-between" style={{ padding: '4px 0' }}>
             <span className="text-sm" style={{ maxWidth: '75%' }}>{c.question}</span>
@@ -197,6 +213,7 @@ function IntelligenceReports(): ReactNode {
       </div>
       <div className="card">
         <h3 className="card-title">Issue alerts</h3>
+        {radarIsError ? <ErrorState message="This report failed to load." detail={radarError instanceof Error ? radarError.message : undefined} /> : null}
         {(radar?.alerts ?? []).slice(0, 6).map((a, i) => (
           <div key={i} className={`alert ${a.severity === 'critical' ? 'error' : a.severity === 'warning' ? 'warn' : 'info'}`} style={{ marginBottom: 6 }}>
             {a.title}
@@ -206,7 +223,7 @@ function IntelligenceReports(): ReactNode {
       </div>
       <div className="card">
         <h3 className="card-title">AI assistance report</h3>
-        {aiAnalytics ? (
+        {aiAnalyticsIsError ? <ErrorState message="This report failed to load." detail={aiAnalyticsError instanceof Error ? aiAnalyticsError.message : undefined} /> : aiAnalytics ? (
           <>
             <KV k="Tickets analyzed" v={String(aiAnalytics.tickets_analyzed)} />
             <KV k="Draft acceptance" v={`${String(aiAnalytics.draft_accepted)} accepted / ${String(aiAnalytics.draft_rejected)} rejected`} />

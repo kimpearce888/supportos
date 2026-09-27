@@ -1,9 +1,9 @@
-import { type ReactNode, Fragment, useState } from 'react';
+import { type ReactNode, Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Shield, Users } from 'lucide-react';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState, RelativeTime, TagChips } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, RelativeTime, TagChips } from '../components/common/ui.js';
 import { ConditionEditor, describeCondition } from '../components/outreach/ConditionEditor.js';
 import { useUiStore } from '../state/uiStore.js';
 import type {
@@ -50,10 +50,20 @@ export function OutreachPage(): ReactNode {
     refetchInterval: 15_000
   });
 
-  // Live preview of the current definition (the engine runs server-side)
-  const { data: preview, isFetching: previewLoading } = useQuery({
-    queryKey: ['outreach-preview', definition],
-    queryFn: () => api.post<SegmentPreviewResult & { page: number }>('/api/outreach/segments/preview', { ...definition, page: 1, pageSize: 100 })
+  // Live preview of the current definition (the engine runs server-side).
+  // v1.6.0 audit fix: the preview POSTed on every keystroke; debounce the
+  // definition by 300ms and key the query on the debounced value so the
+  // wizard cannot trip the 300/min mutation rate limit mid-edit.
+  const [debouncedDefinition, setDebouncedDefinition] = useState<SegmentDefinition>(EMPTY_DEF);
+  useEffect(() => {
+    const t = setTimeout((): void => setDebouncedDefinition(definition), 300);
+    return (): void => clearTimeout(t);
+  }, [definition]);
+  // v1.6.0 audit fix: the preview query had no error state - a failure
+  // silently blanked the preview pane.
+  const { data: preview, isFetching: previewLoading, isError: previewIsError, error: previewError } = useQuery({
+    queryKey: ['outreach-preview', debouncedDefinition],
+    queryFn: () => api.post<SegmentPreviewResult & { page: number }>('/api/outreach/segments/preview', { ...debouncedDefinition, page: 1, pageSize: 100 })
   });
 
   const createCampaign = useMutation({
@@ -126,6 +136,8 @@ export function OutreachPage(): ReactNode {
               setDefinition={setDefinition}
               preview={preview}
               previewLoading={previewLoading}
+              previewIsError={previewIsError}
+              previewError={previewError}
               segments={segments?.segments ?? []}
               savedSegmentId={savedSegmentId}
               setSavedSegmentId={setSavedSegmentId}
@@ -188,6 +200,8 @@ function AudienceStep({
   setDefinition,
   preview,
   previewLoading,
+  previewIsError,
+  previewError,
   segments,
   savedSegmentId,
   setSavedSegmentId,
@@ -198,6 +212,8 @@ function AudienceStep({
   setDefinition: (d: SegmentDefinition) => void;
   preview: (SegmentPreviewResult & { page: number }) | undefined;
   previewLoading: boolean;
+  previewIsError: boolean;
+  previewError: Error | null;
   segments: SavedSegment[];
   savedSegmentId: number | null;
   setSavedSegmentId: (id: number | null) => void;
@@ -212,7 +228,9 @@ function AudienceStep({
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       setSaveName('');
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   return (
@@ -297,6 +315,8 @@ function AudienceStep({
       <div className="card">
         <h3 className="card-title">Live preview</h3>
         {previewLoading ? <Spinner label="Evaluating segment…" /> : null}
+        {/* v1.6.0 audit fix: error state for the (debounced) preview query. */}
+        {previewIsError ? <ErrorState message="Preview failed - check your conditions." detail={previewError instanceof Error ? previewError.message : undefined} /> : null}
         {preview ? (
           <>
             <div className="flex" style={{ gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -652,7 +672,9 @@ function ReviewStep({
         void qc.invalidateQueries({ queryKey: ['outreach-campaigns'] });
         onDone();
       }
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   if (createdCampaignId == null) {
@@ -743,7 +765,9 @@ function CampaignsPanel({ campaigns }: { campaigns: CampaignSummary[] | undefine
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       void qc.invalidateQueries({ queryKey: ['outreach-campaigns'] });
       void qc.invalidateQueries({ queryKey: ['outreach-campaign'] });
-    }
+    },
+    // v1.6.0 audit fix: queue/pause/resume/cancel/retry failures were silent no-ops.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   const { data: detail } = useQuery({
@@ -952,7 +976,9 @@ function SegmentsPanel({ segments, onUse }: { segments: SavedSegment[]; onUse: (
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       void qc.invalidateQueries({ queryKey: ['outreach-segments'] });
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   if (segments.length === 0) return <EmptyState icon="search" title="No saved segments" hint="Save an audience rule from the New campaign builder to reuse it later." />;
   return (
@@ -1025,14 +1051,18 @@ function DncPanel(): ReactNode {
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       void qc.invalidateQueries({ queryKey: ['outreach-dnc'] });
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   const remove = useMutation({
     mutationFn: (customer_local_id: number) => api.delete<{ ok: boolean; message: string }>(`/api/outreach/dnc/${customer_local_id}`),
     onSuccess: (r) => {
       pushToast({ kind: 'success', message: r.message });
       void qc.invalidateQueries({ queryKey: ['outreach-dnc'] });
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   const onDnc = new Set((data?.dnc ?? []).map((d) => d.customer_local_id));
   const candidates = (preview?.rows ?? []).filter((r: SegmentMatchRow) => !onDnc.has(r.customer_local_id)).slice(0, 100);

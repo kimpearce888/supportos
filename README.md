@@ -7,7 +7,7 @@
 **Fast support tooling with a privacy guarantee: your customer data never leaves your machine.**
 
 [![CI](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml/badge.svg)](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-259%2F259-brightgreen)](docs/TESTING.md)
+[![Tests](https://img.shields.io/badge/tests-288%2F288-brightgreen)](docs/TESTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-green)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](tsconfig.base.json)
@@ -36,7 +36,7 @@ SupportOS is a **self-hosted help desk companion and support intelligence platfo
 - **🛡️ Privacy by architecture** — support tickets contain payment details, personal data and secrets. SupportOS keeps them local-first, GDPR-friendly and audit-logged
 - **🔬 Support intelligence** — Issue Radar surfaces emerging problems before they become incidents; answer-reuse shows which tickets could have been deflected by docs
 - **✍️ Human in command** — AI never sends a customer reply. Every remote write is validated, merged, confirmed and audited
-- **🔬 Audited, not assumed** — v1.2.0 shipped after a full independent audit; v1.3.0 extends the same evidence-first discipline to channels, docs and real-time updates
+- **🔬 Audited, not assumed** — v1.2.0 and v1.5.0 shipped after full independent audits; **v1.6.0 is the audit release**: three adversarial passes (server core, data/sync layer, client) plus a human-like usage pass found 2 HIGH + 28 MEDIUM issues — all fixed, each locked by a named regression test
 
 > **Help Scout stays the source of truth.** SupportOS is a local mirror + intelligence layer — it reads your mailbox and writes back through Help Scout's official API with full write protection. Your team can keep using Help Scout (and its mobile app) exactly as before.
 
@@ -64,6 +64,8 @@ v1.4.0 is the real-time release, and its most important fix is one nobody planne
 
 v1.5.0 is the contact-first release. The segmentation spec's sharpest insight became the architecture: **properties answer "which customers?", tags answer "which tickets?", and a resolver answers "which customers own those tickets?"** — so the segment engine is deterministic SQL over the local mirror (an AI may *suggest* a segment, but it can never decide who gets emailed), every result row is a unique contact with a "why selected" evidence trail, and tag ALL/ANY/NONE semantics happen at the conversation level *before* resolving to people. Campaigns send one individual Help Scout conversation per customer — never a BCC blast — through the same rate-limited queue as manual replies, with per-recipient states, duplicate-send protection, timeout reconciliation (a send that *might* have landed is investigated, never blindly resent) and an audit trail that answers "why did this customer get this?" with ticket-level evidence years later. On top of that: ticket/thread vector search (same local-vectors-first design as docs search), business-hours-aware SLA alerts on the Issue Radar, and encrypted multi-device sync as a **file you carry yourself** — because a privacy-first product with no relay server is end-to-end encrypted by construction: there is no third party to trust. The release was built under a fresh independent audit that didn't touch the project's own test suite: 320 black-box probes plus a white-box review found **7 real bugs** (a recursion DoS that could crash the whole server with one hostile request, a mid-batch crash that stranded recipients forever, a truncation bug that mis-validated >1000-recipient campaigns, and four more) — all fixed with regression tests before shipping.
 
+v1.6.0 is the release where the audit itself became the product. Three independent adversarial passes — server core, data/sync layer, React client — deliberately did NOT reuse the project's own test suite, reproduced every crash live against a running instance before reporting it, and found what 288 green tests couldn't: **the entire v1.4.0 webhook-push client UX had never fired** (the browser subscribed to five SSE channels and the server emitted a sixth — one missing word in a listener list, invisible to tests that asserted the wire event instead of the toast); an **outreach livelock** where three retryable failures left a recipient permanently unclaimable yet permanently counted, so the campaign could never complete and the send job re-enqueued itself every two seconds forever; and **docs embeddings that suicided every five minutes** — each incremental sync re-chunked every article, deleting every stored vector even when the text hadn't changed by a byte. Then came the step no audit had tried before: using the app like a human, in a browser, clicking the actual buttons — which surfaced the failure mode automation can't feel: bulk operations ack "queued", the client refreshes immediately, races the background job, and reads stale state; nothing told anyone when the write actually *landed*. That gap is now closed at the source (the worker announces every completed write), and the regression test that locks it drives the full path — HTTP bulk → worker tick → SSE frame → tag visible on the wire — because a test that asserts only the wire event is exactly how the dead webhook UX survived four releases. The date-format comparison bug that killed the job queue in v1.4 turned out to be a *species*, not a specimen: twelve more sites compared ISO-8601 timestamps against SQLite's space-format `datetime('now')` — segmentation windows that could be wrong on boundary days, reply detection that counted same-day-but-earlier threads as responses — all normalized to one comparison basis now. And every crash input from the audit (?page=abc, missing bodies, numeric names, 2MB queries, spoofed X-Forwarded-For) has an e2e test asserting the *clean* response it gets today.
+
 ### The decision log — the logic behind every major choice
 
 | # | Decision | The reasoning |
@@ -77,7 +79,7 @@ v1.5.0 is the contact-first release. The segmentation spec's sharpest insight be
 | 7 | **The evidence mandate** | A behavioral signal without a quoted excerpt is an opinion. Every signal carries evidence linked to the thread it came from; significant signals without evidence are dropped by the safety layer. |
 | 8 | **Behavior, never psychology** | The vocabulary is fixed and observable (urgency, directness, detail level…). Personality labels, diagnoses and protected-attribute claims are structurally impossible — enforced at the schema, the sanitizer, the prompts and the UI labels, in depth. |
 | 9 | **Human overrides beat AI, everywhere** | When a rep corrects an inferred preference, that correction wins — in storage, in the recommendation engine and in the draft prompts. The override is audited, revertible, and the revert fully restores AI semantics. |
-| 10 | **A fake Help Scout provider as the test backbone** | The entire 259-test suite runs against a deterministic simulated mailbox. It is architecturally impossible for a test to email a real customer — the provider interface simply has no path to production credentials. |
+| 10 | **A fake Help Scout provider as the test backbone** | The entire 288-test suite runs against a deterministic simulated mailbox. It is architecturally impossible for a test to email a real customer — the provider interface simply has no path to production credentials. |
 | 11 | **Demo mode runs the REAL sync engine** | The 2-minute demo is not a mockup; it is the production sync pipeline pointed at the fake provider. What you evaluate is what you run. |
 | 12 | **Local-first AI via LM Studio (OpenAI-compatible)** | Same ergonomics as the cloud APIs, zero data egress. And because the AI layer is optional (see #6), the product's value does not depend on anyone's model — including ours. |
 | 13 | **Audit your own release** | v1.2.0's audit did not trust the project's own green test suite — it re-derived the findings from scratch (static analysis plus black-box runtime testing) and turned each fix into a named regression test. Trust, but verify; then lock it in. |
@@ -95,6 +97,10 @@ v1.5.0 is the contact-first release. The segmentation spec's sharpest insight be
 | 25 | **Contact-first resolution (v1.5.0)** | Help Scout's search is ticket-first; outreach needs people. The engine's pipeline is conversations → conversation-level tag semantics → customer ids → dedupe — so "ALL of timezone,bug" means one ticket carrying both (a customer with each tag on separate tickets does not match), and one customer with five matching tickets is still exactly one recipient. |
 | 26 | **Snapshots over references for campaigns (v1.5.0)** | A saved segment is a living rule; a campaign's recipients are a frozen snapshot with the evidence that selected them (matching tickets, property values at selection time). The segment changing later can never silently alter who a campaign already targeted — auditability requires that time travel. |
 | 27 | **Encrypted sync is a file, not a server (v1.5.0)** | A relay would be a third party that sees ciphertext and decides availability. SupportOS ships `.sosync` bundles (AES-256-GCM, scrypt-derived key, integrity-checked, verified before import): move them by any channel you already trust. The attachments re-download from Help Scout on the other device, so bundles stay small. |
+| 28 | **Test what the user sees, not what the wire carries (v1.6.0)** | The v1.4.0 webhook-push UX shipped dead for four versions because tests asserted the SSE frame — which worked — while the browser never subscribed to that event name. Regression tests now assert the *client-visible* outcome (the toast, the invalidation, the tag appearing), and the audit itself ends with a human-like pass: clicking real buttons in a real browser, the only method that can feel "the UI says queued but nothing ever landed". |
+| 29 | **Diff before you re-chunk (v1.6.0)** | Rebuilding derived data unconditionally feels safe and quietly costs the most: the docs mirror re-chunked every article on every 5-minute sync, destroying every stored embedding even for byte-identical text — permanent re-embedding, permanently lagging semantic search. A SHA-256 content hash now gates re-chunking; derived data rebuilds only when its input actually changed. |
+| 30 | **Fix the bug class, not the instance (v1.6.0)** | The v1.4.0 job-queue bug (ISO-8601 vs `datetime('now')` string comparison) turned out to live in 12+ more sites — segmentation windows, reply detection, trend classification, retention pruning. Each instance was individually harmless-looking; the class produced up-to-24-hour boundary skew everywhere at once. The fix normalizes every site to one comparison basis (`julianday()`), and the lesson is process: when a format mismatch bites once, grep for the whole species. |
+| 31 | **Key limits on what the client cannot fake (v1.6.0)** | The mutation rate limiter keyed on `X-Forwarded-For` — pure client input once no proxy is trusted — so rotating the header bought an unlimited budget (310/310 verified). It now keys on the socket address: one local operator, one budget, which was always the intended semantics. Anything a client can freely write is not an identity. |
 
 ---
 
@@ -169,6 +175,24 @@ All screenshots are the **real application** running in demo mode (simulated mai
 **Webhook push — register conversation webhooks and watch events land in real time (with demo buttons that exercise the exact production pipeline)**
 
 [![SupportOS webhook push registration](docs/screenshots/v140-webhook-push.png)](docs/screenshots/v140-webhook-push.png)
+
+### 🆕 v1.6.0 — the audit release: verified-live real-time push
+
+**Webhook push, actually pushed — the toast and the live list update now fire when Help Scout pushes a conversation change (the client-side listener for this was silently dead since v1.4.0; found by the client audit, verified fixed live)**
+
+[![SupportOS webhook push toast and live inbox update](docs/screenshots/v160-webhook-toast.png)](docs/screenshots/v160-webhook-toast.png)
+
+**Write-behind writes converge — bulk-tag from anywhere (even curl) and open views refresh within one worker tick, because the worker announces every completed write over SSE**
+
+[![SupportOS live inbox after webhook push](docs/screenshots/v160-webhook-push-live.png)](docs/screenshots/v160-webhook-push-live.png)
+
+**Reports with honest failure states — every query that can fail now says so instead of spinning forever or showing a misleading empty state**
+
+[![SupportOS reports with error-hardened tabs](docs/screenshots/v160-reports-error-hardened.png)](docs/screenshots/v160-reports-error-hardened.png)
+
+**Settings — every save/test/export/import mutation reports failures with a toast; forms gate on loaded data instead of silently capturing defaults**
+
+[![SupportOS settings with hardening](docs/screenshots/v160-settings.png)](docs/screenshots/v160-settings.png)
 
 ### 📥 Support workspace
 
@@ -287,6 +311,7 @@ The packaging pipeline (`scripts/build-desktop.mjs`) bundles the server with esb
 | **📣 Client Segmentation & Outreach (v1.5.0)** | Contact-first segment engine (properties / contact fields / conversation-level tag ALL-ANY-NONE / support history) with why-selected evidence per customer, saved versioned segments, recipient review, personalization preview, individual Help Scout conversations per customer through the rate-limited queue, per-recipient lifecycle with timeout reconciliation and duplicate-send protection, Do-Not-Contact list, full audit trail and reply intelligence |
 | **🧮 Ticket vector search (v1.5.0)** | Hybrid FTS5 + semantic search over tickets and thread text (Reciprocal Rank Fusion): chunked conversations embedded locally, Qdrant as optional accelerator, per-hit provenance (keyword / semantic / both) and honest mode notes |
 | **🔐 Encrypted sync (v1.5.0)** | Optional multi-device sync via end-to-end encrypted `.sosync` bundles (AES-256-GCM + scrypt): export with a passphrase, import with integrity + schema checks and an automatic safety backup — no relay server exists by design |
+| **🧊 Audit-hardened input & state (v1.6.0)** | Every route validates its inputs (no more 500s on `?page=abc`, missing bodies, numeric fields or multi-MB queries); rate limiting keyed on the socket address (spoofable headers can't buy budget); incremental sync now covers organizations + property definitions; ISO-vs-SQLite date comparisons normalized everywhere; embeddings survive unchanged re-syncs (content-hash gated); backups honor their configured interval and prune themselves; failed embedding chunks stop retrying after 5 attempts; approval actions park until a human approves them; every client query failure is a visible error state and every mutation failure is a toast |
 | **📊 Multi-mailbox dashboards (v1.3.0)** | Scope every dashboard metric by any combination of mailboxes and channel; per-mailbox comparison rows (new/active/closed/backlog/first-response/resolution/ratings) — same deterministic SQL as single-mailbox views |
 | **📦 Desktop installers (v1.3.0)** | MSI, NSIS, universal DMG and AppImage built in CI with the Node runtime + SQLite bundled — no prerequisites; or build your own with `npm run desktop:build` |
 | **🎧 Support inbox** | 3-pane workspace: views, filters, bulk actions, sanitized HTML threads, customer + AI context panes, rich composer (reply / note / draft / cc / bcc / status-after-send / saved replies / AI draft insertion) |
@@ -314,7 +339,7 @@ Built for teams whose tickets contain **payment data, credentials and personal d
 - 🔒 **Write-protection pipeline** — every remote mutation: validate → auth → fresh-read → merge → write → confirm → persist → audit
 - 🔒 **Internal knowledge stays internal** — internal-only knowledge never enters customer-facing AI drafts
 - 🔒 **AI evaluation mode stops EVERY remote write** — replies, notes, status changes, assignments, tags, fields, moves, snoozes, schedules, workflows and bulk actions are all blocked while you trial AI features
-- 🔒 **Independently audited (v1.2.0)** — every write path reviewed line-by-line plus black-box runtime testing; each confirmed finding is fixed and covered by a named regression test
+- 🔒 **Independently audited (v1.2.0, v1.5.0, v1.6.0)** — every write path reviewed line-by-line plus black-box runtime testing; the v1.6.0 audit added three adversarial layer-by-layer passes (server core / data & sync / client) and a human-like usage pass; each confirmed finding is fixed and covered by a named regression test
 
 The full model is documented in [SECURITY.md](SECURITY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -377,7 +402,7 @@ No — by design and by enforcement. It reports **observable support-communicati
 <details>
 <summary><b>How is this tested?</b></summary>
 
-Automated tests (unit / integration / e2e) — grown to **259** with the v1.4.0 webhook-push/semantic-docs/SLA coverage and the v1.5.0 outreach, ticket-vector, SLA-alert, encrypted-sync and audit coverage — run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The v1.4.0 additions include the full webhook pipeline over the wire (HMAC self-POST → dedup → job → sync → SSE) and regression tests for two latent job-queue bugs; v1.5.0 adds the spec's critical tag-semantics tests, campaign crash-recovery, the v1.4→v1.5 upgrade path, and audit-phase regression tests for every audit finding. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
+Automated tests (unit / integration / e2e) — grown to **288** with the v1.4.0 webhook-push/semantic-docs/SLA coverage, the v1.5.0 outreach, ticket-vector, SLA-alert, encrypted-sync and audit coverage, and the v1.6.0 audit-hardening suite (29 new tests: the outreach livelock, embedding-churn hash gating, approval-job parking, monotonic local tag ids, incremental-sync coverage, the SSE write-behind notification over the wire, and clean-response probes for every crash input the audit found) — run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. On top of the automated suite, each release since v1.2.0 ships after an audit that deliberately avoids the project's own tests: v1.6.0's audit ran three adversarial passes over the codebase plus a **human-like browser pass**, and its 320-check black-box script (`scripts/audit-phase1.mjs`) is in the repo so you can re-run it against your own instance. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
 </details>
 
 <details>
@@ -396,6 +421,7 @@ Yes for everything local: the mirror, search, analytics, knowledge base and prev
 - [x] v1.3.0 — Help Scout **Chat / Docs / Beacon** API coverage, **real-time ratings refresh (SSE)**, **multi-mailbox dashboards**, **packaged desktop installers (MSI / DMG / AppImage)** ([changelog](CHANGELOG.md))
 - [x] v1.4.0 — **incoming webhook push for conversations** (register from the app, real-time SSE updates, restart drain), **semantic docs search** (local embeddings + optional Qdrant, hybrid RRF), **per-mailbox SLA / business-hours reporting** — plus two latent job-pipeline bugs found and fixed ([changelog](CHANGELOG.md))
 - [x] v1.5.0 — **Client Segmentation & Outreach** (contact-first segments, explainable selection, individual campaign conversations with full audit), **vector search over tickets/threads**, **business-hours-aware SLA alerts on the Issue Radar**, **optional end-to-end encrypted sync for multi-device** — plus a fresh independent audit that found and fixed 7 real bugs ([changelog](CHANGELOG.md))
+- [x] v1.6.0 — **the hardening release**: a second full neutral audit in three adversarial passes (server core / data & sync / client) plus a human-like usage pass; 2 HIGH + 28 MEDIUM findings fixed with regression coverage — the dead webhook-push client UX, an outreach send-queue livelock, embedding churn, the ISO-vs-SQLite date-comparison species, incremental-sync coverage gaps, unvalidated-input crashes, silent client failure modes ([changelog](CHANGELOG.md))
 
 Ideas and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 

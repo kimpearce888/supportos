@@ -24,17 +24,23 @@ export function AutomationPage(): ReactNode {
     onSuccess: () => {
       pushToast({ kind: 'success', message: 'Automation engine setting updated.' });
       void refetch();
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   const toggleRule = useMutation({
     mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => api.patch(`/api/automation/rules/${id}`, { enabled }),
-    onSuccess: () => void refetch()
+    onSuccess: () => void refetch(),
+    // v1.6.0 audit fix: rule enable/disable failures were silent no-ops.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   const del = useMutation({
     mutationFn: (id: number) => api.delete(`/api/automation/rules/${id}`),
-    onSuccess: () => void refetch()
+    onSuccess: () => void refetch(),
+    // v1.6.0 audit fix: rule deletion failures were silent no-ops.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   const create = useMutation({

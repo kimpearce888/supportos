@@ -38,7 +38,12 @@ function ensureSource(): void {
       }
     }
   };
-  for (const name of ['hello', 'ratings', 'sync', 'campaign', 'error']) {
+  // v1.6.0 audit fix: 'conversation' was missing from this list - the server
+  // emits it (webhook push / single-conversation syncs) but the browser never
+  // subscribed, so the v1.4.0 webhook-push UX (toast + live invalidation) was
+  // silently dead. Verified live with a raw EventSource receiving events the
+  // app ignored.
+  for (const name of ['hello', 'ratings', 'sync', 'conversation', 'campaign', 'error']) {
     source.addEventListener(name, forward(name) as EventListener);
   }
 }

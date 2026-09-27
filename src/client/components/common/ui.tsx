@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react';
-import { AlertTriangle, Inbox, Search, BookOpen, Bot, Sparkles } from 'lucide-react';
+import { AlertTriangle, Inbox, Search, BookOpen, Bot, Sparkles, Megaphone, Shield, Users } from 'lucide-react';
 
 export function Spinner({ label }: { label?: string }): ReactNode {
   return (
@@ -16,7 +16,12 @@ export function EmptyState({ icon, title, hint, action }: { icon?: string; title
     search: <Search />,
     knowledge: <BookOpen />,
     ai: <Bot />,
-    sparkles: <Sparkles />
+    sparkles: <Sparkles />,
+    // v1.6.0 audit fix: these were referenced by Outreach/DNC/segments empty
+    // states but missing from the map - the icons silently rendered as nothing.
+    megaphone: <Megaphone />,
+    shield: <Shield />,
+    users: <Users />
   };
   return (
     <div className="empty-state">
@@ -49,6 +54,18 @@ export function ErrorState({ message, detail }: { message: string; detail?: stri
       </div>
     </div>
   );
+}
+
+// v1.6.0 audit fix: external URLs from API data must be scheme-checked before
+// becoming hrefs (a javascript: value from a compromised upstream would render
+// as a clickable script link). Only http/https/mailto pass; others -> undefined.
+export function safeExternalHref(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:' ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function StatusBadge({ status }: { status: string }): ReactNode {

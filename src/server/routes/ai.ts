@@ -1,6 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
 import { LmStudioError } from '../integrations/lmstudio/lmStudioClient.js';
+import { z } from 'zod';
+import { clampListParam } from './helpers.js';
+
+// v1.6.0 audit fix: these POST bodies used to be trusted as `{...}` casts, so
+// a missing body or wrong-typed fields crashed with 500s. They are proper zod
+// schemas now (global error handler maps ZodError -> 422).
+const draftGenerateSchema = z.object({ mode: z.enum(['verified_answer', 'standard']).optional(), force: z.boolean().optional() }).default({});
+const rewriteSchema = z.object({ instruction: z.enum(['shorten', 'expand', 'warmer', 'more_direct']) });
+const feedbackSchema = z.object({ action: z.enum(['accept', 'reject', 'edit']), finalText: z.string().optional() });
+const memorySchema = z.object({ key: z.string().min(1).max(200), value: z.string().max(5000) });
+const clusterSchema = z.object({ days: z.number().int().min(1).max(3650).optional() }).default({});
 
 export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const pipeline = () => ctx.aiPipeline;
@@ -41,7 +52,7 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
   // Generate a customer-safe draft (+ verification)
   app.post('/api/ai/draft/:conversationId', async (request, reply) => {
     const conversationId = Number((request.params as { conversationId: string }).conversationId);
-    const body = (request.body ?? {}) as { mode?: 'verified_answer' | 'standard'; force?: boolean };
+    const body = draftGenerateSchema.parse(request.body ?? {});
     try {
       const result = await pipeline().generateDraft(conversationId, { mode: body.mode ?? 'verified_answer', force: body.force });
       return { ok: true, ...result };
@@ -54,7 +65,7 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
   // Rewrite a draft (never touches the user's composer)
   app.post('/api/ai/draft/:draftId/rewrite', async (request, reply) => {
     const draftId = Number((request.params as { draftId: string }).draftId);
-    const body = request.body as { instruction: 'shorten' | 'expand' | 'warmer' | 'more_direct' };
+    const body = rewriteSchema.parse(request.body ?? {});
     try {
       const text = await pipeline().rewriteDraft(draftId, body.instruction);
       return { ok: true, text };
@@ -88,7 +99,7 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
   // Draft accept/reject feedback (human review, spec #123)
   app.post('/api/ai/draft/:draftId/feedback', async (request) => {
     const draftId = Number((request.params as { draftId: string }).draftId);
-    const body = request.body as { action: 'accept' | 'reject' | 'edit'; finalText?: string };
+    const body = feedbackSchema.parse(request.body ?? {});
     const draft = ctx.aiRepo.getDraft(draftId);
     if (!draft) return { ok: false, message: 'Draft not found.' };
     if (body.action === 'accept') ctx.aiRepo.setDraftState(draftId, 'accepted');
@@ -114,7 +125,7 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
   });
   app.post('/api/ai/memory/:customerId', async (request) => {
     const customerId = Number((request.params as { customerId: string }).customerId);
-    const body = request.body as { key: string; value: string };
+    const body = memorySchema.parse(request.body ?? {});
     ctx.aiRepo.upsertMemory(customerId, body.key, body.value, { source: 'human', origin: 'manual', confidence: 'high' });
     ctx.jobsRepo.audit({ actor: 'user', action: 'memory_added', ai_involvement: false });
     return { ok: true, message: 'Memory saved (human-entered).' };
@@ -122,7 +133,7 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
 
   // Clustering
   app.post('/api/ai/cluster-issues', async (request, reply) => {
-    const body = (request.body ?? {}) as { days?: number };
+    const body = clusterSchema.parse(request.body ?? {});
     try {
       const result = await pipeline().clusterIssues(body.days ?? 60);
       return { ok: true, ...result };
@@ -135,7 +146,8 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
   // AI jobs list + evaluation data
   app.get('/api/ai/jobs', async (request) => {
     const q = request.query as Record<string, string>;
-    return { jobs: ctx.aiRepo.listJobs(q.limit ? Number(q.limit) : 100) };
+    // v1.6.0 audit fix: ?limit=abc previously reached SQL as NaN -> 500.
+    return { jobs: ctx.aiRepo.listJobs(clampListParam(q.limit, 100, 1, 1000)) };
   });
 
   app.get('/api/ai/analytics', async () => ctx.analytics.aiAnalytics());

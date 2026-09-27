@@ -163,7 +163,11 @@ export class HelpScoutHttpClient {
     }
 
     if (res.status === 429) {
-      const retryAfter = parseInt(res.headers.get('x-ratelimit-retry-after') ?? res.headers.get('retry-after') ?? '30', 10);
+      // v1.6.0 audit fix: a non-numeric Retry-After header parses to NaN, and
+      // Math.min(NaN, 60) is NaN -> setTimeout(NaN) fires immediately -> up to 3
+      // back-to-back retries against an API that just told us to slow down.
+      const parsed = parseInt(res.headers.get('x-ratelimit-retry-after') ?? res.headers.get('retry-after') ?? '30', 10);
+      const retryAfter = Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
       this.limiter.recordError429(retryAfter);
       if (retriesLeft > 0) {
         await this.delay(Math.min(retryAfter, 60) * 1000 + 250);

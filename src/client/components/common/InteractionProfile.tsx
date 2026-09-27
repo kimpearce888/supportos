@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Gauge, Wrench, Check, RotateCcw, Plus } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useInteractionProfile } from '../../api/hooks.js';
-import { Spinner } from './ui.js';
+import { Spinner, ErrorState } from './ui.js';
 import { useUiStore } from '../../state/uiStore.js';
 import { RESPONSE_PREFERENCE_VALUES } from '../../../shared/constants.js';
 
@@ -14,7 +14,10 @@ import { RESPONSE_PREFERENCE_VALUES } from '../../../shared/constants.js';
  * override (spec #22, #45), outcomes, playbook — never psychology.
  */
 export function InteractionProfileSection({ customerId }: { customerId: number }): ReactNode {
-  const { data, isLoading, refetch } = useInteractionProfile(customerId);
+  // v1.6.0 audit fix: the profile query had no error state - a failed fetch
+  // silently rendered nothing.
+  const { data, isLoading, isError, error, refetch } = useInteractionProfile(customerId);
+  if (isError) return <div className="card mt-16"><ErrorState message="Could not load the interaction profile." detail={error instanceof Error ? error.message : undefined} /></div>;
   if (isLoading) return <div className="card mt-16"><Spinner label="Loading interaction profile…" /></div>;
   if (!data?.profile) return null;
   const p = data.profile;

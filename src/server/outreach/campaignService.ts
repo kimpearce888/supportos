@@ -198,6 +198,18 @@ export class CampaignService {
     // rows to the queue here can never race a live batch.
     this.db.prepare("UPDATE outreach_recipients SET state = 'queued' WHERE campaign_id = ? AND state = 'sending'").run(campaignId);
 
+    // v1.6.0 audit fix (HIGH - send-queue livelock): claimPendingRecipients()
+    // filters `attempts < MAX_SEND_ATTEMPTS` while countRemaining() counts ALL
+    // selected/queued rows. A recipient that failed MAX times with a RETRYABLE
+    // error ended up state='queued', attempts=3: never claimable again, but
+    // still counted as remaining -> sendBatch re-enqueued itself forever and
+    // the campaign could never complete. Sweep those rows to 'failed' up front
+    // so remaining reaches zero and the reconcile/completion path runs.
+    const capped = this.outreach.sweepExhaustedRecipients(campaignId);
+    if (capped > 0) {
+      this.outreach.logEvent(campaignId, null, 'recipients_failed_max_attempts', `${capped} recipient(s) exceeded ${MAX_ATTEMPTS} send attempts and are marked failed. Use Retry failed to give them a fresh attempt budget.`);
+    }
+
     const dnc = new Set((this.db.prepare('SELECT customer_local_id FROM do_not_contact').all() as { customer_local_id: number }[]).map((r) => r.customer_local_id));
     const batch = this.outreach.claimPendingRecipients(campaignId, SEND_BATCH);
     let sent = 0;
@@ -236,6 +248,11 @@ export class CampaignService {
         this.outreach.markSent(r.id, result.conversationRemoteId, result.number);
         this.outreach.finishAttempt(attemptId, 'sent', null);
         this.outreach.logEvent(campaignId, r.id, 'recipient_sent', `conversation ${result.number ?? result.conversationRemoteId}${result.createdCustomer ? ' (created new Help Scout contact)' : ''}`);
+        // v1.6.0 audit fix: the created conversation used to land in the local
+        // mirror only on the NEXT 5-minute incremental tick - the operator saw
+        // 'sent' with nothing in the Inbox. Enqueue the single-conversation sync
+        // immediately (same path simulate-incoming and webhooks use).
+        this.jobsRepo.enqueue('sync', 'sync_conversation', { remoteId: result.conversationRemoteId, source: 'outreach' }, 2, 3);
         sent++;
       } catch (e) {
         const err = e as HelpScoutApiError;
@@ -342,7 +359,7 @@ export class CampaignService {
         .prepare(
           `SELECT remote_created_at FROM threads
            WHERE conversation_id = ? AND type = 'customer' AND deleted_at IS NULL
-             AND remote_created_at > COALESCE(?, '1970-01-01') ORDER BY remote_created_at ASC LIMIT 1`
+             AND julianday(remote_created_at) > julianday(COALESCE(?, '1970-01-01')) ORDER BY remote_created_at ASC LIMIT 1`
         )
         .get(conv.id, r.sent_at) as { remote_created_at: string } | undefined;
       if (customerThread) {
@@ -441,7 +458,7 @@ export class CampaignService {
     const reset = this.outreach.resetFailedToQueued(campaignId);
     if (reset > 0) {
       this.outreach.updateCampaignStatus(campaignId, 'queued');
-      this.outreach.logEvent(campaignId, null, 'campaign_retry_failed', `${reset} recipients re-queued`);
+      this.outreach.logEvent(campaignId, null, 'campaign_retry_failed', `${reset} recipients re-queued (attempt budget reset)`);
       this.jobsRepo.enqueue('outreach', 'outreach_send_batch', { campaignId }, 1, 5);
     }
     this.emitProgress(campaignId);

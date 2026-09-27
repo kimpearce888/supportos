@@ -189,6 +189,17 @@ export class AutomationEngine {
     // search_similar / check_known_issues are performed as part of analyze_ticket evidence
   }
 
+  // v1.6.0 audit fix: public entry point for APPROVED awaiting-approval jobs -
+  // the worker calls this after a human approves the parked action in the Queue
+  // panel. Same dispatch as the non-destructive path.
+  async executeApprovedAction(kind: AutomationActionKind, conversationId: number, params: Record<string, string>): Promise<void> {
+    await this.executeNonDestructive(kind, conversationId, params);
+  }
+
+  recordApprovedRun(ruleId: number, conversationId: number, kind: string): void {
+    this.record(ruleId, conversationId, 'completed', `Approved by human: executed ${kind}`);
+  }
+
   private async executeNonDestructive(kind: AutomationActionKind, conversationId: number, params: Record<string, string>): Promise<void> {
     if (kind === 'create_ai_note') {
       this.jobs.enqueue('ai', 'create_ai_note', { conversationId }, 2, 1);

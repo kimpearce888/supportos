@@ -40,6 +40,8 @@ export class WorkerManager {
   rebindCoordinator(coordinator: SyncCoordinator): void {
     this.coordinator = coordinator;
     this.operations = new ConversationOperations(this.ctx.db, this.ctx.provider);
+    // v1.6.0: keep the shared-coordinator binding alive across provider rebinds.
+    this.operations.bindCoordinator(coordinator);
   }
 
   rebindPipeline(pipeline: AiPipeline): void {
@@ -163,11 +165,21 @@ export class WorkerManager {
   private async maintenance(): Promise<void> {
     try {
       this.ctx.issueRepo.computeTrends();
+      // v1.6.0 audit fix: the timer fires every 6h and used to create a backup
+      // on EVERY tick whenever backup_interval_hours was set - with the default
+      // 24h interval that meant 4x the configured rate, and nothing ever pruned
+      // old files (unbounded backups dir). Now the interval is actually honored
+      // (elapsed time since the newest backup) and only the newest 20 are kept.
       const backupHours = this.ctx.settingsRepo.get<number | null>('backup_interval_hours', 24);
       if (backupHours && backupHours > 0) {
-        const result = this.ctx.backup.backup();
-        if (result.ok) this.logger.info('Automatic backup created', { operation: 'backup' });
+        const newest = this.ctx.backup.listBackups()[0];
+        const elapsedMs = newest ? Date.now() - Date.parse(newest.created_at) : Number.POSITIVE_INFINITY;
+        if (!Number.isFinite(elapsedMs) || elapsedMs >= backupHours * 3600_000) {
+          const result = this.ctx.backup.backup();
+          if (result.ok) this.logger.info('Automatic backup created', { operation: 'backup' });
+        }
       }
+      this.ctx.backup.pruneBackups(20);
       this.enforceRetention();
     } catch (e) {
       this.logger.warn('Maintenance failed', { operation: 'maintenance', error: String(e) });
@@ -193,7 +205,7 @@ export class WorkerManager {
     ];
     for (const [table, column] of tables) {
       try {
-        const result = this.ctx.db.prepare(`DELETE FROM ${table} WHERE ${column} < ?`).run(cutoff);
+        const result = this.ctx.db.prepare(`DELETE FROM ${table} WHERE julianday(${column}) < julianday(?)`).run(cutoff);
         if (result.changes > 0) this.logger.info('Retention pruning', { operation: 'retention', table, removed: result.changes });
       } catch {
         /* table/column missing on older schemas - skip */
@@ -288,8 +300,41 @@ export class WorkerManager {
           break;
         }
         case 'sync_conversation_ratings': {
-          // Ratings arrive via satisfaction.ratings webhook; re-sync the conversation to pick up embedded state
-          if (payload.remoteId) await this.coordinator.syncSingleConversation(Number(payload.remoteId));
+          // v1.6.0 audit fix: the payload key is conversationId (the webhook
+          // producer) - this used to read payload.remoteId, which never existed,
+          // so rating webhooks were silent no-ops. With a ratingId we fetch and
+          // store the actual rating (SSE rating-received fires like the watcher);
+          // otherwise we fall back to re-syncing the conversation.
+          const ratingId = payload.ratingId != null ? Number(payload.ratingId) : null;
+          const convRemote = payload.conversationId != null ? Number(payload.conversationId) : payload.remoteId != null ? Number(payload.remoteId) : null;
+          if (ratingId && Number.isFinite(ratingId)) {
+            const r = await this.ctx.provider.getRating(ratingId).catch(() => null);
+            if (r) {
+              const convRow = r.conversationId ? this.ctx.conversationRepo.getConversationByRemoteId(r.conversationId) : undefined;
+              const inserted = this.ctx.peopleRepo.upsertRating({
+                remote_id: r.remoteId,
+                conversation_local_id: convRow?.id ?? null,
+                rating: r.rating,
+                comments: r.comments,
+                customer_local_id: r.customerId ? this.ctx.referenceRepo.getLocalId('customers', r.customerId) : null,
+                user_local_id: r.userId ? this.ctx.referenceRepo.getLocalId('users', r.userId) : null,
+                createdAt: r.createdAt,
+                raw: r
+              });
+              if (inserted) {
+                serverEventBus.emit('rating-received', {
+                  rating: r.rating,
+                  conversationId: convRow?.id ?? null,
+                  conversationNumber: convRow?.number ?? null,
+                  customerId: r.customerId ? this.ctx.referenceRepo.getLocalId('customers', r.customerId) : null,
+                  customerName: r.customerName ?? null,
+                  comments: r.comments,
+                  at: new Date().toISOString()
+                });
+              }
+            }
+          }
+          if (convRemote && Number.isFinite(convRemote)) await this.coordinator.syncSingleConversation(convRemote);
           break;
         }
         // ---------- ai queue ----------
@@ -313,8 +358,20 @@ export class WorkerManager {
           break;
         }
         case 'automation_action_awaiting_approval': {
-          // Awaiting approval jobs stay queued until a human approves them in the Queue panel
-          this.ctx.jobsRepo.completeJob(jobId);
+          // v1.6.0 audit fix: these jobs used to be completed instantly as no-ops -
+          // the write action was silently dropped and the operator never saw
+          // anything to approve. Now they are PARKED with a distinct status:
+          // visible in the Queue panel, approve with Retry (payload gains
+          // approved=true) or reject with Cancel.
+          if (payload.approved === true) {
+            const action = payload.action as { kind: string; params?: Record<string, string> } | undefined;
+            if (action) {
+              await this.ctx.automation.executeApprovedAction(action.kind as never, Number(payload.conversationId), action.params ?? {});
+              this.ctx.automation.recordApprovedRun(Number(payload.ruleId), Number(payload.conversationId), action.kind);
+            }
+          } else {
+            this.ctx.jobsRepo.parkJob(jobId);
+          }
           break;
         }
         // ---------- api queue (writes + bulk) ----------
@@ -322,22 +379,33 @@ export class WorkerManager {
         case 'bulk_untag':
         case 'add_tag': {
           const tag = String(payload.tag ?? '');
-          if (tag) await this.operations.updateTags(Number(payload.conversationId), { add: [tag] });
+          if (tag) {
+            const r = await this.operations.updateTags(Number(payload.conversationId), { add: [tag] });
+            // v1.6.0 audit fix (found during human-like testing): bulk writes are
+            // write-behind ("2 operations queued") - the client invalidates its
+            // queries when the API ACKS, which races the job and reads STALE
+            // state. Emit conversation-updated AFTER the write lands so the SSE
+            // bridge invalidates again and the list shows the new tags.
+            if (r.ok) this.emitConversationUpdated(Number(payload.conversationId));
+          }
           break;
         }
         case 'bulk_assign': {
           const userId = payload.userId != null ? Number(payload.userId) : null;
-          await this.operations.assign(Number(payload.conversationId), userId);
+          const r = await this.operations.assign(Number(payload.conversationId), userId);
+          if (r.ok) this.emitConversationUpdated(Number(payload.conversationId));
           break;
         }
         case 'bulk_unassign': {
-          await this.operations.assign(Number(payload.conversationId), null);
+          const r = await this.operations.assign(Number(payload.conversationId), null);
+          if (r.ok) this.emitConversationUpdated(Number(payload.conversationId));
           break;
         }
         case 'bulk_status':
         case 'bulk_close': {
           const status = type === 'bulk_close' ? 'closed' : String(payload.status ?? 'closed');
-          await this.operations.changeStatus(Number(payload.conversationId), status as 'active' | 'closed' | 'pending' | 'spam');
+          const r = await this.operations.changeStatus(Number(payload.conversationId), status as 'active' | 'closed' | 'pending' | 'spam');
+          if (r.ok) this.emitConversationUpdated(Number(payload.conversationId));
           break;
         }
         // ---------- attachments queue ----------
@@ -481,6 +549,30 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * v1.6.0 audit fix: write-behind jobs (bulk tag/assign/close, single-tag
+   * writes) change conversation state seconds after the API acked. Emit the
+   * same conversation-updated event the sync path emits so connected clients
+   * re-fetch and converge on the post-write state.
+   */
+  private emitConversationUpdated(conversationLocalId: number): void {
+    try {
+      const local = this.ctx.conversationRepo.getConversationByLocalId(conversationLocalId);
+      if (local) {
+        serverEventBus.emit('conversation-updated', {
+          conversationId: local.id,
+          conversationNumber: local.number,
+          mailboxId: local.mailbox_local_id ?? null,
+          subject: local.subject ?? null,
+          reason: 'sync',
+          at: new Date().toISOString()
+        });
+      }
+    } catch {
+      /* notification failures never break the worker */
+    }
+  }
+
   /** Fire automation triggers + auto-analysis when a conversation changes. */
   private async onConversationChanged(conversationLocalId: number, source: 'sync' | 'manual'): Promise<void> {
     void source;
@@ -525,7 +617,7 @@ export class WorkerManager {
         const c = chunks[i]!;
         const v = vectors[i];
         if (!v || v.length === 0) {
-          this.ctx.docsRepo.setDocChunkEmbeddingState(c.id, 'failed', null);
+          this.ctx.docsRepo.markDocChunkFailed(c.id);
           continue;
         }
         this.ctx.docsRepo.updateDocChunkEmbedding(c.id, settings.embedding_model, new Float32Array(v), 'indexed');
@@ -555,7 +647,7 @@ export class WorkerManager {
       }
       this.logger.info('Docs chunk embedding pass completed', { operation: 'embed_docs', chunks: chunks.length, qdrant: qdrantHealth.connected });
     } catch (e) {
-      for (const c of chunks) this.ctx.docsRepo.setDocChunkEmbeddingState(c.id, 'failed', null);
+      for (const c of chunks) this.ctx.docsRepo.markDocChunkFailed(c.id);
       this.logger.warn('Docs embedding pass failed', { operation: 'embed_docs', error: String(e) });
     }
   }
@@ -578,7 +670,7 @@ export class WorkerManager {
         const c = chunks[i]!;
         const v = vectors[i];
         if (!v || v.length === 0) {
-          this.ctx.conversationRepo.setConversationChunkEmbeddingState(c.id, 'failed', null);
+          this.ctx.conversationRepo.markConversationChunkFailed(c.id);
           continue;
         }
         this.ctx.conversationRepo.updateConversationChunkEmbedding(c.id, settings.embedding_model, new Float32Array(v), 'indexed');
@@ -614,7 +706,7 @@ export class WorkerManager {
       }
       this.logger.info('Conversation chunk embedding pass completed', { operation: 'embed_conversations', chunks: chunks.length, qdrant: qdrantHealth.connected });
     } catch (e) {
-      for (const c of chunks) this.ctx.conversationRepo.setConversationChunkEmbeddingState(c.id, 'failed', null);
+      for (const c of chunks) this.ctx.conversationRepo.markConversationChunkFailed(c.id);
       this.logger.warn('Conversation embedding pass failed', { operation: 'embed_conversations', error: String(e) });
     }
   }

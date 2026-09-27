@@ -138,6 +138,13 @@ export class SyncRepository {
     return { id: Number(r.lastInsertRowid), duplicate: false };
   }
 
+  // v1.6.0 audit fix: bound the webhook_events table (rate-limit-exempt endpoint).
+  pruneWebhookEvents(keep: number): void {
+    this.db.prepare(
+      `DELETE FROM webhook_events WHERE id NOT IN (SELECT id FROM webhook_events ORDER BY id DESC LIMIT ?)`
+    ).run(Math.max(1, keep));
+  }
+
   setWebhookEventState(id: number, state: WebhookEventRecord['processing_state'], error?: string): void {
     this.db.prepare('UPDATE webhook_events SET processing_state = ?, processing_error = ?, attempts = attempts + 1 WHERE id = ?').run(state, error ?? null, id);
   }

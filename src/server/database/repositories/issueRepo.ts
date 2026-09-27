@@ -102,15 +102,15 @@ export class IssueRepository {
   computeTrends(): void {
     this.db.exec(`
       UPDATE issue_clusters SET trend = CASE
-        WHEN first_seen_at >= datetime('now', '-14 days') THEN 'new'
+        WHEN julianday(first_seen_at) >= julianday('now', '-14 days') THEN 'new'
         ELSE 'stable'
       END
     `);
     const clusters = this.db
       .prepare(
         `SELECT ic.id,
-          (SELECT COUNT(*) FROM issue_cluster_conversations icc JOIN conversations c ON c.id = icc.conversation_id WHERE icc.cluster_id = ic.id AND c.remote_created_at >= datetime('now', '-14 days')) AS recent,
-          (SELECT COUNT(*) FROM issue_cluster_conversations icc JOIN conversations c ON c.id = icc.conversation_id WHERE icc.cluster_id = ic.id AND c.remote_created_at >= datetime('now', '-28 days') AND c.remote_created_at < datetime('now', '-14 days')) AS previous
+          (SELECT COUNT(*) FROM issue_cluster_conversations icc JOIN conversations c ON c.id = icc.conversation_id WHERE icc.cluster_id = ic.id AND julianday(c.remote_created_at) >= julianday('now', '-14 days')) AS recent,
+          (SELECT COUNT(*) FROM issue_cluster_conversations icc JOIN conversations c ON c.id = icc.conversation_id WHERE icc.cluster_id = ic.id AND julianday(c.remote_created_at) >= julianday('now', '-28 days') AND julianday(c.remote_created_at) < julianday('now', '-14 days')) AS previous
          FROM issue_clusters ic`
       )
       .all() as { id: number; recent: number; previous: number }[];

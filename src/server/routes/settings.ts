@@ -9,6 +9,17 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
+// v1.6.0 audit fix: business-hours `days` is stored as JSON text; a corrupt row
+// must degrade to null instead of throwing and 500ing the route.
+function safeParseDays(raw: string): number[] | null {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) && v.every((d) => typeof d === 'number') ? (v as number[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/api/settings', async () => ctx.settingsRepo.getAllSettings());
 
@@ -35,14 +46,17 @@ export async function registerSettingsRoutes(app: FastifyInstance, ctx: AppConte
   // LM Studio settings + connection test + model discovery
   app.get('/api/settings/lmstudio', async () => ctx.settingsRepo.getLmStudio());
 
-  app.patch('/api/settings/lmstudio', async (request) => {
+  app.patch('/api/settings/lmstudio', async (request, reply) => {
     const parsed = lmStudioSettingsSchema.partial().safeParse(request.body);
     if (!parsed.success) {
-      return { ok: false, message: 'Invalid LM Studio settings.' };
+      // v1.6.0 audit fix: sibling settings route 422s on invalid input; this
+      // one used to return HTTP 200 ok:false. Consistent 422 now.
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'Invalid LM Studio settings.' });
+      return;
     }
     ctx.settingsRepo.updateLmStudio(parsed.data);
     ctx.lmStudio.refreshFromSettings();
-    ctx.aiPipeline = ctx.aiPipeline; // settings are read per-request
+    // Settings are read per-request by the pipeline - nothing else to refresh.
     return { ok: true, message: 'LM Studio settings saved.' };
   });
 
@@ -72,7 +86,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, ctx: AppConte
           name: m.name,
           configured: row != null,
           timezone: row?.timezone ?? null,
-          days: row ? (JSON.parse(row.days) as number[]) : null,
+          // v1.6.0 audit fix: one corrupt row must not 500 the whole route.
+          days: row ? (safeParseDays(row.days)) : null,
           start_minute: row?.start_minute ?? null,
           end_minute: row?.end_minute ?? null,
           first_response_target_min: row?.first_response_target_min ?? null,

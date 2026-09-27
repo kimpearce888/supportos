@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { Spinner, ErrorState, KV } from '../components/common/ui.js';
@@ -150,11 +150,15 @@ function HelpScoutSettings({ oauth, pushToast }: { oauth: { configured: boolean;
   });
   const clientCreds = useMutation({
     mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/oauth/client-credentials'),
-    onSuccess: (r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message })
+    onSuccess: (r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message }),
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   const disconnect = useMutation({
     mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/oauth/disconnect'),
-    onSuccess: (r) => pushToast({ kind: 'success', message: r.message })
+    onSuccess: (r) => pushToast({ kind: 'success', message: r.message }),
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   return (
     <div className="card" style={{ maxWidth: 640 }}>
@@ -181,17 +185,36 @@ function LmStudioSettings({ lm, pushToast }: { lm: { base_url: string; chat_mode
   const [embeddingModel, setEmbeddingModel] = useState(lm?.embedding_model ?? '');
   const [timeout, setTimeoutMs] = useState(lm?.timeout_ms ?? 120000);
   const [concurrency, setConcurrency] = useState(lm?.concurrency ?? 2);
+  // v1.6.0 audit fix (settings data loss): the form state was initialized ONCE
+  // from `lm`, which is undefined until the settings query resolves - the form
+  // silently showed DEFAULTS and Save overwrote the real saved settings with
+  // them. Re-sync as soon as the loaded settings arrive (before the user edits).
+  const [lmLoaded, setLmLoaded] = useState(false);
+  useEffect(() => {
+    if (lm && !lmLoaded) {
+      setBaseUrl(lm.base_url);
+      setChatModel(lm.chat_model ?? '');
+      setEmbeddingModel(lm.embedding_model ?? '');
+      setTimeoutMs(lm.timeout_ms);
+      setConcurrency(lm.concurrency);
+      setLmLoaded(true);
+    }
+  }, [lm, lmLoaded]);
   const [models, setModels] = useState<string[]>([]);
   const save = useMutation({
     mutationFn: () => api.patch<{ ok: boolean; message: string }>('/api/settings/lmstudio', { base_url: baseUrl, chat_model: chatModel || null, embedding_model: embeddingModel || null, timeout_ms: timeout, concurrency }),
-    onSuccess: (r) => pushToast({ kind: 'success', message: r.message })
+    onSuccess: (r) => pushToast({ kind: 'success', message: r.message }),
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   const test = useMutation({
     mutationFn: () => api.post<{ ok: boolean; connected: boolean; models: string[]; message: string }>('/api/settings/lmstudio/test'),
     onSuccess: (r) => {
       setModels(r.models);
       pushToast({ kind: r.connected ? 'success' : 'error', message: r.message });
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   return (
     <div className="card" style={{ maxWidth: 640 }}>
@@ -243,17 +266,31 @@ function LmStudioSettings({ lm, pushToast }: { lm: { base_url: string; chat_mode
 function QdrantSettings({ qdrant, pushToast }: { qdrant: { url: string; enabled: boolean } | undefined; pushToast: (t: { kind: 'success' | 'error' | 'warning' | 'info'; message: string }) => void }): ReactNode {
   const [url, setUrl] = useState(qdrant?.url ?? 'http://127.0.0.1:6333');
   const [enabled, setEnabled] = useState(qdrant?.enabled ?? true);
+  // v1.6.0 audit fix: same default-capture data-loss bug as the LM form - see
+  // LmStudioSettings. Re-sync when loaded settings arrive, before first edit.
+  const [qdrantLoaded, setQdrantLoaded] = useState(false);
+  useEffect(() => {
+    if (qdrant && !qdrantLoaded) {
+      setUrl(qdrant.url);
+      setEnabled(qdrant.enabled);
+      setQdrantLoaded(true);
+    }
+  }, [qdrant, qdrantLoaded]);
   const [result, setResult] = useState<string | null>(null);
   const save = useMutation({
     mutationFn: () => api.patch<{ ok: boolean; message: string }>('/api/settings/qdrant', { url, enabled }),
-    onSuccess: (r) => pushToast({ kind: 'success', message: r.message })
+    onSuccess: (r) => pushToast({ kind: 'success', message: r.message }),
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   const test = useMutation({
     mutationFn: () => api.post<{ ok: boolean; connected: boolean; message: string }>('/api/settings/qdrant/test'),
     onSuccess: (r) => {
       setResult(r.message);
       pushToast({ kind: r.connected ? 'success' : 'warning', message: r.message });
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   return (
     <div className="card" style={{ maxWidth: 640 }}>
@@ -279,15 +316,21 @@ function BackupsSettings({ backups, refetch, pushToast }: { backups: { file: str
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message + (r.verified ? ' (integrity verified)' : '') });
       void refetch();
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   const exportJson = useMutation({
     mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/backups/export-json'),
-    onSuccess: (r) => pushToast({ kind: 'success', message: r.message })
+    onSuccess: (r) => pushToast({ kind: 'success', message: r.message }),
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   const exportCsv = useMutation({
     mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/backups/export-csv'),
-    onSuccess: (r) => pushToast({ kind: 'success', message: r.message })
+    onSuccess: (r) => pushToast({ kind: 'success', message: r.message }),
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
   return (
     <div className="card" style={{ maxWidth: 720 }}>
@@ -358,7 +401,9 @@ function BusinessHoursSettings({ pushToast }: { pushToast: (t: { kind: 'success'
       pushToast({ kind: 'success', message: r.message });
       void qc.invalidateQueries({ queryKey: ['business-hours'] });
       void qc.invalidateQueries({ queryKey: ['sla-report'] });
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   if (isLoading || !data) return <Spinner label="Loading business hours" />;
@@ -497,12 +542,16 @@ function EncryptedSyncSettings({ pushToast }: { pushToast: (t: { kind: 'success'
       void refetch();
       setPassphrase('');
       setConfirm('');
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   const verifyBundle = useMutation({
     mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/sync/encrypted/verify', { path: importPath, passphrase: importPass }),
-    onSuccess: (r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message })
+    onSuccess: (r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message }),
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   const importBundle = useMutation({
@@ -510,7 +559,9 @@ function EncryptedSyncSettings({ pushToast }: { pushToast: (t: { kind: 'success'
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'warning' : 'error', message: r.message });
       void refetch();
-    }
+    },
+    // v1.6.0 audit fix: surface network failures instead of a silent no-op.
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Request failed.' })
   });
 
   const uploadBundle = useMutation({

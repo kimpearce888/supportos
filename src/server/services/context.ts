@@ -130,6 +130,8 @@ export class AppContext {
     // Services
     this.coordinator = new SyncCoordinator(this.db, this.provider);
     this.operations = new ConversationOperations(this.db, this.provider);
+    // v1.6.0: single-conversation refreshes reuse the shared coordinator.
+    this.operations.bindCoordinator(this.coordinator);
     this.search = new SearchEngine(this.db);
     this.lmStudio = new LmStudioClient(this.settingsRepo);
     const aiEnabled = this.settingsRepo.get('ai_enabled', true);
@@ -189,6 +191,7 @@ export class AppContext {
   private rebindProvider(): void {
     this.coordinator = new SyncCoordinator(this.db, this.provider);
     this.operations = new ConversationOperations(this.db, this.provider);
+    this.operations.bindCoordinator(this.coordinator);
     this.campaigns = new CampaignService(this.db, this.provider, this.outreachRepo, this.peopleRepo, this.jobsRepo);
     this.workers.rebindCoordinator(this.coordinator);
   }

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
 import type { SegmentDefinition, RecipientWhyTicket } from '../../shared/segmentation.js';
 import { OPERATORS_BY_TYPE } from '../../shared/segmentation.js';
+import { z } from 'zod';
 
 /**
  * Outreach API (v1.5.0) - Client Segmentation & Outreach.
@@ -108,11 +109,10 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
   app.get('/api/outreach/segments', async () => ({ segments: ctx.outreachRepo.listSegments() }));
 
   app.post('/api/outreach/segments', async (request, reply) => {
-    const body = request.body as { id?: number; name?: string; description?: string | null; definition?: unknown };
-    if (!body?.name?.trim()) {
-      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'A segment name is required.' });
-      return;
-    }
+    // v1.6.0 audit fix: numeric name hit `.trim()` -> 500; zod now.
+    const body = z
+      .object({ id: z.number().int().positive().optional(), name: z.string().min(1).max(200), description: z.string().max(2000).nullable().optional(), definition: z.unknown().optional() })
+      .parse(request.body ?? {});
     const tree = parseTree(body.definition ?? { combinator: 'all', conditions: [], exclude: [] });
     if (!tree) {
       reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'definition must be { combinator, conditions[], exclude[] }.' });
@@ -131,20 +131,20 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
   // ---------------- Campaigns ----------------
 
   app.post('/api/outreach/campaigns', async (request, reply) => {
-    const body = request.body as {
-      name?: string;
-      subject?: string;
-      body?: string;
-      mailbox_local_id?: number;
-      tags?: string[];
-      segment_id?: number | null;
-      definition?: unknown;
-      customer_ids?: number[];
-    };
-    if (!body?.name?.trim() || !body?.subject?.trim() || !body?.body?.trim()) {
-      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'name, subject and body are required.' });
-      return;
-    }
+    // v1.6.0 audit fix: the loose cast meant numeric name/subject/body hit
+    // `.trim()` and crashed with 500s. The wire shape is zod-validated now.
+    const body = z
+      .object({
+        name: z.string().min(1).max(200),
+        subject: z.string().min(1).max(500),
+        body: z.string().min(1).max(200000),
+        mailbox_local_id: z.number().int().positive(),
+        tags: z.array(z.string().max(100)).max(20).optional(),
+        segment_id: z.number().int().positive().nullable().optional(),
+        definition: z.unknown().optional(),
+        customer_ids: z.array(z.number().int().positive()).optional()
+      })
+      .parse(request.body ?? {});
     const mailbox = ctx.db.prepare('SELECT id, remote_id FROM mailboxes WHERE id = ? AND deleted_at IS NULL').get(Number(body.mailbox_local_id)) as { id: number; remote_id: number } | undefined;
     if (!mailbox) {
       reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'A valid sending mailbox is required.' });
@@ -313,8 +313,18 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
     return { ok: true, message: 'Added to Do-Not-Contact. Every future campaign skips this customer.' };
   });
 
-  app.delete('/api/outreach/dnc/:customerLocalId', async (request) => {
-    ctx.outreachRepo.removeDnc(Number((request.params as { customerLocalId: string }).customerLocalId));
+  app.delete('/api/outreach/dnc/:customerLocalId', async (request, reply) => {
+    // v1.6.0 audit fix: NaN/nonexistent ids returned ok:true silently; 404 now.
+    const raw = Number((request.params as { customerLocalId: string }).customerLocalId);
+    if (!Number.isInteger(raw) || raw <= 0) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'A positive numeric customer id is required.' });
+      return;
+    }
+    const ok = ctx.outreachRepo.removeDnc(raw);
+    if (!ok) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Customer is not on the Do-Not-Contact list.' });
+      return;
+    }
     return { ok: true, message: 'Removed from Do-Not-Contact.' };
   });
 }

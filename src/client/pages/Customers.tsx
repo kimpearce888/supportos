@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Search } from 'lucide-react';
 import { api, qs } from '../api/client.js';
-import { Spinner, EmptyState, ErrorState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, StatusBadge, RelativeTime, KV, safeExternalHref } from '../components/common/ui.js';
 import { InteractionProfileSection } from '../components/common/InteractionProfile.js';
 import type { CustomerSummary } from '../../shared/types.js';
 
@@ -115,9 +115,11 @@ export function CustomerDetailPage(): ReactNode {
             <KV key={p} k="Phone" v={p} />
           ))}
           {data.address ? <KV k="Address" v={data.address} /> : null}
-          {data.websites.map((w) => (
-            <KV key={w} k="Website" v={<a href={w} target="_blank" rel="noopener noreferrer">{w}</a>} />
-          ))}
+          {/* v1.6.0 audit fix: scheme-check mirrored customer websites before rendering as links. */}
+          {data.websites.map((w) => {
+            const href = safeExternalHref(w);
+            return <KV key={w} k="Website" v={href ? <a href={href} target="_blank" rel="noopener noreferrer">{w}</a> : w} />;
+          })}
           {data.social_profiles.map((s, i) => (
             <KV key={`${i}-${s.value}`} k={s.type ?? 'Social'} v={s.value} />
           ))}

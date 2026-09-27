@@ -100,9 +100,14 @@ export function App(): ReactNode {
 
   // First-run experience (spec #100)
   const showOnboarding = onboarding && !onboarding.completed && location.pathname !== '/onboarding';
+  // v1.6.0 audit fix: during first-run onboarding the full sidebar rendered
+  // around the wizard - every nav item was visible but dead (the guard bounced
+  // clicks straight back). Hide the shell while the wizard is active.
+  const onboardingActive = onboarding != null && !onboarding.completed;
 
   return (
     <div className="app-shell">
+      {onboardingActive ? null : (
       <nav className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`} aria-label="Main navigation">
         <div className="sidebar-brand">
           <span className="logo">S</span>
@@ -137,6 +142,7 @@ export function App(): ReactNode {
           </button>
         </div>
       </nav>
+      )}
       <div className="main-area">
         {showOnboarding ? <Navigate to="/onboarding" replace /> : null}
         <Routes>

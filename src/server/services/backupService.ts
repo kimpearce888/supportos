@@ -90,6 +90,36 @@ export class BackupService {
   }
 
   /**
+   * v1.6.0 audit fix: keep only the newest `keep` backup FILES (.db + matching
+   * .settings.json snapshots). Without this the backups directory grew forever
+   * (one new file pair per accepted maintenance tick). Encrypted .sosync
+   * bundles are NOT touched - the encrypted-sync service prunes those itself.
+   */
+  pruneBackups(keep: number): number {
+    try {
+      const files = fs
+        .readdirSync(this.backupsDir)
+        .filter((f) => f.endsWith('.db'))
+        .map((f) => ({ f, mtimeMs: fs.statSync(path.join(this.backupsDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      let removed = 0;
+      for (const old of files.slice(Math.max(1, keep))) {
+        try {
+          fs.rmSync(path.join(this.backupsDir, old.f));
+          fs.rmSync(path.join(this.backupsDir, old.f.replace(/\.db$/, '.settings.json')), { force: true });
+          this.verificationCache.delete(path.join(this.backupsDir, old.f));
+          removed++;
+        } catch {
+          // individual prune failures must never break maintenance
+        }
+      }
+      return removed;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
    * Restore: caller must close the current DB first (this app stops workers and restarts).
    * Returns instructions; the actual swap is done by the CLI script.
    */

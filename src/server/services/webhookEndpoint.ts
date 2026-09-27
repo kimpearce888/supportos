@@ -48,6 +48,12 @@ export class WebhookEndpoint {
     }
     // Persist first (fast ack)
     const { id, duplicate } = this.sync.insertWebhookEvent(eventType, raw);
+    // v1.6.0 audit fix: the endpoint is rate-limit-exempt by design (HMAC-authenticated
+    // when a secret is set, deduplicated by hash) but nothing bounded the table.
+    // Unsigned replay with varied payloads could grow webhook_events forever;
+    // keep the newest 5,000 rows (processed ones older than that are audit
+    // history nobody reads).
+    this.sync.pruneWebhookEvents(5000);
     if (duplicate) {
       this.sync.setWebhookEventState(id, 'duplicate');
       reply.code(200).send({ received: true, duplicate: true });
@@ -69,7 +75,11 @@ export class WebhookEndpoint {
         this.sync.setWebhookEventState(id, 'failed', 'Unparseable payload');
         return;
       }
-      const conversationId = (payload.objectID ?? payload.id ?? payload.conversationId) as number | undefined;
+      const conversationIdRaw = payload.objectID ?? payload.id ?? payload.conversationId;
+      // v1.6.0 audit fix: Help Scout sends numeric ids, but anything else (a
+      // string) used to flow into job payloads unchecked. Only finite positive
+      // numbers are treated as conversation ids now.
+      const conversationId = typeof conversationIdRaw === 'number' && Number.isFinite(conversationIdRaw) && conversationIdRaw > 0 ? conversationIdRaw : undefined;
       switch (eventType) {
         case 'convo.created':
         case 'convo.updated':
@@ -102,9 +112,17 @@ export class WebhookEndpoint {
         case 'organization.deleted':
           this.jobs.enqueue('sync', 'sync_organizations', {}, 3, 2);
           break;
-        case 'satisfaction.ratings':
-          this.jobs.enqueue('sync', 'sync_conversation_ratings', { conversationId: conversationId ?? null }, 3, 2);
+        case 'satisfaction.ratings': {
+          // v1.6.0 audit fix: this used to enqueue {conversationId} while the
+          // worker read payload.remoteId - the job was a silent NO-OP on real
+          // accounts (ratings never landed without a full re-sync). The rating
+          // id from the webhook payload now rides along and the worker fetches
+          // + stores the actual rating.
+          const ratingIdRaw = payload.ratingId ?? payload.rating_id ?? payload.id;
+          const ratingId = typeof ratingIdRaw === 'number' && Number.isFinite(ratingIdRaw) && ratingIdRaw > 0 ? ratingIdRaw : null;
+          this.jobs.enqueue('sync', 'sync_conversation_ratings', { conversationId: conversationId ?? null, ratingId }, 3, 2);
           break;
+        }
         case 'tag.created':
         case 'tag.updated':
         case 'tag.deleted':

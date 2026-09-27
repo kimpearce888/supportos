@@ -391,7 +391,7 @@ export class AnalyticsService {
     }
     // Escalation-heavy
     const escalated = this.db
-      .prepare("SELECT c.id FROM conversations c JOIN conversation_tags ct ON ct.conversation_id = c.id JOIN tags t ON t.id = ct.tag_local_id WHERE t.name = 'escalated' AND c.deleted_at IS NULL AND c.remote_created_at >= datetime('now', '-30 days')")
+      .prepare("SELECT c.id FROM conversations c JOIN conversation_tags ct ON ct.conversation_id = c.id JOIN tags t ON t.id = ct.tag_local_id WHERE t.name = 'escalated' AND c.deleted_at IS NULL AND julianday(c.remote_created_at) >= julianday('now', '-30 days')")
       .all() as { id: number }[];
     if (escalated.length >= 2) {
       alerts.push({

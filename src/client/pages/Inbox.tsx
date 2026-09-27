@@ -1,6 +1,6 @@
 import { type ReactNode, useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useSearchParams, useNavigate, Link } from 'react-router-dom';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   RefreshCw, Reply, StickyNote, Send, Bookmark, ExternalLink, Paperclip, Download,
   ChevronLeft, ChevronRight, Bot, User, Clock, Trash2, CheckCircle2, XCircle,   ShieldCheck, Sparkles, Wand2, ChevronDown, ChevronUp, Tag, Mail, Building2,
@@ -9,7 +9,7 @@ import {
 import { api } from '../api/client.js';
 import { useConversations, useConversationDetail, useReference } from '../api/hooks.js';
 import { ClientIntelligenceCard } from '../components/common/InteractionCard.js';
-import { Spinner, EmptyState, StatusBadge, TagChips, RelativeTime, ConfidenceBadge, VerifiedBadge } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, StatusBadge, TagChips, RelativeTime, ConfidenceBadge, VerifiedBadge } from '../components/common/ui.js';
 import { ConfirmDialog, Modal } from '../components/common/overlays.js';
 import { SafeHtml } from '../components/common/SafeHtml.js';
 import { useUiStore } from '../state/uiStore.js';
@@ -39,7 +39,7 @@ export function InboxPage(): ReactNode {
   const channelParam = params.get('channel');
   const channel = channelParam === 'email' || channelParam === 'chat' ? channelParam : null;
   const selectedId = id != null && Number.isFinite(Number(id)) ? Number(id) : null;
-  const { data, isLoading } = useConversations(view, page, params.get('tag'), channel);
+  const { data, isLoading, isError, error } = useConversations(view, page, params.get('tag'), channel);
   const pushToast = useUiStore((s) => s.pushToast);
 
   const [selection, setSelection] = useState<number[]>([]);
@@ -72,12 +72,20 @@ export function InboxPage(): ReactNode {
     setSelection((s) => (s.includes(convId) ? s.filter((x) => x !== convId) : [...s, convId]));
   };
 
+  const queryClient = useQueryClient();
   const bulk = useMutation({
     mutationFn: (input: { action: string; params: Record<string, string | number | null> }) => api.post<{ ok: boolean; message: string }>('/api/conversations/bulk', { conversationIds: selection, action: input.action, params: input.params }),
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       setBulkAction(null);
       setSelection([]);
+      // v1.6.0 audit fix: bulk tag/assign/close changed server state but the
+      // list (and nav badge counts) kept showing the pre-bulk state until a
+      // manual refresh. Invalidate the conversation-shaped queries.
+      if (r.ok) {
+        void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        void queryClient.invalidateQueries({ queryKey: ['nav-counts'] });
+      }
     },
     onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
   });
@@ -119,11 +127,22 @@ export function InboxPage(): ReactNode {
         ) : null}
         <div style={{ flex: 1, overflowY: 'auto' }} role="list">
           {isLoading ? <Spinner label="Loading conversations" /> : null}
-          {!isLoading && conversations.length === 0 ? <EmptyState title="No conversations in this view" hint="Try another view, or run a sync from Sync Health." /> : null}
+          {isError ? <ErrorState message="Could not load conversations." detail={error instanceof Error ? error.message : undefined} /> : null}
+          {!isLoading && !isError && conversations.length === 0 ? <EmptyState title="No conversations in this view" hint="Try another view, or run a sync from Sync Health." /> : null}
           {conversations.map((c) => (
             <div
               key={c.id}
               role="listitem"
+              // v1.6.0 audit fix: rows were click-only - keyboard users could
+              // never open a conversation from the main list. Search results
+              // already did this correctly; the inbox now matches.
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  navigate(`/inbox/conversation/${c.id}`);
+                }
+              }}
               className={`conversation-item ${selectedId === c.id ? 'selected' : ''} ${c.is_unread ? 'unread' : ''}`}
               onClick={() => navigate(`/inbox/conversation/${c.id}`)}
             >
@@ -536,7 +555,21 @@ function SnoozeModal({ conversationId, snoozed, onClose, onSaved }: { conversati
               Remove snooze
             </button>
           ) : null}
-          <button className="btn primary" onClick={() => act.mutate({ snoozedUntil: new Date(until).toISOString(), unsnoozeOnCustomerReply: true })}>Snooze</button>
+          <button
+            className="btn primary"
+            onClick={() => {
+              // v1.6.0 audit fix: a cleared datetime-local input yields '' and
+              // new Date('') is Invalid Date -> toISOString() throws RangeError.
+              const t = new Date(until).getTime();
+              if (!Number.isFinite(t)) {
+                pushToast({ kind: 'error', message: 'Pick a valid snooze date and time first.' });
+                return;
+              }
+              act.mutate({ snoozedUntil: new Date(t).toISOString(), unsnoozeOnCustomerReply: true });
+            }}
+          >
+            Snooze
+          </button>
         </>
       }
     >

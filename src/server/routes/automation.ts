@@ -26,8 +26,50 @@ export async function registerAutomationRoutes(app: FastifyInstance, ctx: AppCon
     return { ok: true, message: 'Automation rule created (disabled by default - enable it when ready).', id };
   });
 
-  app.patch('/api/automation/rules/:id', async (request) => {
-    ctx.automation.updateRule(Number((request.params as { id: string }).id), request.body as Record<string, unknown>);
+  app.patch('/api/automation/rules/:id', async (request, reply) => {
+    // v1.6.0 audit fix: previously the PATCH accepted a fully unvalidated body
+    // (its sibling POST validates with automationRuleSchema) and a missing body
+    // could crash. The patch shape is validated now; full rule replacements go
+    // through the same schema the POST uses.
+    const raw = (request.body ?? {}) as Record<string, unknown>;
+    const allowed: string[] = ['name', 'enabled', 'trigger', 'conditions', 'actions', 'priority', 'requires_approval'];
+    const patch: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if (key in raw) patch[key] = raw[key];
+    }
+    if (Object.keys(patch).length === 0) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'No valid fields to update (name, enabled, trigger, conditions, actions, priority, requires_approval).' });
+      return;
+    }
+    // Full trigger/conditions/actions replacements must satisfy the create schema.
+    if (patch.conditions !== undefined || patch.actions !== undefined || patch.trigger !== undefined) {
+      const existing = ctx.automation.listRules().find((r) => r.id === Number((request.params as { id: string }).id));
+      if (!existing) {
+        reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Rule not found.' });
+        return;
+      }
+      const candidate = automationRuleSchema.parse({
+        name: (patch.name as string | undefined) ?? existing.name,
+        trigger: (patch.trigger as string | undefined) ?? existing.trigger,
+        conditions: (patch.conditions as unknown[] | undefined) ?? existing.conditions,
+        actions: (patch.actions as unknown[] | undefined) ?? existing.actions,
+        priority: (patch.priority as number | undefined) ?? existing.priority,
+        requires_approval: (patch.requires_approval as boolean | number | undefined) ?? existing.requires_approval === 1
+      });
+      patch.conditions = candidate.conditions;
+      patch.actions = candidate.actions;
+      patch.trigger = candidate.trigger;
+      patch.name = candidate.name;
+      patch.priority = candidate.priority;
+      patch.requires_approval = candidate.requires_approval;
+    } else if (patch.name !== undefined && (typeof patch.name !== 'string' || patch.name.trim().length === 0 || patch.name.length > 200)) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'name must be a non-empty string (max 200 chars).' });
+      return;
+    } else if (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'enabled must be a boolean.' });
+      return;
+    }
+    ctx.automation.updateRule(Number((request.params as { id: string }).id), patch);
     return { ok: true, message: 'Rule updated.' };
   });
 

@@ -369,7 +369,10 @@ export const bulkRequestSchema = z.object({
 });
 
 export const searchRequestSchema = z.object({
-  query: z.string().default(''),
+  // v1.6.0 audit fix: a multi-megabyte query string reached SQLite FTS5/LIKE
+  // and crashed the request ("LIKE or GLOB pattern too complex", 500). Search
+  // queries are capped at a sane length; anything longer is a client error.
+  query: z.string().max(500).default(''),
   scope: z.enum(['all', 'tickets', 'customers', 'knowledge', 'issues', 'saved_replies', 'ai']).default('all'),
   filters: z
     .object({

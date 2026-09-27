@@ -53,7 +53,11 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, ctx: AppCont
     // roots. This applies in demo mode too - a showcase/CI instance must not be
     // able to read arbitrary files from the machine via the API.
     const abs = path.resolve(parsed.data.path);
-    const allowedRoots = [path.resolve(process.cwd(), 'knowledge-import'), path.resolve(process.cwd(), 'data')];
+    // v1.6.0 audit fix: the allowlist used to include data/ (the live SQLite DB,
+    // WAL files, sync bundles and attachments live there - importing any of them
+    // as "knowledge" is never legitimate). Only the knowledge-import folder is
+    // importable now.
+    const allowedRoots = [path.resolve(process.cwd(), 'knowledge-import')];
     const allowed = allowedRoots.some((r) => underRoot(abs, r));
     if (!allowed) {
       reply.code(400).send({
@@ -96,8 +100,14 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, ctx: AppCont
     const files: string[] = [];
     if (fs.existsSync(dir)) {
       for (const f of fs.readdirSync(dir)) {
-        const stat = fs.statSync(path.join(dir, f));
-        if (stat.isFile() && /\.(md|txt|csv|json|html?|pdf|docx)$/i.test(f)) files.push(f);
+        // v1.6.0 audit fix: tolerate stat races (file vanishing mid-listing)
+        // instead of 500ing the route.
+        try {
+          const stat = fs.statSync(path.join(dir, f));
+          if (stat.isFile() && /\.(md|txt|csv|json|html?|pdf|docx)$/i.test(f)) files.push(f);
+        } catch {
+          // vanished between readdir and stat - skip it
+        }
       }
     }
     return { dir, files };

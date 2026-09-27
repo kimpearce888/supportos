@@ -47,7 +47,12 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
     // Attachment auto-download after initial sync is enqueued ONCE, by the
     // worker's onAfterInitialSync hook (a duplicate enqueue here caused every
     // attachment to be downloaded twice).
-    void ctx.coordinator.initialSync().catch(() => undefined);
+    // v1.6.0 audit fix: fire-and-forget syncs used to swallow failures silently
+    // after telling the user "started". Failures are logged (and visible in the
+    // server log / Sync Health error state) instead of vanishing.
+    void ctx.coordinator.initialSync().catch((e: unknown) => {
+      ctx.jobsRepo.logError('sync', `initial sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
     return { ok: true, message: 'Initial sync started. Watch Sync Health for progress.' };
   });
 
@@ -61,7 +66,9 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
       const results = await ctx.coordinator.incrementalSync();
       return { ok: true, message: 'Incremental sync completed.', results };
     }
-    void ctx.coordinator.incrementalSync().catch(() => undefined);
+    void ctx.coordinator.incrementalSync().catch((e: unknown) => {
+      ctx.jobsRepo.logError('sync', `incremental sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
     return { ok: true, message: 'Incremental sync started.' };
   });
 
@@ -75,7 +82,9 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
       const result = await ctx.coordinator.reconcile();
       return { ok: true, message: 'Reconciliation completed.', result };
     }
-    void ctx.coordinator.reconcile().catch(() => undefined);
+    void ctx.coordinator.reconcile().catch((e: unknown) => {
+      ctx.jobsRepo.logError('sync', `reconcile failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
     return { ok: true, message: 'Reconciliation started.' };
   });
 
@@ -144,13 +153,40 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
     };
   });
 
-  app.post('/api/queue/:id/retry', async (request) => {
-    ctx.jobsRepo.retryJob(Number((request.params as { id: string }).id));
-    return { ok: true, message: 'Job requeued.' };
+  app.post('/api/queue/:id/retry', async (request, reply) => {
+    // v1.6.0 audit fix: NaN/nonexistent ids used to return ok:true silently.
+    const raw = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(raw) || raw <= 0) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'A positive numeric job id is required.' });
+      return;
+    }
+    const job = ctx.jobsRepo.getJob(raw);
+    if (!job) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Job not found.' });
+      return;
+    }
+    // Retrying a parked awaiting-approval job is the APPROVE gesture: the
+    // payload gains approved=true so the worker executes the parked action.
+    const patch = job.status === 'awaiting_approval' ? { approved: true } : null;
+    const ok = ctx.jobsRepo.retryJob(raw, patch);
+    if (!ok) {
+      reply.code(409).send({ statusCode: 409, error: 'Conflict', message: 'Job is not in a retryable state.' });
+      return;
+    }
+    return { ok: true, message: job.status === 'awaiting_approval' ? 'Approved - the action runs on the next worker tick.' : 'Job requeued.' };
   });
 
-  app.post('/api/queue/:id/cancel', async (request) => {
-    ctx.jobsRepo.cancelJob(Number((request.params as { id: string }).id));
+  app.post('/api/queue/:id/cancel', async (request, reply) => {
+    const raw = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(raw) || raw <= 0) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'A positive numeric job id is required.' });
+      return;
+    }
+    const ok = ctx.jobsRepo.cancelJob(raw);
+    if (!ok) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Job not found (or already finished).' });
+      return;
+    }
     return { ok: true, message: 'Job cancelled.' };
   });
 

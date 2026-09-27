@@ -1,11 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
+import { clampListParam } from './helpers.js';
 
 export async function registerPeopleRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/api/customers', async (request) => {
     const q = request.query as Record<string, string>;
-    const page = q.page ? Number(q.page) : 1;
-    const result = ctx.peopleRepo.listCustomers(page, q.pageSize ? Number(q.pageSize) : 50, q.q ?? '');
+    // v1.6.0 audit fix: bare Number() let ?page=abc reach SQLite as NaN -> 500.
+    const page = clampListParam(q.page, 1, 1, 100000);
+    const result = ctx.peopleRepo.listCustomers(page, clampListParam(q.pageSize, 50, 1, 200), q.q ?? '');
     return { customers: result.customers, total: result.total, page };
   });
 
@@ -55,7 +57,7 @@ export async function registerPeopleRoutes(app: FastifyInstance, ctx: AppContext
 
   app.get('/api/organizations', async (request) => {
     const q = request.query as Record<string, string>;
-    const result = ctx.peopleRepo.listOrganizations(q.page ? Number(q.page) : 1, q.pageSize ? Number(q.pageSize) : 50, q.q ?? '');
+    const result = ctx.peopleRepo.listOrganizations(clampListParam(q.page, 1, 1, 100000), clampListParam(q.pageSize, 50, 1, 200), q.q ?? '');
     return { organizations: result.organizations, total: result.total };
   });
 

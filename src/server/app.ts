@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { AppContext } from './services/context.js';
@@ -34,11 +34,17 @@ function allowedOrigins(port: number): string[] {
 const RATE_LIMIT_MAX = 300;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const mutationHits = new Map<string, { count: number; resetAt: number }>();
+// Prune threshold: without this, unique spoofed keys would grow the map without bound.
+const RATE_LIMIT_MAP_MAX = 512;
 
-function rateLimitKey(request: { headers: Record<string, unknown> }): string {
-  const ip = request.headers['x-forwarded-for'];
-  // No proxy is trusted (trustProxy is off), so this is the socket address if present.
-  return typeof ip === 'string' ? (ip.split(',')[0] ?? 'local').trim() : 'local';
+function rateLimitKey(request: FastifyRequest): string {
+  // v1.6.0 audit fix: X-Forwarded-For is CLIENT-CONTROLLED input (trustProxy is
+  // off - no proxy rewrites that header), so keying the limiter on it let any
+  // non-browser client rotate the header for an unlimited budget. Key on the
+  // actual socket address instead; on this localhost-only app that is constant
+  // ('::ffff:127.0.0.1' or similar), which is exactly the intended semantics:
+  // one local user, one budget.
+  return request.socket.remoteAddress ?? 'local';
 }
 
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
@@ -70,6 +76,13 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     if (request.url === '/api/webhooks/helpscout') return; // HMAC-authenticated + deduplicated
     const key = rateLimitKey(request);
     const now = Date.now();
+    // Opportunistic pruning: sweep expired entries once the map grows past the
+    // threshold so long-lived processes cannot accumulate stale keys.
+    if (mutationHits.size > RATE_LIMIT_MAP_MAX) {
+      for (const [k, v] of mutationHits) {
+        if (now > v.resetAt) mutationHits.delete(k);
+      }
+    }
     const entry = mutationHits.get(key);
     if (!entry || now > entry.resetAt) {
       mutationHits.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });

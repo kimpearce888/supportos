@@ -23,7 +23,10 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
       assigneeLocalId = me?.id ?? (ctx.db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get() as { id: number } | undefined)?.id ?? null;
     }
     const page = clampListParam(q.page, 1, 1, 100000);
-    const pageSize = clampListParam(q.pageSize, 50, 1, 200);
+    // v1.6.0 audit fix: the route used to accept pageSize up to 200 while the
+    // repo silently capped at 100 - paging at 150/200 skipped rows without any
+    // signal. Both layers now agree on 100.
+    const pageSize = clampListParam(q.pageSize, 50, 1, 100);
     const mailboxId = q.mailboxId != null && q.mailboxId !== '' ? Number(q.mailboxId) : null;
     // Channel filter (v1.3.0): 'email' or 'chat' (Beacon sessions); other values -> 422.
     let channel: 'email' | 'chat' | null = null;

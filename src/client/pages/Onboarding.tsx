@@ -30,6 +30,11 @@ export function OnboardingPage(): ReactNode {
     onSuccess: () => {
       pushToast({ kind: 'success', message: 'Demo mode enabled. Starting demo sync…' });
       void api.post('/api/sync/initial');
+      // v1.6.0 audit fix: the step never advanced after enabling demo mode - the
+      // user was stranded on 'Connect Help Scout' with only a toast. Land them on
+      // the sync step where the live progress (state + conversation count) shows
+      // the demo data filling in.
+      setStep('sync');
       setTimeout(() => void refetch(), 2000);
     }
   });
@@ -46,6 +51,14 @@ export function OnboardingPage(): ReactNode {
   const finish = useMutation({
     mutationFn: () => api.post<{ ok: boolean }>('/api/onboarding/complete'),
     onSuccess: () => {
+      // v1.6.0 audit fix (finish race): invalidating the ['onboarding'] query and
+      // navigating immediately let the App guard re-redirect to /onboarding with
+      // STALE data (completed=false), remounting the wizard at step 1 - every
+      // user who clicked 'Open Dashboard' saw the wizard restart. The cache is
+      // updated optimistically FIRST, so the guard sees completed=true instantly.
+      queryClient.setQueryData(['onboarding'], (prev: { step: string; completed: boolean; demo_mode: boolean; sync_state: string; conversations: number } | undefined) =>
+        prev ? { ...prev, completed: true } : prev
+      );
       void queryClient.invalidateQueries({ queryKey: ['onboarding'] });
       navigate('/');
     }

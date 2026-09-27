@@ -40,7 +40,7 @@ export class PeopleRepository {
            job_title=excluded.job_title, background=excluded.background, age=excluded.age, gender=excluded.gender, location=excluded.location,
            organization_id=excluded.organization_id, raw_json=excluded.raw_json, raw_json_hash=excluded.raw_json_hash,
            remote_created_at=excluded.remote_created_at, remote_updated_at=excluded.remote_updated_at, last_seen_at=excluded.last_seen_at,
-           last_synced_at=excluded.last_synced_at`
+           last_synced_at=excluded.last_synced_at, deleted_at=NULL`
       )
       .run({
         rid: c.id,

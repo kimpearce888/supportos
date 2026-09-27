@@ -354,7 +354,20 @@ export class OutreachRepository {
 
   /** Retry control (spec #32): retry failed, cancel remaining. */
   resetFailedToQueued(campaignId: number): number {
-    const r = this.db.prepare("UPDATE outreach_recipients SET state = 'queued', last_error = 'retried at ' || datetime('now') WHERE campaign_id = ? AND state = 'failed'").run(campaignId);
+    // v1.6.0 audit fix: a manual retry also resets the attempt budget - without
+    // this, re-queued rows kept attempts=3 and were swept straight back to
+    // 'failed' (or never claimed), making Retry failed a silent no-op.
+    const r = this.db.prepare("UPDATE outreach_recipients SET state = 'queued', attempts = 0, last_error = 'retried at ' || datetime('now') WHERE campaign_id = ? AND state = 'failed'").run(campaignId);
+    return r.changes;
+  }
+
+  // v1.6.0 audit fix: see campaignService.sendBatch - rows that exhausted their
+  // attempt budget while still queued/selected are terminally failed here so
+  // the campaign can complete instead of re-enqueueing forever.
+  sweepExhaustedRecipients(campaignId: number): number {
+    const r = this.db
+      .prepare("UPDATE outreach_recipients SET state = 'failed', last_error = 'Exceeded max send attempts' WHERE campaign_id = ? AND state IN ('selected','queued') AND attempts >= ?")
+      .run(campaignId, MAX_SEND_ATTEMPTS);
     return r.changes;
   }
 
@@ -405,7 +418,9 @@ export class OutreachRepository {
     this.db.prepare('INSERT INTO do_not_contact (customer_local_id, reason) VALUES (?, ?) ON CONFLICT(customer_local_id) DO UPDATE SET reason = excluded.reason').run(customerLocalId, reason ?? null);
   }
 
-  removeDnc(customerLocalId: number): void {
-    this.db.prepare('DELETE FROM do_not_contact WHERE customer_local_id = ?').run(customerLocalId);
+  // v1.6.0 audit fix: report whether a row was actually removed (routes 404 otherwise).
+  removeDnc(customerLocalId: number): boolean {
+    const r = this.db.prepare('DELETE FROM do_not_contact WHERE customer_local_id = ?').run(customerLocalId);
+    return r.changes > 0;
   }
 }

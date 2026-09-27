@@ -26,18 +26,34 @@ export async function registerSearchRoutes(app: FastifyInstance, ctx: AppContext
     const settings = ctx.settingsRepo.getLmStudio();
     const qdrantEnabled = ctx.settingsRepo.getQdrant().enabled;
 
+    // v1.6.0 audit fix: the query used to be embedded TWICE per request (ticket
+    // retriever + knowledge retriever), doubling LM Studio latency. One embed,
+    // memoized and shared by both retrievers.
+    let queryVector: number[] | null = null;
+    const embedQuery = async (): Promise<number[] | null> => {
+      if (queryVector !== null) return queryVector;
+      if (!settings.embedding_model || !body.query.trim()) return (queryVector = null);
+      try {
+        const v = (await ctx.aiProvider.embed([body.query]))[0];
+        queryVector = v && v.length > 0 ? v : null;
+      } catch {
+        queryVector = null;
+      }
+      return queryVector;
+    };
+
     // ---- Hybrid ticket retrieval (RRF over FTS + semantic) ----
     if (body.query.trim() && (!body.scope || body.scope === 'all' || body.scope === 'tickets')) {
       const stats = ctx.conversationRepo.conversationChunkStats();
       if (settings.embedding_model && stats.indexed > 0) {
         try {
-          const queryVector = (await ctx.aiProvider.embed([body.query]))[0];
-          if (queryVector && queryVector.length > 0) {
+          const ticketQueryVector = await embedQuery();
+          if (ticketQueryVector && ticketQueryVector.length > 0) {
             // Semantic retriever: Qdrant ANN first, local cosine fallback
             const semanticByConversation = new Map<number, { rank: number; snippet: string | null }>();
             let modeNote = 'Hybrid ticket search: FTS5 + semantic vectors via Qdrant, fused with Reciprocal Rank Fusion.';
             if (qdrantEnabled) {
-              const hits = await ctx.qdrant.search(queryVector, 24);
+              const hits = await ctx.qdrant.search(ticketQueryVector, 24);
               const chunkHits = hits.filter((h) => h.payload.entity_type === 'conversation_chunk');
               if (chunkHits.length > 0) {
                 let rank = 0;
@@ -56,7 +72,7 @@ export async function registerSearchRoutes(app: FastifyInstance, ctx: AppContext
               const bestChunk = new Map<number, string>();
               for (const c of chunks) {
                 const stored = new Float32Array(c.embedding.buffer, c.embedding.byteOffset, c.embedding.byteLength / 4);
-                const sim = cosineSimilarity(queryVector, stored);
+                const sim = cosineSimilarity(ticketQueryVector, stored);
                 const prev = best.get(c.conversation_id);
                 if (prev == null || sim > prev) {
                   best.set(c.conversation_id, sim);
@@ -120,7 +136,7 @@ export async function registerSearchRoutes(app: FastifyInstance, ctx: AppContext
       // Knowledge + docs semantic layers (kept from v1.3/v1.4)
       if (settings.embedding_model && qdrantEnabled) {
         try {
-          const vector = (await ctx.aiProvider.embed([body.query]))[0];
+          const vector = await embedQuery();
           if (vector) {
             const hits = await ctx.qdrant.search(vector, 8);
             for (const hit of hits) {

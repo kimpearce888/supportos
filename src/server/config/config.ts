@@ -69,8 +69,13 @@ export function loadConfig(): AppConfig {
   const dbAbs = path.isAbsolute(databasePath) ? databasePath : path.resolve(root, databasePath);
   fs.mkdirSync(path.dirname(dbAbs), { recursive: true });
 
+  // v1.6.0 audit fix: validate NODE_ENV literals instead of blind-casting into
+  // the union; a typo silently produced an invalid env value.
+  const rawEnv = envStr('NODE_ENV', 'development');
+  const env: AppConfig['env'] = rawEnv === 'production' || rawEnv === 'test' || rawEnv === 'development' ? rawEnv : 'development';
+
   return {
-    env: (envStr('NODE_ENV', 'development') as AppConfig['env']) ?? 'development',
+    env: env ?? 'development',
     port: envInt('PORT', 3000),
     host: envStr('HOST', '127.0.0.1'),
     localAppUrl: envStr('LOCAL_APP_URL', 'http://localhost:3000'),

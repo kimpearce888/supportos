@@ -4,6 +4,7 @@ import type { HsDocCollection, HsDocCategory, HsDocArticle } from '../../integra
 import type { DocsCollectionInfo, DocsArticleSummary, DocsArticleDetail, DocsStats } from '../../../shared/types.js';
 import { chunkText } from '../../../shared/utils.js';
 import type { BusinessHoursConfig, SlaTargets } from '../../analytics/businessHours.js';
+import crypto from 'node:crypto';
 
 const DEFAULT_DAYS = [1, 2, 3, 4, 5];
 
@@ -54,21 +55,34 @@ export class DocsRepository {
       : null;
     const preview = a.preview ?? (a.text ? a.text.replace(/\s+/g, ' ').slice(0, 220) : null);
     const words = a.text ? a.text.split(/\s+/).filter(Boolean).length : null;
+    // v1.6.0 audit fix (HIGH - embedding churn): re-chunking used to run on
+    // EVERY upsert, which happens on every incremental sync. That DELETEd all
+    // docs_chunks rows and reset them to 'not_indexed', destroying every stored
+    // embedding even when the article text was byte-identical - the whole corpus
+    // re-embedded (and re-upserted to Qdrant) on each 5-minute tick. Gate both
+    // rechunkArticle and reindexArticle on a content hash now; metadata columns
+    // (views, collection, category...) still update every pass.
+    const chunkSource = a.text ? `${a.name}\n\n${a.text}` : a.name;
+    const contentHash = crypto.createHash('sha256').update(chunkSource).digest('hex');
+    const existing = this.db.prepare('SELECT id, content_hash FROM docs_articles WHERE remote_id = ?').get(a.remoteId) as { id: number; content_hash: string | null } | undefined;
+    const contentChanged = !existing || existing.content_hash !== contentHash;
     this.db
       .prepare(
-        `INSERT INTO docs_articles (remote_id, collection_local_id, category_local_id, number, slug, name, status, preview, text, views, words, remote_created_at, remote_updated_at, last_synced_at)
-         VALUES (@rid, @collection, @category, @number, @slug, @name, @status, @preview, @text, @views, @words, @rc, @ru, @synced)
+        `INSERT INTO docs_articles (remote_id, collection_local_id, category_local_id, number, slug, name, status, preview, text, views, words, remote_created_at, remote_updated_at, last_synced_at, content_hash)
+         VALUES (@rid, @collection, @category, @number, @slug, @name, @status, @preview, @text, @views, @words, @rc, @ru, @synced, @hash)
          ON CONFLICT(remote_id) DO UPDATE SET
            collection_local_id=excluded.collection_local_id, category_local_id=excluded.category_local_id,
            number=excluded.number, slug=excluded.slug, name=excluded.name, status=excluded.status,
            preview=excluded.preview, text=excluded.text, views=excluded.views, words=excluded.words,
            remote_created_at=excluded.remote_created_at, remote_updated_at=excluded.remote_updated_at,
-           last_synced_at=excluded.last_synced_at`
+           last_synced_at=excluded.last_synced_at, content_hash=excluded.content_hash`
       )
-      .run({ rid: a.remoteId, collection: collectionLocalId, category: categoryLocal, number: a.number, slug: a.slug, name: a.name, status: a.status, preview, text: a.text, views: a.views, words, rc: a.createdAt, ru: a.updatedAt, synced: nowIso() });
-    const id = (this.db.prepare('SELECT id FROM docs_articles WHERE remote_id = ?').get(a.remoteId) as { id: number }).id;
-    this.reindexArticleFts(id, a.name, a.text);
-    this.rechunkArticle(id, a.name, a.text);
+      .run({ rid: a.remoteId, collection: collectionLocalId, category: categoryLocal, number: a.number, slug: a.slug, name: a.name, status: a.status, preview, text: a.text, views: a.views, words, rc: a.createdAt, ru: a.updatedAt, synced: nowIso(), hash: contentHash });
+    const id = existing?.id ?? (this.db.prepare('SELECT id FROM docs_articles WHERE remote_id = ?').get(a.remoteId) as { id: number }).id;
+    if (contentChanged) {
+      this.reindexArticleFts(id, a.name, a.text);
+      this.rechunkArticle(id, a.name, a.text);
+    }
     return id;
   }
 
@@ -207,13 +221,19 @@ export class DocsRepository {
         `SELECT c.id, c.article_id, c.content, a.name AS title,
            CASE WHEN a.status = 'published' THEN 'customer_safe' ELSE 'internal_only' END AS visibility
          FROM docs_chunks c JOIN docs_articles a ON a.id = c.article_id
-         WHERE c.embedding_state = 'not_indexed' OR c.embedding_state = 'failed' LIMIT ?`
+         WHERE (c.embedding_state = 'not_indexed' OR c.embedding_state = 'failed') AND c.embedding_attempts < 5 LIMIT ?`
       )
       .all(limit) as { id: number; article_id: number; content: string; title: string; visibility: 'customer_safe' | 'internal_only' }[];
   }
 
   setDocChunkEmbeddingState(chunkId: number, state: string, model?: string | null): void {
     this.db.prepare('UPDATE docs_chunks SET embedding_state = ?, embedding_model = COALESCE(?, embedding_model) WHERE id = ?').run(state, model ?? null, chunkId);
+  }
+
+  // v1.6.0 audit fix: failed chunks count attempts; after 5 failures a chunk is
+  // left alone (excluded from listing) until its content changes and re-chunks.
+  markDocChunkFailed(chunkId: number): void {
+    this.db.prepare("UPDATE docs_chunks SET embedding_state = 'failed', embedding_attempts = embedding_attempts + 1 WHERE id = ?").run(chunkId);
   }
 
   updateDocChunkEmbedding(chunkId: number, model: string | null, embedding: Float32Array | null, state: string): void {

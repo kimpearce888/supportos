@@ -153,7 +153,13 @@ export class ConversationRepository {
           if (existing) tagId = existing.id;
           else {
             const slug = t.tag.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-            tagId = Number(this.db.prepare('INSERT INTO tags (remote_id, name, slug, color) VALUES (?, ?, ?, ?)').run(-(t.id ?? Date.now()), t.tag, slug, t.color ?? null).lastInsertRowid);
+            // v1.6.0 audit fix: -Date.now() collided when two new tags were
+            // created in the same millisecond (UNIQUE tags.remote_id) and rolled
+            // back the whole tag write. The fallback is now a negative monotonic
+            // local id (next autoincrement * -1); the remote-id sign semantics
+            // are unchanged from before.
+            const nextLocal = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS n FROM tags').get() as { n: number }).n);
+            tagId = Number(this.db.prepare('INSERT INTO tags (remote_id, name, slug, color) VALUES (?, ?, ?, ?)').run(-(t.id ?? nextLocal), t.tag, slug, t.color ?? null).lastInsertRowid);
           }
           insertTag.run(localId, tagId);
         }
@@ -268,25 +274,108 @@ export class ConversationRepository {
          LIMIT @limit OFFSET @offset`
       )
       .all({ ...args, limit: pageSize, offset: (page - 1) * pageSize }) as ConversationRow[];
-    return { conversations: rows.map((r) => this.toSummary(r)), total };
+    return { conversations: this.toSummaries(rows), total };
   }
 
-  toSummary(r: ConversationRow): ConversationSummary {
-    const mailbox = r.mailbox_local_id ? (this.db.prepare('SELECT name FROM mailboxes WHERE id = ?').get(r.mailbox_local_id) as { name: string } | undefined) : undefined;
-    const customer = r.customer_local_id ? (this.db.prepare('SELECT first_name, last_name FROM customers WHERE id = ?').get(r.customer_local_id) as { first_name: string | null; last_name: string | null } | undefined) : undefined;
-    const customerEmail = r.customer_local_id
+  /**
+   * v1.6.0 audit fix (Inbox N+1): toSummary() ran 7 fresh queries PER ROW
+   * (~350 for a 50-row page, ~700 at the 100 cap). This batched variant runs
+   * 7 queries TOTAL for the whole page via IN(...) lookups and produces the
+   * exact same summary shape. toSummary() itself is kept for single-row
+   * callers (conversation detail route).
+   */
+  toSummaries(rows: ConversationRow[]): ConversationSummary[] {
+    if (rows.length === 0) return [];
+    const convIds = rows.map((r) => r.id);
+    const mailboxIds = [...new Set(rows.map((r) => r.mailbox_local_id).filter((v): v is number => v != null))];
+    const customerIds = [...new Set(rows.map((r) => r.customer_local_id).filter((v): v is number => v != null))];
+    const assigneeIds = [...new Set(rows.map((r) => r.assignee_local_id).filter((v): v is number => v != null))];
+    const inList = (ids: number[]): string => ids.map(() => '?').join(',');
+    const mailboxNames = new Map<number, string>();
+    if (mailboxIds.length > 0) {
+      for (const m of this.db.prepare(`SELECT id, name FROM mailboxes WHERE id IN (${inList(mailboxIds)})`).all(...mailboxIds) as { id: number; name: string }[]) {
+        mailboxNames.set(m.id, m.name);
+      }
+    }
+    const customerNames = new Map<number, string | null>();
+    if (customerIds.length > 0) {
+      for (const c of this.db.prepare(`SELECT id, first_name, last_name FROM customers WHERE id IN (${inList(customerIds)})`).all(...customerIds) as { id: number; first_name: string | null; last_name: string | null }[]) {
+        customerNames.set(c.id, [c.first_name, c.last_name].filter(Boolean).join(' ') || null);
+      }
+    }
+    const customerEmails = new Map<number, string>();
+    if (customerIds.length > 0) {
+      for (const e of this.db
+        .prepare(
+          `SELECT e.customer_id, e.value FROM customer_emails e
+           JOIN (SELECT customer_id, MIN(id) AS mid FROM customer_emails WHERE customer_id IN (${inList(customerIds)}) GROUP BY customer_id) m ON m.mid = e.id`
+        )
+        .all(...customerIds) as { customer_id: number; value: string }[]) {
+        customerEmails.set(e.customer_id, e.value);
+      }
+    }
+    const assigneeNames = new Map<number, string | null>();
+    if (assigneeIds.length > 0) {
+      for (const u of this.db.prepare(`SELECT id, first_name, last_name FROM users WHERE id IN (${inList(assigneeIds)})`).all(...assigneeIds) as { id: number; first_name: string | null; last_name: string | null }[]) {
+        assigneeNames.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' ') || null);
+      }
+    }
+    const tagsByConv = new Map<number, string[]>();
+    for (const t of this.db
+      .prepare(
+        `SELECT ct.conversation_id, t.name FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id
+         WHERE ct.conversation_id IN (${inList(convIds)}) ORDER BY t.name`
+      )
+      .all(...convIds) as { conversation_id: number; name: string }[]) {
+      const list = tagsByConv.get(t.conversation_id) ?? [];
+      list.push(t.name);
+      tagsByConv.set(t.conversation_id, list);
+    }
+    const analyzedConvs = new Set<number>(
+      (this.db
+        .prepare(
+          `SELECT DISTINCT conversation_id FROM ai_runs WHERE conversation_id IN (${inList(convIds)}) AND type = 'ticket_analysis' AND status = 'completed'`
+        )
+        .all(...convIds) as { conversation_id: number }[]).map((x) => x.conversation_id)
+    );
+    const kiByConv = new Map<number, number>();
+    for (const k of this.db
+      .prepare(`SELECT conversation_id, MIN(known_issue_id) AS kid FROM known_issue_conversations WHERE conversation_id IN (${inList(convIds)}) GROUP BY conversation_id`)
+      .all(...convIds) as { conversation_id: number; kid: number }[]) {
+      kiByConv.set(k.conversation_id, k.kid);
+    }
+    return rows.map((r) => {
+      const mailbox = r.mailbox_local_id != null && mailboxNames.has(r.mailbox_local_id) ? { name: mailboxNames.get(r.mailbox_local_id)! } : undefined;
+      const customer = r.customer_local_id != null && customerNames.has(r.customer_local_id) ? { first_name: customerNames.get(r.customer_local_id) ?? null, last_name: null } : undefined;
+      const customerEmail = r.customer_local_id != null ? customerEmails.get(r.customer_local_id) ?? null : null;
+      const assignee = r.assignee_local_id != null && assigneeNames.has(r.assignee_local_id) ? { first_name: assigneeNames.get(r.assignee_local_id) ?? null, last_name: null } : undefined;
+      const tags = (tagsByConv.get(r.id) ?? []).map((n) => ({ name: n }));
+      const ai = analyzedConvs.has(r.id) ? { status: 'completed' } : undefined;
+      const kid = kiByConv.get(r.id);
+      const ki = kid != null ? { known_issue_id: kid } : undefined;
+      return this.toSummary(r, { mailbox, customer, customerEmail, assignee, tags, ai, ki });
+    });
+  }
+
+  toSummary(r: ConversationRow, prefetch?: { mailbox?: { name: string | null }; customer?: { first_name: string | null; last_name: string | null }; customerEmail?: string | null; assignee?: { first_name: string | null; last_name: string | null }; tags?: { name: string }[]; ai?: { status: string }; ki?: { known_issue_id: number } }): ConversationSummary {
+    // Single-row path queries everything on demand; the batched list path
+    // (toSummaries) prefetches everything in 7 page-wide queries and passes
+    // it here (v1.6.0 audit fix for the Inbox N+1).
+    const mailbox = prefetch?.mailbox ?? (r.mailbox_local_id ? (this.db.prepare('SELECT name FROM mailboxes WHERE id = ?').get(r.mailbox_local_id) as { name: string } | undefined) : undefined);
+    const customer = prefetch?.customer ?? (r.customer_local_id ? (this.db.prepare('SELECT first_name, last_name FROM customers WHERE id = ?').get(r.customer_local_id) as { first_name: string | null; last_name: string | null } | undefined) : undefined);
+    const customerEmail = prefetch?.customerEmail !== undefined ? prefetch.customerEmail : r.customer_local_id
       ? (this.db.prepare('SELECT value FROM customer_emails WHERE customer_id = ? ORDER BY id LIMIT 1').get(r.customer_local_id) as { value: string } | undefined)?.value ?? null
       : null;
-    const assignee = r.assignee_local_id ? (this.db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(r.assignee_local_id) as { first_name: string | null; last_name: string | null } | undefined) : undefined;
-    const tags = this.db
+    const assignee = prefetch?.assignee ?? (r.assignee_local_id ? (this.db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(r.assignee_local_id) as { first_name: string | null; last_name: string | null } | undefined) : undefined);
+    const tags = prefetch?.tags ?? (this.db
       .prepare('SELECT t.name FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = ? ORDER BY t.name')
-      .all(r.id) as { name: string }[];
-    const ai = this.db
+      .all(r.id) as { name: string }[]);
+    const ai = prefetch?.ai ?? (this.db
       .prepare("SELECT status FROM ai_runs WHERE conversation_id = ? AND type = 'ticket_analysis' AND status = 'completed' ORDER BY id DESC LIMIT 1")
-      .get(r.id) as { status: string } | undefined;
-    const ki = this.db
+      .get(r.id) as { status: string } | undefined);
+    const ki = prefetch?.ki ?? (this.db
       .prepare('SELECT known_issue_id FROM known_issue_conversations WHERE conversation_id = ? LIMIT 1')
-      .get(r.id) as { known_issue_id: number } | undefined;
+      .get(r.id) as { known_issue_id: number } | undefined);
     return {
       id: r.id,
       remote_id: r.remote_id,
@@ -413,10 +502,16 @@ export class ConversationRepository {
     tx2();
 
     // FTS for thread body
+    // v1.6.0 audit fix (FTS drift): the DELETE used to run only when the new body
+    // was non-empty, so a thread whose body became empty kept its OLD indexed
+    // text forever (ghost search hits). The stale row is always removed now;
+    // a new one is inserted only when there is content to index.
+    this.db.prepare('DELETE FROM fts_threads WHERE thread_id = ?').run(localId);
     if (bodyText && bodyText.trim().length > 0) {
-      this.db.prepare('DELETE FROM fts_threads WHERE thread_id = ?').run(localId);
       this.db.prepare('INSERT INTO fts_threads (body, thread_id, conversation_id) VALUES (?, ?, ?)').run(bodyText, localId, conversationLocalId);
       this.db.prepare('UPDATE threads SET fts_indexed = 1 WHERE id = ?').run(localId);
+    } else {
+      this.db.prepare('UPDATE threads SET fts_indexed = 0 WHERE id = ?').run(localId);
     }
     this.refreshConversationActivity(conversationLocalId);
     return localId;
@@ -518,7 +613,10 @@ export class ConversationRepository {
     const tx = this.db.transaction(() => {
       for (const name of tagNames) {
         const ex = getTag.get(name) as { id: number } | undefined;
-        const tagId = ex ? ex.id : Number(this.db.prepare('INSERT INTO tags (remote_id, name, slug) VALUES (?, ?, ?)').run(-Date.now(), name, name.toLowerCase().replace(/[^a-z0-9]+/g, '-')).lastInsertRowid);
+        // v1.6.0 audit fix: see the sync-path note above - monotonic local ids
+        // instead of -Date.now() (same-millisecond UNIQUE collisions).
+        const nextLocal = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS n FROM tags').get() as { n: number }).n);
+        const tagId = ex ? ex.id : Number(this.db.prepare('INSERT INTO tags (remote_id, name, slug) VALUES (?, ?, ?)').run(-nextLocal, name, name.toLowerCase().replace(/[^a-z0-9]+/g, '-')).lastInsertRowid);
         insTag.run(localId, tagId);
       }
     });
@@ -644,13 +742,18 @@ export class ConversationRepository {
     return this.db
       .prepare(
         `SELECT id, conversation_id, content FROM conversation_chunks
-         WHERE embedding_state = 'not_indexed' OR embedding_state = 'failed' LIMIT ?`
+         WHERE (embedding_state = 'not_indexed' OR embedding_state = 'failed') AND embedding_attempts < 5 LIMIT ?`
       )
       .all(limit) as { id: number; conversation_id: number; content: string }[];
   }
 
   setConversationChunkEmbeddingState(chunkId: number, state: string, model?: string | null): void {
     this.db.prepare('UPDATE conversation_chunks SET embedding_state = ?, embedding_model = COALESCE(?, embedding_model) WHERE id = ?').run(state, model ?? null, chunkId);
+  }
+
+  // v1.6.0 audit fix: see docsRepo.markDocChunkFailed - cap embedding retries at 5.
+  markConversationChunkFailed(chunkId: number): void {
+    this.db.prepare("UPDATE conversation_chunks SET embedding_state = 'failed', embedding_attempts = embedding_attempts + 1 WHERE id = ?").run(chunkId);
   }
 
   updateConversationChunkEmbedding(chunkId: number, model: string | null, embedding: Float32Array | null, state: string): void {

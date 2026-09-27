@@ -6,6 +6,7 @@ import { migrationsApplied } from '../database/migrator.js';
 import { CAPABILITY_MATRIX } from './capabilities.js';
 import { serverEventBus } from '../services/eventBus.js';
 import { demoWebhookSchema } from '../../shared/schemas.js';
+import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -43,8 +44,17 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
       helpscout = { connected: true, error: null as unknown as string };
     } else {
       const cached = ctx.db.prepare("SELECT value FROM application_settings WHERE key='hs_last_ping'").get() as { value: string } | undefined;
-      if (cached && Date.now() - JSON.parse(cached.value).at < 60_000) {
-        helpscout = JSON.parse(cached.value);
+      // v1.6.0 audit fix: one corrupt row must not 500 the health route.
+      let parsed: { at?: number; connected?: boolean; error?: string | null } | null = null;
+      if (cached) {
+        try {
+          parsed = JSON.parse(cached.value) as { at?: number; connected?: boolean; error?: string | null };
+        } catch {
+          parsed = null;
+        }
+      }
+      if (parsed && typeof parsed.at === 'number' && Date.now() - parsed.at < 60_000 && typeof parsed.connected === 'boolean') {
+        helpscout = { connected: parsed.connected, error: parsed.error ?? null as unknown as string };
       } else {
         try {
           await ctx.provider.ping();
@@ -100,7 +110,9 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
   }));
 
   app.post('/api/onboarding/step', async (request) => {
-    const body = request.body as { step: string };
+    // v1.6.0 audit fix: unvalidated body wrote garbage steps (e.g. step 123) and
+    // a missing body crashed with a NOT NULL constraint 500.
+    const body = z.object({ step: z.string().min(1).max(64) }).parse(request.body ?? {});
     ctx.settingsRepo.set('onboarding_step', body.step);
     return { ok: true };
   });
@@ -121,7 +133,10 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
 
   app.post('/api/demo/simulate-incoming', async (request) => {
     if (ctx.provider.kind !== 'fake') return { ok: false, message: 'Not in demo mode.' };
-    const body = (request.body ?? {}) as { subject?: string; body?: string; customerRemoteId?: number; mailboxId?: number };
+    // v1.6.0 audit fix: `.slice()` on non-string fields crashed with 500s; zod now.
+    const body = z
+      .object({ subject: z.string().min(1).max(500).optional(), body: z.string().max(50000).optional(), customerRemoteId: z.number().int().positive().optional(), mailboxId: z.number().int().positive().optional() })
+      .parse(request.body ?? {});
     const subject = body.subject ?? 'New question about exports';
     const text = body.body ?? 'Hello, can scheduled exports include the raw JSON fields in addition to CSV?';
     const customerRemoteId = body.customerRemoteId ?? 3003;
