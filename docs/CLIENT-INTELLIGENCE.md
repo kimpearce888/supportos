@@ -83,8 +83,8 @@ Human overrides are set from the customer profile page with an optional reason, 
 | `POST /api/interaction/:conversationId/refresh` | recompute (deterministic + optional two-stage AI) |
 | `GET /api/interaction/:conversationId/evidence` | evidence-linked observations |
 | `GET /api/interaction/profile/:customerId` | full client profile |
-| `POST /api/interaction/profile/:customerId/override` | set human preference override |
-| `DELETE /api/interaction/profile/:customerId/override/:field` | revert to AI-inferred |
+| `POST /api/interaction/profile/:customerId/override` | set human preference override — body: `{ field: 'response_preference', value: <preference>, reason? }`; `value` must be one of `concise \| detailed \| step_by_step \| technical \| conversational \| outcome_focused` |
+| `DELETE /api/interaction/profile/:customerId/override/response_preference` | revert to AI-inferred (fully removes the override-created preference row) |
 
 All outputs are stored as **derived data** (tables `client_*`, migration 005) — they never modify Help Scout source records, and every row is labeled `heuristic` or `ai_generated` provenance.
 

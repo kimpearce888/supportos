@@ -1,8 +1,9 @@
 import { type ReactNode, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Bot, RefreshCw, Sparkles, FlaskConical, ListChecks } from 'lucide-react';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState, RelativeTime, KV } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, RelativeTime, KV } from '../components/common/ui.js';
 import { useUiStore } from '../state/uiStore.js';
 import type { AiAnalytics } from '../../shared/types.js';
 
@@ -10,7 +11,7 @@ export function AiCenterPage(): ReactNode {
   const [tab, setTab] = useState<'health' | 'analytics' | 'jobs' | 'evaluation'>('health');
   const pushToast = useUiStore((s) => s.pushToast);
 
-  const { data: status } = useQuery({ queryKey: ['ai-status'], queryFn: () => api.get<{
+  const { data: status, error: statusError } = useQuery({ queryKey: ['ai-status'], queryFn: () => api.get<{
     ai_enabled: boolean;
     settings: { base_url: string; chat_model: string | null; embedding_model: string | null };
     lmstudio: { connected: boolean; models: string[]; error: string | null };
@@ -20,7 +21,7 @@ export function AiCenterPage(): ReactNode {
     index: { conversations_indexed: number; chunks_indexed: number; chunks_pending: number; chunks_failed: number };
   }>('/api/ai/status'), refetchInterval: 30_000 });
 
-  const { data: analytics } = useQuery<AiAnalytics>({ queryKey: ['ai-analytics'], queryFn: () => api.get('/api/ai/analytics') });
+  const { data: analytics, error: analyticsError } = useQuery<AiAnalytics>({ queryKey: ['ai-analytics'], queryFn: () => api.get('/api/ai/analytics') });
   const { data: jobs, refetch: refetchJobs } = useQuery({ queryKey: ['ai-jobs'], queryFn: () => api.get<{ jobs: { id: number; type: string; status: string; conversation_id: number | null; model: string | null; error: string | null; created_at: string; latency_ms: number | null }[] }>('/api/ai/jobs') });
   const { data: evaluation } = useQuery({ queryKey: ['ai-evaluation'], queryFn: () => api.get<{ tests: { name: string; category: string; payload: { subject: string; body: string } }[]; evaluation_mode: boolean }>('/api/ai/evaluation') });
 
@@ -55,7 +56,7 @@ export function AiCenterPage(): ReactNode {
       </div>
 
       {tab === 'health' ? (
-        !status ? <Spinner /> : (
+        statusError ? <ErrorState message="Could not load AI status" detail={statusError instanceof Error ? statusError.message : 'The request failed. Retry or check the logs.'} /> : !status ? <Spinner /> : (
           <>
             <div className="grid-2">
               <div className="card">
@@ -72,7 +73,7 @@ export function AiCenterPage(): ReactNode {
                     ))}
                   </div>
                 ) : null}
-                <div className="mt-16"><a className="btn small" href="/settings">Configure in Settings →</a></div>
+                <div className="mt-16"><Link className="btn small" to="/settings">Configure in Settings →</Link></div>
               </div>
               <div className="card">
                 <h3 className="card-title">Indexing + jobs</h3>
@@ -99,7 +100,7 @@ export function AiCenterPage(): ReactNode {
       ) : null}
 
       {tab === 'analytics' ? (
-        !analytics ? <Spinner /> : (
+        analyticsError ? <ErrorState message="Could not load AI analytics" detail={analyticsError instanceof Error ? analyticsError.message : 'The request failed. Retry or check the logs.'} /> : !analytics ? <Spinner /> : (
           <div className="grid-2">
             <div className="card">
               <h3 className="card-title">Assistance metrics (local, from stored data)</h3>
@@ -143,7 +144,7 @@ export function AiCenterPage(): ReactNode {
                   <td className="mono">{j.id}</td>
                   <td>{j.type}</td>
                   <td><span className={`badge ${j.status === 'completed' ? 'ok' : j.status === 'failed' ? 'err' : j.status === 'running' ? 'warn' : ''}`}>{j.status}</span></td>
-                  <td>{j.conversation_id ? <a href={`/inbox/conversation/${j.conversation_id}`}>#{j.conversation_id}</a> : '—'}</td>
+                  <td>{j.conversation_id ? <Link to={`/inbox/conversation/${j.conversation_id}`}>#{j.conversation_id}</Link> : '—'}</td>
                   <td className="text-xs mono">{j.model ?? '—'}</td>
                   <td className="text-xs">{j.latency_ms != null ? `${j.latency_ms}ms` : '—'}</td>
                   <td><RelativeTime iso={j.created_at} /></td>

@@ -1,7 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
-import { replyRequestSchema, noteRequestSchema, statusRequestSchema, assignRequestSchema, tagsRequestSchema, fieldsRequestSchema, snoozeRequestSchema, scheduleRequestSchema, bulkRequestSchema, subjectRequestSchema, moveToInboxRequestSchema } from '../../shared/schemas.js';
+import { replyRequestSchema, noteRequestSchema, statusRequestSchema, assignRequestSchema, tagsRequestSchema, fieldsRequestSchema, snoozeRequestSchema, scheduleRequestSchema, schedulePublishRequestSchema, bulkRequestSchema, subjectRequestSchema, moveToInboxRequestSchema } from '../../shared/schemas.js';
 import { sanitizeThreadHtml } from '../security/sanitize.js';
+
+function clampListParam(value: string | undefined, fallback: number, min: number, max: number): number {
+  const n = value != null && value !== '' ? Number(value) : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
 
 export async function registerConversationRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const repo = ctx.conversationRepo;
@@ -16,15 +22,18 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
     if (view === 'my-tickets') {
       assigneeLocalId = me?.id ?? (ctx.db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get() as { id: number } | undefined)?.id ?? null;
     }
+    const page = clampListParam(q.page, 1, 1, 100000);
+    const pageSize = clampListParam(q.pageSize, 50, 1, 200);
+    const mailboxId = q.mailboxId != null && q.mailboxId !== '' ? Number(q.mailboxId) : null;
     const result = repo.listConversations({
       view,
-      mailboxId: q.mailboxId ? Number(q.mailboxId) : null,
-      page: q.page ? Number(q.page) : 1,
-      pageSize: q.pageSize ? Number(q.pageSize) : 50,
+      mailboxId: Number.isFinite(mailboxId) ? mailboxId : null,
+      page,
+      pageSize,
       assigneeLocalId,
       tag: q.tag ?? null
     });
-    return { conversations: result.conversations, total: result.total, page: q.page ? Number(q.page) : 1, page_size: q.pageSize ? Number(q.pageSize) : 50, view };
+    return { conversations: result.conversations, total: result.total, page, page_size: pageSize, view };
   });
 
   // Conversation detail with threads (sanitized HTML), customer summary, analysis, drafts
@@ -168,14 +177,14 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
     return result;
   });
   app.post('/api/conversations/:id/schedule/publish', async (request, reply) => {
-    const b = request.body as { threadId: number };
-    const result = await ops.publishSchedule(Number((request.params as { id: string }).id), Number(b.threadId));
+    const body = schedulePublishRequestSchema.parse({ threadId: (request.body as { threadId?: number } | undefined)?.threadId });
+    const result = await ops.publishSchedule(Number((request.params as { id: string }).id), body.threadId);
     if (!result.ok) reply.code(422);
     return result;
   });
   app.delete('/api/conversations/:id/schedule', async (request, reply) => {
-    const b = request.body as { threadId: number };
-    const result = await ops.deleteSchedule(Number((request.params as { id: string }).id), Number(b.threadId));
+    const body = schedulePublishRequestSchema.parse({ threadId: (request.body as { threadId?: number } | undefined)?.threadId });
+    const result = await ops.deleteSchedule(Number((request.params as { id: string }).id), body.threadId);
     if (!result.ok) reply.code(422);
     return result;
   });

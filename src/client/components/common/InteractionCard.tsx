@@ -15,7 +15,7 @@ import type { InteractionSignal } from '../../../shared/types.js';
  * Deterministic engine output renders even without LM Studio.
  */
 export function ClientIntelligenceCard({ conversationId, onRefresh }: { conversationId: number; onRefresh: () => void }): ReactNode {
-  const { data, isLoading, refetch } = useInteractionCard(conversationId);
+  const { data, isLoading, error, refetch } = useInteractionCard(conversationId);
   const pushToast = useUiStore((s) => s.pushToast);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -38,6 +38,15 @@ export function ClientIntelligenceCard({ conversationId, onRefresh }: { conversa
   });
 
   if (isLoading) return <div className="ai-sidebar-section"><Spinner label="Loading client intelligence…" /></div>;
+  // 404 = feature has no data yet (fine to hide); anything else is a real failure
+  // that must be visible instead of silently swallowing the card.
+  if (error) {
+    const status = (error as { status?: number }).status;
+    if (status == null || status >= 500) {
+      return <div className="ai-sidebar-section"><p className="text-xs" style={{ color: 'var(--danger, #b00)' }}>Client intelligence failed to load — {error instanceof Error ? error.message : 'unknown error'}.</p></div>;
+    }
+    return null;
+  }
   if (!data?.card) return null;
   const card = data.card;
   const significant = card.changes.filter((c) => c.significant);
@@ -71,7 +80,7 @@ export function ClientIntelligenceCard({ conversationId, onRefresh }: { conversa
           <strong><TrendingUp size={11} style={{ display: 'inline', verticalAlign: 'middle' }} /> Today's change vs normal</strong>
           {significant.map((c) => (
             <div key={c.dimension} className="text-xs">
-              {c.dimension.replace(/_/g, ' ')}: {c.baseline_value?.replace(/_/g, ' ')} → {c.current_value?.replace(/_/g, ' ')} ({c.direction})
+              {c.dimension.replace(/_/g, ' ')}: {c.baseline_value?.replace(/_/g, ' ')} → {c.current_value?.replace(/_/g, ' ')} ({c.direction === 'changed' ? 'different from usual' : c.direction})
             </div>
           ))}
         </div>

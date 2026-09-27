@@ -1,8 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
-import { knowledgeImportRequestSchema } from '../../shared/schemas.js';
+import { knowledgeImportRequestSchema, knowledgeImportFileRequestSchema } from '../../shared/schemas.js';
 import fs from 'node:fs';
 import path from 'node:path';
+
+function underRoot(abs: string, root: string): boolean {
+  // Separator-aware containment: a sibling like knowledge-import-x/ must NOT match
+  const rel = path.relative(root, abs);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
 
 export async function registerKnowledgeRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/api/knowledge/sources', async () => ({ sources: ctx.knowledgeRepo.listSources() }));
@@ -38,15 +44,17 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, ctx: AppCont
 
   // Import a local file (MD/TXT/CSV/JSON/HTML/PDF/DOCX) via path
   app.post('/api/knowledge/import-file', async (request, reply) => {
-    const body = request.body as { path: string; sourceName?: string; visibility?: 'customer_safe' | 'internal_only' };
-    if (!body.path) {
+    const parsed = knowledgeImportFileRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
       reply.code(400).send({ statusCode: 400, error: 'BadRequest', message: 'A file path is required.' });
       return;
     }
-    // Path safety: resolve and require the file to live under the allowed import roots
-    const abs = path.resolve(body.path);
+    // Path safety: resolve and require the file to live under the allowed import
+    // roots. This applies in demo mode too - a showcase/CI instance must not be
+    // able to read arbitrary files from the machine via the API.
+    const abs = path.resolve(parsed.data.path);
     const allowedRoots = [path.resolve(process.cwd(), 'knowledge-import'), path.resolve(process.cwd(), 'data')];
-    const allowed = allowedRoots.some((r) => abs.startsWith(r)) || ctx.config.demoMode;
+    const allowed = allowedRoots.some((r) => underRoot(abs, r));
     if (!allowed) {
       reply.code(400).send({
         statusCode: 400,
@@ -56,7 +64,7 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, ctx: AppCont
       return;
     }
     try {
-      const result = await ctx.knowledge.importFile(abs, body.sourceName ?? path.basename(abs), body.visibility ?? 'internal_only');
+      const result = await ctx.knowledge.importFile(abs, parsed.data.sourceName ?? path.basename(abs), parsed.data.visibility);
       ctx.jobsRepo.enqueue('embeddings', 'embed_knowledge_chunks', {}, 4, 2);
       return { ok: true, imported: result.length, documents: result };
     } catch (e) {

@@ -3,13 +3,13 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Search } from 'lucide-react';
 import { api, qs } from '../api/client.js';
-import { Spinner, EmptyState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
 import type { OrganizationSummary } from '../../shared/types.js';
 
 export function OrganizationsPage(): ReactNode {
   const navigate = useNavigate();
   const [q, setQ] = useState('');
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['organizations', q],
     queryFn: () => api.get<{ organizations: OrganizationSummary[]; total: number }>(`/api/organizations${qs({ q })}`)
   });
@@ -26,6 +26,7 @@ export function OrganizationsPage(): ReactNode {
         </form>
       </div>
       {isLoading ? <Spinner /> : null}
+      {error ? <ErrorState message="Could not load organizations" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} /> : null}
       <div className="card" style={{ padding: 0 }}>
         <table className="table">
           <thead>
@@ -63,7 +64,8 @@ interface OrgDetail {
 export function OrganizationDetailPage(): ReactNode {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { data, isLoading } = useQuery({ queryKey: ['organization', id], queryFn: () => api.get<OrgDetail>(`/api/organizations/${id}`) });
+  const { data, isLoading, error } = useQuery({ queryKey: ['organization', id], queryFn: () => api.get<OrgDetail>(`/api/organizations/${id}`) });
+  if (error) return <div className="page"><ErrorState message="Could not load organization" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} /></div>;
   if (isLoading || !data) return <div className="page"><Spinner /></div>;
   const o = data.organization;
   return (

@@ -71,6 +71,14 @@ export function App(): ReactNode {
       }
       if (e.key === 'g') {
         const handler = (e2: KeyboardEvent): void => {
+          // Re-check typing context: focus may have moved into a textarea
+          // between the 'g' press and the follow-up key (typing 'd' as the
+          // first character of a reply would otherwise navigate away).
+          const target = e2.target as HTMLElement | null;
+          if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+            window.removeEventListener('keydown', handler);
+            return;
+          }
           if (e2.key === 'd') navigate('/');
           if (e2.key === 'i') navigate('/inbox');
           if (e2.key === 's') navigate('/sync-health');

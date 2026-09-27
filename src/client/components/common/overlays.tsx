@@ -1,6 +1,8 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { useUiStore } from '../../state/uiStore.js';
+
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function Toasts(): ReactNode {
   const toasts = useUiStore((s) => s.toasts);
@@ -34,6 +36,8 @@ export function Toasts(): ReactNode {
 }
 
 export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }): ReactNode {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose();
@@ -41,6 +45,40 @@ export function Modal({ title, onClose, children, footer, wide }: { title: strin
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // Move focus into the dialog when it opens so keyboard/screen-reader users land inside it.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    (dialog.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ?? dialog).focus();
+  }, []);
+
+  // Lightweight Tab focus trap: cycle within the dialog's focusable elements.
+  const onDialogKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Tab') return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+    if (focusables.length === 0) {
+      e.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (!first || !last) return;
+    const active = document.activeElement;
+    if (e.shiftKey) {
+      if (active === first || active === dialog || !dialog.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || active === dialog || !dialog.contains(active)) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div
       className="modal-backdrop"
@@ -48,7 +86,15 @@ export function Modal({ title, onClose, children, footer, wide }: { title: strin
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div
+        ref={dialogRef}
+        className={`modal ${wide ? 'wide' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        onKeyDown={onDialogKeyDown}
+      >
         <div className="modal-header">
           <span>{title}</span>
           <button className="btn ghost small" aria-label="Close dialog" onClick={onClose}>

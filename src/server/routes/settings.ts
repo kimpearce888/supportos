@@ -1,16 +1,27 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
-import { lmStudioSettingsSchema } from '../../shared/schemas.js';
+import { lmStudioSettingsSchema, settingsPatchSchema } from '../../shared/schemas.js';
+
+function clampInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  const n = value != null && value !== '' ? Number(value) : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
 
 export async function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/api/settings', async () => ctx.settingsRepo.getAllSettings());
 
-  app.patch('/api/settings', async (request) => {
-    const patch = request.body as Record<string, unknown>;
+  app.patch('/api/settings', async (request, reply) => {
+    const parsed = settingsPatchSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(422);
+      return { ok: false, message: 'Invalid settings patch: unknown or badly typed keys were rejected.' };
+    }
+    const patch = parsed.data;
     const updated = ctx.settingsRepo.updateSettings(patch);
     if ('ai_enabled' in patch) ctx.setAiEnabled(patch.ai_enabled === true);
     if ('qdrant_url' in patch || 'qdrant_enabled' in patch) {
-      ctx.qdrant.reconfigure({ url: patch.qdrant_url as string | undefined, enabled: patch.qdrant_enabled as boolean | undefined });
+      ctx.qdrant.reconfigure({ url: patch.qdrant_url, enabled: patch.qdrant_enabled });
     }
     if ('sync_interval_minutes' in patch) {
       ctx.workers.stop();
@@ -47,8 +58,16 @@ export async function registerSettingsRoutes(app: FastifyInstance, ctx: AppConte
   // Qdrant settings + test
   app.get('/api/settings/qdrant', async () => ctx.settingsRepo.getQdrant());
 
-  app.patch('/api/settings/qdrant', async (request) => {
-    const body = request.body as { url?: string; enabled?: boolean };
+  app.patch('/api/settings/qdrant', async (request, reply) => {
+    const body = (request.body ?? {}) as { url?: string; enabled?: boolean };
+    if (body.url != null && !/^https?:\/\/\S+$/.test(body.url)) {
+      reply.code(422);
+      return { ok: false, message: 'Invalid Qdrant URL.' };
+    }
+    if (body.enabled != null && typeof body.enabled !== 'boolean') {
+      reply.code(422);
+      return { ok: false, message: 'Invalid Qdrant enabled flag.' };
+    }
     ctx.settingsRepo.updateQdrant(body);
     ctx.qdrant.reconfigure(body);
     return { ok: true, message: 'Qdrant settings saved.' };
@@ -84,7 +103,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, ctx: AppConte
   // Audit log
   app.get('/api/audit', async (request) => {
     const q = request.query as Record<string, string>;
-    return { entries: ctx.jobsRepo.listAudit(q.conversationId ? Number(q.conversationId) : undefined, q.limit ? Number(q.limit) : 200) };
+    const convId = q.conversationId != null && q.conversationId !== '' ? Number(q.conversationId) : undefined;
+    return { entries: ctx.jobsRepo.listAudit(Number.isFinite(convId) ? convId : undefined, clampInt(q.limit, 200, 1, 1000)) };
   });
 
   // Recent application errors

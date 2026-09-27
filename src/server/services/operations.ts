@@ -50,16 +50,32 @@ export class ConversationOperations {
     return null;
   }
 
+  /**
+   * AI evaluation mode (spec safety invariant): when ON, NOTHING leaves the
+   * machine - no replies, notes, status changes, assignments, tag/field
+   * writes, moves, snoozes, schedules, workflows or bulk actions. Applied to
+   * EVERY remote write so users can trial AI features with real data safely.
+   */
+  private evalModeBlocked(): { ok: false; message: string } | null {
+    if (!this.settings.getAllSettings().ai_evaluation_mode) return null;
+    return { ok: false, message: 'AI evaluation mode is ON: no replies, notes, status changes or other updates are sent to Help Scout.' };
+  }
+
   // ============================================================ Reply / note
 
   async sendReply(input: { conversationId: number; text: string; draft: boolean; cc: string[]; bcc: string[]; statusAfter?: string | null; assignTo?: number | null; aiDraftId?: number | null; originalAiText?: string | null }): Promise<OperationResult<{ threadRemoteId: number }>> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(input.conversationId);
     if (!conv || !conv.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     if (conv.merged_into_conversation_id) return { ok: false, message: 'This conversation was merged into another conversation. Open the target conversation to reply.' };
 
-    const idempotencyKey = `reply:${conv.remote_id}:${crypto.createHash('sha256').update(input.text).digest('hex').slice(0, 24)}`;
+    // The draft flag is part of the key: saving a draft of text T and then
+    // SENDING the same text T is the normal draft-then-send flow, not a
+    // duplicate send. Only identical non-draft sends are deduplicated.
+    const idempotencyKey = `reply:${conv.remote_id}:${input.draft ? 'draft' : 'send'}:${crypto.createHash('sha256').update(input.text).digest('hex').slice(0, 24)}`;
     const existing = this.db.prepare('SELECT id, status FROM outbound_jobs WHERE idempotency_key = ?').get(idempotencyKey) as { id: number; status: string } | undefined;
     if (existing && existing.status !== 'failed') {
       return { ok: false, message: 'This exact reply was already sent (duplicate-send protection). Check the conversation history before sending again.' };
@@ -175,6 +191,8 @@ export class ConversationOperations {
   async assign(conversationId: number, userId: number | null): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     const jobId = this.jobs.createOutboundJob('assign', { conversationId, userId }, { conversationId });
@@ -196,6 +214,8 @@ export class ConversationOperations {
   async changeSubject(conversationId: number, subject: string): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     const jobId = this.jobs.createOutboundJob('update_subject', { conversationId, subject }, { conversationId });
@@ -215,6 +235,8 @@ export class ConversationOperations {
   async moveToInbox(conversationId: number, mailboxRemoteId: number): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     const jobId = this.jobs.createOutboundJob('move', { conversationId, mailboxRemoteId }, { conversationId });
@@ -237,6 +259,8 @@ export class ConversationOperations {
   async updateTags(conversationId: number, change: { add?: string[]; remove?: string[]; set?: string[] }): Promise<OperationResult<{ tags: string[] }>> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     const jobId = this.jobs.createOutboundJob('update_tags', { conversationId, ...change }, { conversationId });
@@ -273,6 +297,8 @@ export class ConversationOperations {
   async updateCustomFields(conversationId: number, fields: { id: number; value: string | null }[]): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     const jobId = this.jobs.createOutboundJob('update_fields', { conversationId, fields }, { conversationId });
@@ -309,6 +335,8 @@ export class ConversationOperations {
   async snooze(conversationId: number, snoozedUntil: string, unsnoozeOnCustomerReply = true): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     const jobId = this.jobs.createOutboundJob('snooze', { conversationId, snoozedUntil }, { conversationId });
@@ -328,6 +356,8 @@ export class ConversationOperations {
   async unsnooze(conversationId: number): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     try {
@@ -344,9 +374,12 @@ export class ConversationOperations {
   async scheduleReply(conversationId: number, threadId: number, scheduledFor: string, unscheduleOnCustomerReply = true): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
-    const thread = this.db.prepare('SELECT remote_id FROM threads WHERE id = ?').get(threadId) as { remote_id: number } | undefined;
+    const thread = this.db.prepare('SELECT remote_id, conversation_id FROM threads WHERE id = ?').get(threadId) as { remote_id: number; conversation_id: number } | undefined;
     if (!conv?.remote_id || !thread?.remote_id) return { ok: false, message: 'Conversation or draft thread not found locally.' };
+    if (thread.conversation_id !== conversationId) return { ok: false, message: 'That thread does not belong to this conversation.' };
     const jobId = this.jobs.createOutboundJob('schedule', { conversationId, threadId, scheduledFor }, { conversationId, threadId });
     try {
       await this.provider.scheduleThread(conv.remote_id, thread.remote_id, scheduledFor, unscheduleOnCustomerReply);
@@ -364,9 +397,12 @@ export class ConversationOperations {
   async publishSchedule(conversationId: number, threadId: number): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
-    const thread = this.db.prepare('SELECT remote_id FROM threads WHERE id = ?').get(threadId) as { remote_id: number } | undefined;
+    const thread = this.db.prepare('SELECT remote_id, conversation_id FROM threads WHERE id = ?').get(threadId) as { remote_id: number; conversation_id: number } | undefined;
     if (!conv?.remote_id || !thread?.remote_id) return { ok: false, message: 'Conversation or thread not found locally.' };
+    if (thread.conversation_id !== conversationId) return { ok: false, message: 'That thread does not belong to this conversation.' };
     const jobId = this.jobs.createOutboundJob('schedule_publish', { conversationId, threadId }, { conversationId, threadId });
     try {
       await this.provider.publishScheduledThread(conv.remote_id, thread.remote_id);
@@ -384,9 +420,12 @@ export class ConversationOperations {
   async deleteSchedule(conversationId: number, threadId: number): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
-    const thread = this.db.prepare('SELECT remote_id FROM threads WHERE id = ?').get(threadId) as { remote_id: number } | undefined;
+    const thread = this.db.prepare('SELECT remote_id, conversation_id FROM threads WHERE id = ?').get(threadId) as { remote_id: number; conversation_id: number } | undefined;
     if (!conv?.remote_id || !thread?.remote_id) return { ok: false, message: 'Conversation or thread not found locally.' };
+    if (thread.conversation_id !== conversationId) return { ok: false, message: 'That thread does not belong to this conversation.' };
     try {
       await this.provider.deleteThreadSchedule(conv.remote_id, thread.remote_id);
       this.db.prepare("UPDATE threads SET state = 'draft', scheduled_for = NULL WHERE id = ?").run(threadId);
@@ -400,9 +439,11 @@ export class ConversationOperations {
 
   // ============================================================ Bulk actions (queue-based, spec #95)
 
-  async bulkAction(conversationIds: number[], action: string, params: Record<string, string>): Promise<OperationResult<{ queued: number }>> {
+  async bulkAction(conversationIds: number[], action: string, params: Record<string, string | number | null>): Promise<OperationResult<{ queued: number }>> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     let queued = 0;
     for (const id of conversationIds) {
       this.jobs.enqueue('api', 'bulk_' + action, { conversationId: id, ...params }, 1, 2);
@@ -417,6 +458,8 @@ export class ConversationOperations {
   async runHelpScoutWorkflow(workflowId: number, conversationId: number): Promise<OperationResult> {
     const auth = this.requireAuth();
     if (auth) return auth;
+    const evalBlock = this.evalModeBlocked();
+    if (evalBlock) return evalBlock;
     const conv = this.conv.getConversationByLocalId(conversationId);
     if (!conv?.remote_id) return { ok: false, message: 'Conversation not found locally.' };
     try {

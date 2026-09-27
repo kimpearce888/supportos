@@ -7,9 +7,10 @@ import { IssueRepository } from '../database/repositories/issueRepo.js';
 import { SettingsRepository } from '../database/repositories/settingsRepo.js';
 import { ConversationRepository } from '../database/repositories/conversationRepo.js';
 import { InteractionEngine } from './interaction/engine.js';
+import { sanitizeSignals } from './interaction/safety.js';
 import { INTERACTION_STRATEGY_BLOCK } from './prompts.js';
-import { PROMPT_VERSIONS } from '../../shared/constants.js';
-import type { TicketAnalysis, AiSourceRef, AiDraftRecord, DraftVerification, InteractionSignal, InteractionChange, BehaviorBaseline } from '../../shared/types.js';
+import { PROMPT_VERSIONS, RESPONSE_PREFERENCE_VALUES } from '../../shared/constants.js';
+import type { TicketAnalysis, AiSourceRef, AiDraftRecord, DraftVerification, InteractionSignal, InteractionChange, BehaviorBaseline, CurrentInteraction } from '../../shared/types.js';
 import { htmlToText } from '../../shared/utils.js';
 
 /**
@@ -48,8 +49,13 @@ export class AiPipeline {
       const card = this.interaction.buildCard(conversationLocalId);
       if (!card || !card.recommendation) return null;
       const customerId = card.customer_local_id;
+      const validPrefs = new Set<string>(RESPONSE_PREFERENCE_VALUES);
       const preferences = customerId
-        ? this.interaction.repo.getPreferences(customerId).filter((p) => p.origin === 'human_entered' || p.evidence_count >= 3).map((p) => p.human_override?.value ?? p.preference)
+        ? this.interaction.repo
+            .getPreferences(customerId)
+            .filter((p) => p.origin === 'human_entered' || p.evidence_count >= 3)
+            .map((p) => p.human_override?.value ?? p.preference)
+            .filter((v) => validPrefs.has(v))
         : [];
       // Already-provided info (spec #51): customer messages in this thread
       const alreadyProvided = this.db
@@ -141,10 +147,24 @@ export class AiPipeline {
       return { ai_enriched: false, error: e instanceof Error ? e.message : String(e) };
     }
 
-    // Merge AI signals into the persisted current interaction + observations
+    // Merge AI signals over the heuristic set and PERSIST the merged card so
+    // GET /api/interaction/:id surfaces the AI result (not just a flipped
+    // 'sources' label on heuristic-only data).
     const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
     if (aiSignals.length) {
-      this.db.prepare("UPDATE client_current_signals SET sources = 'heuristic+ai', analysis_version = ?, customer_goal = COALESCE(?, customer_goal) WHERE id = (SELECT id FROM client_current_signals WHERE conversation_id = ? ORDER BY id DESC LIMIT 1)").run(PROMPT_VERSIONS.INTERACTION_OBSERVATION, aiGoal, conversationLocalId);
+      const heuristic = this.interaction.computeCurrentInteraction(conversationLocalId);
+      const mergedSignals = heuristic
+        ? sanitizeSignals([...heuristic.signals.reduce((acc, s) => acc.set(s.dimension, s), new Map<string, InteractionSignal>()), ...aiSignals.map((s) => [s.dimension, s] as const)].values() as unknown as InteractionSignal[]).signals
+        : sanitizeSignals(aiSignals).signals;
+      this.interaction.repo.saveCurrentInteraction({
+        conversation_id: conversationLocalId,
+        customer_id: customerId,
+        signals: mergedSignals,
+        message_stats: heuristic?.message_stats ?? { customer_messages: 0, avg_message_length: 0, question_count: 0, exclamation_ratio: 0, caps_ratio: 0 },
+        customer_goal: aiGoal ?? heuristic?.customer_goal ?? null,
+        sources: 'heuristic+ai',
+        analysis_version: PROMPT_VERSIONS.INTERACTION_OBSERVATION
+      });
       this.interaction.repo.insertObservations(
         aiSignals.map((s) => ({
           customer_id: customerId,
@@ -161,10 +181,18 @@ export class AiPipeline {
       this.interaction.rebuildBaseline(customerId);
     }
 
-    // Stage 2: recommendation
+    // Stage 2: recommendation. Inputs come from the STORED (merged) signals,
+    // and the baseline EXCLUDES the current conversation - refreshing a closed
+    // ticket must not compare it against a baseline that contains itself.
+    const stored = this.interaction.repo.getLatestCurrentInteraction(conversationLocalId);
     const cardCurrent = this.interaction.computeCurrentInteraction(conversationLocalId);
-    const freshBaseline = this.interaction.repo.getBaseline(customerId) as BehaviorBaseline | null;
-    const changes: InteractionChange[] = cardCurrent ? this.interaction.computeChanges(cardCurrent, freshBaseline) : [];
+    const freshBaseline = customerId ? this.interaction.comparisonBaseline(customerId, conversationLocalId) : null;
+    const stageCurrent: CurrentInteraction | null = stored?.signals.length
+      ? cardCurrent
+        ? { ...cardCurrent, signals: stored.signals }
+        : { conversation_local_id: conversationLocalId, customer_local_id: customerId, is_returning_client: history.length > 0, signals: stored.signals, customer_goal: stored.customer_goal, message_stats: stored.message_stats ?? { customer_messages: 0, avg_message_length: 0, question_count: 0, exclamation_ratio: 0, caps_ratio: 0 }, generated_at: new Date().toISOString(), sources: 'heuristic+ai' }
+      : cardCurrent;
+    const changes: InteractionChange[] = stageCurrent ? this.interaction.computeChanges(stageCurrent, freshBaseline) : [];
     const preferences = this.interaction.repo.getPreferences(customerId).map((p) => ({ preference: p.preference, origin: p.origin }));
     const outcome = this.interaction.computeOutcome(conversationLocalId);
     const repeatIssue = this.interaction.detectRepeatIssue(conversationLocalId);
@@ -172,15 +200,19 @@ export class AiPipeline {
     try {
       const rec = await this.provider.recommendSupportApproach({
         clientKind: history.length > 0 ? 'returning' : 'first_time',
-        currentSignals: (cardCurrent?.signals ?? []).map((s) => ({ dimension: s.dimension, value: s.value, confidence: s.confidence })),
+        currentSignals: (stageCurrent?.signals ?? []).map((s) => ({ dimension: s.dimension, value: s.value, confidence: s.confidence })),
         changes: changes.map((c) => ({ dimension: c.dimension, baseline_value: c.baseline_value, current_value: c.current_value, significant: c.significant })),
-        baselineSummary,
+        baselineSummary: freshBaseline
+          ? freshBaseline.dimensions.map((d) => `${d.dimension}: usually ${d.typical_value.replace(/_/g, ' ')} (${d.observation_count} observations)`).join('\n')
+          : baselineSummary,
         preferences,
         repeatIssue: repeatIssue?.detected ?? false,
         effortScore: outcome?.effort_score ?? null
       });
       this.ai.completeRun(runId2, rec.recommendation, rec.latencyMs);
-      this.db.prepare("UPDATE client_current_signals SET customer_goal = COALESCE(customer_goal, ?) WHERE conversation_id = ?").run(aiGoal, conversationLocalId);
+      // Persist so later GETs (and the draft prompt strategy block) use the
+      // AI recommendation instead of silently falling back to heuristics.
+      this.interaction.repo.saveRecommendation(conversationLocalId, rec.recommendation, PROMPT_VERSIONS.INTERACTION_RECOMMENDATION, rec.model);
       return { ai_enriched: true };
     } catch (e) {
       this.ai.failRun(runId2, e instanceof Error ? e.message : String(e));

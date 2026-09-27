@@ -21,9 +21,9 @@ export const migration005: Migration = {
         sources TEXT NOT NULL DEFAULT 'heuristic',
         analysis_version TEXT,
         generated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        provenance TEXT NOT NULL DEFAULT 'heuristic'
+        provenance TEXT NOT NULL DEFAULT 'heuristic',
+        UNIQUE (conversation_id)
       );
-      CREATE INDEX idx_client_current_signals_conversation ON client_current_signals(conversation_id);
       CREATE INDEX idx_client_current_signals_customer ON client_current_signals(customer_id);
 
       CREATE TABLE client_behavior_observations (
@@ -41,6 +41,10 @@ export const migration005: Migration = {
       );
       CREATE INDEX idx_client_observations_customer ON client_behavior_observations(customer_id, dimension);
       CREATE INDEX idx_client_observations_conversation ON client_behavior_observations(conversation_id);
+      -- Idempotency: one observation per (conversation, dimension, source).
+      -- Repeated refreshes/syncs must NOT duplicate rows (that corrupted
+      -- baselines and defeated the 3-conversation preference threshold).
+      CREATE UNIQUE INDEX idx_client_observations_unique ON client_behavior_observations(conversation_id, dimension, source);
 
       CREATE TABLE client_behavior_baselines (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

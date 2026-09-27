@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Search } from 'lucide-react';
 import { api, qs } from '../api/client.js';
-import { Spinner, EmptyState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
 import { InteractionProfileSection } from '../components/common/InteractionProfile.js';
 import type { CustomerSummary } from '../../shared/types.js';
 
@@ -11,7 +11,7 @@ export function CustomersPage(): ReactNode {
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['customers', q, page],
     queryFn: () => api.get<{ customers: CustomerSummary[]; total: number }>(`/api/customers${qs({ q, page })}`)
   });
@@ -28,6 +28,7 @@ export function CustomersPage(): ReactNode {
         </form>
       </div>
       {isLoading ? <Spinner /> : null}
+      {error ? <ErrorState message="Could not load customers" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} /> : null}
       {data && data.customers.length === 0 ? <EmptyState icon="search" title="No customers found" /> : null}
       <div className="card" style={{ padding: 0 }}>
         <table className="table">
@@ -87,7 +88,8 @@ interface CustomerDetailData {
 export function CustomerDetailPage(): ReactNode {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { data, isLoading } = useQuery({ queryKey: ['customer', id], queryFn: () => api.get<CustomerDetailData>(`/api/customers/${id}`) });
+  const { data, isLoading, error } = useQuery({ queryKey: ['customer', id], queryFn: () => api.get<CustomerDetailData>(`/api/customers/${id}`) });
+  if (error) return <div className="page"><ErrorState message="Could not load customer" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} /></div>;
   if (isLoading || !data) return <div className="page"><Spinner /></div>;
   const c = data.customer;
   return (
@@ -116,8 +118,8 @@ export function CustomerDetailPage(): ReactNode {
           {data.websites.map((w) => (
             <KV key={w} k="Website" v={<a href={w} target="_blank" rel="noopener noreferrer">{w}</a>} />
           ))}
-          {data.social_profiles.map((s) => (
-            <KV key={String(s.value)} k={s.type ?? 'Social'} v={s.value} />
+          {data.social_profiles.map((s, i) => (
+            <KV key={`${i}-${s.value}`} k={s.type ?? 'Social'} v={s.value} />
           ))}
           {data.properties.map((p) => (
             <KV key={p.name} k={p.name} v={p.value ?? '—'} />

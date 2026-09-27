@@ -44,14 +44,33 @@ export class BackupService {
   }
 
   verify(backupPath: string): boolean {
+    let test: Database.Database | null = null;
     try {
-      const test = new Database(backupPath, { readonly: true });
+      test = new Database(backupPath, { readonly: true });
       const result = test.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
-      test.close();
       return result.integrity_check === 'ok';
     } catch {
       return false;
+    } finally {
+      // Always close: a throwing prepare() previously leaked the readonly handle
+      if (test) test.close();
     }
+  }
+
+  /**
+   * Verification is cached per (file, mtime): listBackups() previously ran a
+   * full PRAGMA integrity_check (a complete database scan) on EVERY backup on
+   * EVERY request, blocking the event loop for longer and longer as backups
+   * accumulated. Cache keyed by file mtime (backups are immutable once written).
+   */
+  private verificationCache = new Map<string, { mtimeMs: number; verified: boolean }>();
+
+  private cachedVerify(fullPath: string, mtimeMs: number): boolean {
+    const cached = this.verificationCache.get(fullPath);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.verified;
+    const verified = this.verify(fullPath);
+    this.verificationCache.set(fullPath, { mtimeMs, verified });
+    return verified;
   }
 
   listBackups(): { file: string; size_bytes: number; created_at: string; verified: boolean }[] {
@@ -62,7 +81,7 @@ export class BackupService {
         .map((f) => {
           const full = path.join(this.backupsDir, f);
           const stat = fs.statSync(full);
-          return { file: f, size_bytes: stat.size, created_at: stat.mtime.toISOString(), verified: this.verify(full) };
+          return { file: f, size_bytes: stat.size, created_at: stat.mtime.toISOString(), verified: this.cachedVerify(full, stat.mtimeMs) };
         })
         .sort((a, b) => b.created_at.localeCompare(a.created_at));
     } catch {

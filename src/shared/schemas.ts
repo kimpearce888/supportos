@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { INTERACTION_DIMENSIONS, OPERATIONAL_CONFIDENCE_VALUES } from './constants.js';
+import { INTERACTION_DIMENSIONS, OPERATIONAL_CONFIDENCE_VALUES, RESPONSE_PREFERENCE_VALUES } from './constants.js';
 
 /** Runtime validation schemas for important boundaries (Help Scout API responses + local API requests). */
 
@@ -357,7 +357,9 @@ export const scheduleRequestSchema = z.object({
 export const bulkRequestSchema = z.object({
   conversationIds: z.array(z.number().int()).min(1),
   action: z.enum(['tag', 'untag', 'assign', 'unassign', 'status', 'close']),
-  params: z.record(z.string()).default({})
+  // Values may be numbers (user/status ids) or null ("unassign"); the worker
+  // coerces per action. The record type keeps payloads opaque by design.
+  params: z.record(z.union([z.string(), z.number(), z.null()])).default({})
 });
 
 export const searchRequestSchema = z.object({
@@ -394,6 +396,49 @@ export const lmStudioSettingsSchema = z.object({
   embedding_model: z.string().nullish(),
   timeout_ms: z.number().int().min(1000).default(120000),
   concurrency: z.number().int().min(1).default(2)
+});
+
+/**
+ * Whitelisted, type-checked settings patch (user-facing keys ONLY).
+ * Internal keys (oauth_state, hs_last_ping, me_remote_id, demo_data_loaded,
+ * lmstudio_base_url, ...) can never be written through the API: this blocks
+ * settings poisoning such as a NaN sync interval or redirecting AI traffic
+ * to an arbitrary URL.
+ */
+export const settingsPatchSchema = z
+  .object({
+    sync_interval_minutes: z.number().int().min(1).max(1440),
+    api_concurrency: z.number().int().min(1).max(10),
+    ai_enabled: z.boolean(),
+    automatic_analysis_enabled: z.boolean(),
+    automatic_note_enabled: z.boolean(),
+    automatic_draft_enabled: z.boolean(),
+    automation_enabled: z.boolean(),
+    automation_write_actions_enabled: z.boolean(),
+    qdrant_enabled: z.boolean(),
+    qdrant_url: z.string().url().max(500),
+    attachment_auto_download: z.boolean(),
+    // Accepted but ALWAYS forced false by the settings repo (spec #14 safety):
+    // the round-trip test asserts the value can never be enabled.
+    automatic_reply_sending: z.boolean(),
+    retention_days: z.number().int().min(1).max(3650).nullable(),
+    backup_interval_hours: z.number().int().min(1).max(720).nullable(),
+    log_level: z.enum(['debug', 'info', 'warn', 'error']),
+    display_timezone: z.string().max(64),
+    redaction_enabled: z.boolean(),
+    ai_evaluation_mode: z.boolean()
+  })
+  .strict()
+  .partial();
+
+export const schedulePublishRequestSchema = z.object({
+  threadId: z.number().int()
+});
+
+export const knowledgeImportFileRequestSchema = z.object({
+  path: z.string().min(1).max(1024),
+  sourceName: z.string().max(200).optional(),
+  visibility: z.enum(['customer_safe', 'internal_only']).default('internal_only')
 });
 
 export const automationRuleSchema = z.object({
@@ -508,8 +553,11 @@ export const interactionRecommendationOutputSchema = z.object({
 });
 
 // API request bodies
+// Overrides are only accepted for the field the engine actually consumes
+// (response preference): storing overrides for tone/detail/technical/directness
+// would be dead data that silently changes nothing.
 export const interactionOverrideSchema = z.object({
-  field: z.enum(['response_preference', 'tone', 'detail', 'technical_language', 'directness']),
-  value: z.string().min(1).max(120),
+  field: z.literal('response_preference'),
+  value: z.enum(RESPONSE_PREFERENCE_VALUES),
   reason: z.string().max(500).nullish()
 });

@@ -5,8 +5,9 @@ import { migration002 } from './002_sync_jobs.js';
 import { migration003 } from './003_ai_knowledge.js';
 import { migration004 } from './004_fts.js';
 import { migration005 } from './005_interaction_intelligence.js';
+import { migration006 } from './006_interaction_integrity.js';
 
-export const migrations = [migration001, migration002, migration003, migration004, migration005];
+export const migrations = [migration001, migration002, migration003, migration004, migration005, migration006];
 
 export function applyMigrations(db: DB): { applied: number; total: number } {
   return runMigrations(db, migrations);

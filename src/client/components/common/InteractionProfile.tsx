@@ -1,11 +1,12 @@
 import { type ReactNode, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { BookOpen, Gauge, Wrench, Check, RotateCcw } from 'lucide-react';
+import { BookOpen, Gauge, Wrench, Check, RotateCcw, Plus } from 'lucide-react';
 import { api } from '../../api/client.js';
 import { useInteractionProfile } from '../../api/hooks.js';
 import { Spinner } from './ui.js';
 import { useUiStore } from '../../state/uiStore.js';
+import { RESPONSE_PREFERENCE_VALUES } from '../../../shared/constants.js';
 
 /**
  * Client Interaction Profile section for the customer page
@@ -48,6 +49,7 @@ export function InteractionProfileSection({ customerId }: { customerId: number }
           {p.preferences.map((pref) => (
             <PreferenceRow key={pref.preference} customerId={customerId} preference={pref} onChanged={() => void refetch()} />
           ))}
+          <ManualPreference customerId={customerId} onChanged={() => void refetch()} showWhenEmpty={p.preferences.length === 0} />
         </div>
         <div>
           <h4 className="text-sm" style={{ marginBottom: 4 }}>Historical timeline</h4>
@@ -130,7 +132,10 @@ function PreferenceRow({ customerId, preference, onChanged }: { customerId: numb
 
   const save = useMutation({
     mutationFn: async (): Promise<void> => {
-      const r = await api.post<{ ok: boolean; message: string }>(`/api/interaction/profile/${customerId}/override`, { field: preference.preference, value, reason: reason || null });
+      // The override FIELD is always response_preference (the only dimension
+      // the engine consumes); the VALUE is the preference itself. The previous
+      // code sent the preference value as the field, which always failed with 422.
+      const r = await api.post<{ ok: boolean; message: string }>(`/api/interaction/profile/${customerId}/override`, { field: 'response_preference', value, reason: reason || null });
       if (!r.ok) throw new Error(r.message);
     },
     onSuccess: () => {
@@ -145,7 +150,7 @@ function PreferenceRow({ customerId, preference, onChanged }: { customerId: numb
 
   const clear = useMutation({
     mutationFn: async (): Promise<void> => {
-      const r = await api.delete<{ ok: boolean; message: string }>(`/api/interaction/profile/${customerId}/override/${preference.preference}`);
+      const r = await api.delete<{ ok: boolean; message: string }>(`/api/interaction/profile/${customerId}/override/response_preference`);
       if (!r.ok) throw new Error(r.message);
     },
     onSuccess: () => {
@@ -158,11 +163,12 @@ function PreferenceRow({ customerId, preference, onChanged }: { customerId: numb
   });
 
   const effective = preference.human_override?.value ?? preference.preference;
+  const isHuman = !!preference.human_override || preference.origin === 'human_entered';
   return (
     <div className="mb-8">
       <div className="flex-between">
-        <strong className="text-sm">{preference.preference.replace(/_/g, ' ')}: {effective.replace(/_/g, ' ')}</strong>
-        <span className={`badge ${preference.human_override ? 'ok' : 'ai'}`}>
+        <strong className="text-sm">{isHuman ? 'Response preference' : preference.preference.replace(/_/g, ' ')}: {effective.replace(/_/g, ' ')}</strong>
+        <span className={`badge ${isHuman ? 'ok' : 'ai'}`}>
           {preference.human_override ? 'human override' : preference.origin === 'human_entered' ? 'human-entered' : `AI-inferred · ${preference.evidence_count} obs.`}
         </span>
       </div>
@@ -182,16 +188,65 @@ function PreferenceRow({ customerId, preference, onChanged }: { customerId: numb
           <button className="btn small ghost" onClick={() => { setValue(effective); setReason(preference.human_override?.reason ?? ''); setEditing(true); }}><Wrench size={10} /> Override</button>
         ) : (
           <>
-            <input className="input" style={{ maxWidth: 140 }} value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. concise" aria-label="Override value" />
+            <select className="input" style={{ maxWidth: 160 }} value={value} onChange={(e) => setValue(e.target.value)} aria-label="Override value">
+              {RESPONSE_PREFERENCE_VALUES.map((v) => (
+                <option key={v} value={v}>{v.replace(/_/g, ' ')}</option>
+              ))}
+            </select>
             <input className="input grow" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (optional, e.g. customer asked for short answers)" aria-label="Override reason" />
             <button className="btn small" onClick={() => save.mutate()} disabled={save.isPending || !value.trim()}><Check size={10} /> Save</button>
             <button className="btn small ghost" onClick={() => setEditing(false)}>Cancel</button>
           </>
         )}
-        {preference.human_override ? (
+        {isHuman ? (
           <button className="btn small ghost" onClick={() => clear.mutate()} disabled={clear.isPending}><RotateCcw size={10} /> Revert to AI</button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Manual override entry for customers with NO inferred preferences yet -
+ * without it, the human-overrides safety feature (spec #22) was unreachable
+ * until the AI had already inferred something.
+ */
+function ManualPreference({ customerId, onChanged, showWhenEmpty }: { customerId: number; onChanged: () => void; showWhenEmpty: boolean }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState<string>(RESPONSE_PREFERENCE_VALUES[0]);
+  const [reason, setReason] = useState('');
+  const pushToast = useUiStore((s) => s.pushToast);
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: async (): Promise<void> => {
+      const r = await api.post<{ ok: boolean; message: string }>(`/api/interaction/profile/${customerId}/override`, { field: 'response_preference', value, reason: reason || null });
+      if (!r.ok) throw new Error(r.message);
+    },
+    onSuccess: () => {
+      pushToast({ kind: 'success', message: 'Human preference saved — it now takes precedence over AI inference.' });
+      setOpen(false);
+      void qc.invalidateQueries({ queryKey: ['interaction-profile', customerId] });
+      void qc.invalidateQueries({ queryKey: ['interaction'] });
+      onChanged();
+    },
+    onError: (e) => pushToast({ kind: 'error', message: (e as Error).message })
+  });
+  return (
+    <div className="mt-4">
+      {!open ? (
+        <button className="btn small ghost" onClick={() => setOpen(true)}><Plus size={10} /> {showWhenEmpty ? 'Set a preference manually' : 'Override preference manually'}</button>
+      ) : (
+        <div className="flex" style={{ gap: 6 }}>
+          <select className="input" style={{ maxWidth: 160 }} value={value} onChange={(e) => setValue(e.target.value)} aria-label="Manual preference value">
+            {RESPONSE_PREFERENCE_VALUES.map((v) => (
+              <option key={v} value={v}>{v.replace(/_/g, ' ')}</option>
+            ))}
+          </select>
+          <input className="input grow" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (optional)" aria-label="Manual preference reason" />
+          <button className="btn small" onClick={() => save.mutate()} disabled={save.isPending}><Check size={10} /> Save</button>
+          <button className="btn small ghost" onClick={() => setOpen(false)}>Cancel</button>
+        </div>
+      )}
     </div>
   );
 }

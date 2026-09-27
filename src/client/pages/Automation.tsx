@@ -1,7 +1,8 @@
 import { type ReactNode, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState, RelativeTime } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, RelativeTime } from '../components/common/ui.js';
 import { Modal } from '../components/common/overlays.js';
 import { useUiStore } from '../state/uiStore.js';
 import type { AutomationRule } from '../../shared/types.js';
@@ -16,7 +17,7 @@ interface RuleData {
 export function AutomationPage(): ReactNode {
   const [creating, setCreating] = useState(false);
   const pushToast = useUiStore((s) => s.pushToast);
-  const { data, refetch } = useQuery({ queryKey: ['automation'], queryFn: () => api.get<RuleData>('/api/automation/rules') });
+  const { data, error, refetch } = useQuery({ queryKey: ['automation'], queryFn: () => api.get<RuleData>('/api/automation/rules') });
 
   const toggleEngine = useMutation({
     mutationFn: (on: boolean) => api.patch<{ ok: boolean }>('/api/settings', { automation_enabled: on }),
@@ -46,6 +47,7 @@ export function AutomationPage(): ReactNode {
     onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
   });
 
+  if (error) return <div className="page"><ErrorState message="Could not load automation rules" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} /></div>;
   if (!data) return <div className="page"><Spinner /></div>;
 
   return (
@@ -102,7 +104,7 @@ export function AutomationPage(): ReactNode {
               <tr key={run.id}>
                 <td><RelativeTime iso={run.triggered_at} /></td>
                 <td>{data.rules.find((r) => r.id === run.rule_id)?.name ?? run.rule_id}</td>
-                <td>{run.conversation_id ? <a href={`/inbox/conversation/${run.conversation_id}`}>#{run.conversation_id}</a> : '—'}</td>
+                <td>{run.conversation_id ? <Link to={`/inbox/conversation/${run.conversation_id}`}>#{run.conversation_id}</Link> : '—'}</td>
                 <td><span className={`badge ${run.status === 'completed' ? 'ok' : run.status === 'awaiting_approval' ? 'warn' : run.status === 'failed' ? 'err' : ''}`}>{run.status}</span></td>
                 <td className="text-xs">{run.detail}</td>
               </tr>

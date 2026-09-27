@@ -2,7 +2,7 @@ import { type ReactNode } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { RefreshCw, Play, Scale, Trash2, Database, Webhook, ListRestart } from 'lucide-react';
 import { api } from '../api/client.js';
-import { Spinner, RelativeTime, KV, ProgressBar } from '../components/common/ui.js';
+import { Spinner, ErrorState, RelativeTime, KV, ProgressBar } from '../components/common/ui.js';
 import { useUiStore } from '../state/uiStore.js';
 import type { HealthStatus } from '../../shared/types.js';
 
@@ -31,7 +31,7 @@ const STATE_LABELS: Record<string, string> = {
 
 export function SyncHealthPage(): ReactNode {
   const pushToast = useUiStore((s) => s.pushToast);
-  const { data: status, refetch, isFetching } = useQuery({ queryKey: ['sync-status'], queryFn: () => api.get<SyncStatusData>('/api/sync/status'), refetchInterval: 5000 });
+  const { data: status, error: statusError, refetch, isFetching } = useQuery({ queryKey: ['sync-status'], queryFn: () => api.get<SyncStatusData>('/api/sync/status'), refetchInterval: 5000 });
   const { data: health } = useQuery({ queryKey: ['health-detailed'], queryFn: () => api.get<HealthStatus>('/health/detailed'), refetchInterval: 30_000 });
   const { data: db } = useQuery({ queryKey: ['db-stats'], queryFn: () => api.get<{ path: string; size_bytes: number; migrations: number; tables: { table: string; rows: number }[] }>('/api/system/db') });
 
@@ -44,6 +44,7 @@ export function SyncHealthPage(): ReactNode {
     onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
   });
 
+  if (statusError) return <div className="page"><ErrorState message="Could not load sync status" detail={statusError instanceof Error ? statusError.message : 'The request failed. Retry or check the logs.'} /></div>;
   if (!status) return <div className="page"><Spinner /></div>;
   const progress = status.current_run && status.current_run.resources_total > 0 ? status.current_run.resources_done / status.current_run.resources_total : null;
 
@@ -82,7 +83,7 @@ export function SyncHealthPage(): ReactNode {
             <span className="text-xs muted">{status.current_run?.resources_done}/{status.current_run?.resources_total} resources · {status.current_run?.records_processed} records</span>
           </div>
           <ProgressBar value={progress} />
-          <button className="btn small mt-8" onClick={() => api.post('/api/sync/cancel').then(() => pushToast({ kind: 'info', message: 'Cancellation requested.' }))}>Cancel after current resource</button>
+          <button className="btn small mt-8" onClick={() => api.post('/api/sync/cancel').then(() => pushToast({ kind: 'info', message: 'Cancellation requested.' })).catch((e: unknown) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Cancel failed.' }))}>Cancel after current resource</button>
         </div>
       ) : null}
 

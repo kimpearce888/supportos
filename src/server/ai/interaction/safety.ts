@@ -20,7 +20,12 @@ const FORBIDDEN_PATTERNS: { pattern: RegExp; reason: string }[] = [
   { pattern: /\b(race|ethnicity|religion|politic|sexual orientation|gay|lesbian|trans|muslim|christian|jew|hindu|atheist|white supremacy|nationalist)\b/i, reason: 'protected attribute inference' },
   { pattern: /\b(diagnos\w+|symptom of|suffers? from|patholog\w+)\b/i, reason: 'clinical diagnosis language' },
   { pattern: /\b(intelligen(t|ce) (level|of)|iq|cognitive ability|stupid|dumb|incompetent person)\b/i, reason: 'cognitive-ability judgment' },
-  { pattern: /\b(manipulative|toxic person|evil|malicious person|bad person|liar|dishonest person)\b/i, reason: 'moral character judgment' }
+  { pattern: /\b(manipulative|toxic person|evil|malicious person|bad person|liar|dishonest person)\b/i, reason: 'moral character judgment' },
+  // Trait adjectives ascribed to the customer as a fixed characteristic ("the
+  // customer is rude", "an entitled client", "needy user") — observable
+  // behavior language must be used instead ("message contains X").
+  { pattern: /\b((customer|client|user|person|he|she|they) (is|are|seems|acts|behaves) (a )?(rude|entitled|needy|demanding|lazy|clueless|hostile|abrasive|belligerent|passive.?aggressive|bully)|rude (person|customer|client)|entitled (person|customer|client)|needy (person|customer|client))\b/i, reason: 'fixed trait label' },
+  { pattern: /\b(passive.?aggressive|bullying|arrogant|condescending (person|customer)|vindictive|vengeful)\b/i, reason: 'character judgment' }
 ];
 
 export interface SanitizationResult {
@@ -30,9 +35,11 @@ export interface SanitizationResult {
 }
 
 /**
- * Sanitize a set of signals from any source (AI or heuristic):
+ * Sanitize a set of signals from ANY source (AI or heuristic):
  * - values must be in the observable-dimension vocabulary
- * - high/medium confidence signals must have evidence (spec #8)
+ * - high/medium confidence signals must have evidence (spec #8) regardless of
+ *   source: the evidence mandate is not AI-specific. Heuristic classifiers
+ *   therefore only emit medium+ confidence when a marker match backs them.
  */
 export function sanitizeSignals(signals: InteractionSignal[]): SanitizationResult {
   const kept: InteractionSignal[] = [];
@@ -45,7 +52,7 @@ export function sanitizeSignals(signals: InteractionSignal[]): SanitizationResul
       removed.push({ dimension: s.dimension, value: s.value, reason: 'value outside observable vocabulary (possible personality label)' });
       continue;
     }
-    if ((s.confidence === 'high' || s.confidence === 'medium') && s.source === 'ai' && !s.evidence?.excerpt) {
+    if ((s.confidence === 'high' || s.confidence === 'medium') && !s.evidence?.excerpt) {
       removed.push({ dimension: s.dimension, value: s.value, reason: 'significant signal without evidence (spec #8)' });
       continue;
     }

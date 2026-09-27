@@ -4,7 +4,26 @@ import sanitizeHtml from 'sanitize-html';
  * Safe HTML rendering for untrusted email/ticket content (spec #86, #87).
  * Never allow scripts, event handlers, javascript: URLs or iframes.
  * Preserve normal email formatting (links, lists, emphasis, quotes, images as links).
+ *
+ * Inline CSS is filtered (see sanitizeStyle): raw style attributes previously
+ * passed through unsanitized, allowing position:fixed full-pane overlays and
+ * url() tracking beacons inside otherwise-sanitized email HTML.
  */
+const DANGEROUS_CSS = /(url\s*\(|@import|expression\s*\(|position\s*:\s*(fixed|absolute)|behavior\s*:|-moz-binding|javascript\s*:)/i;
+
+function scrubStyle(tagName: string, attribs: Record<string, string>): { tagName: string; attribs: Record<string, string> } {
+  if (attribs.style != null) {
+    // Drop the whole attribute when it contains dangerous constructs; keep
+    // benign email layout styling (colors, fonts, padding, alignment).
+    if (!attribs.style || DANGEROUS_CSS.test(attribs.style)) {
+      delete attribs.style;
+    } else {
+      attribs.style = attribs.style.slice(0, 2000);
+    }
+  }
+  return { tagName, attribs };
+}
+
 export function sanitizeThreadHtml(dirty: string | null | undefined): string {
   if (!dirty) return '';
   return sanitizeHtml(dirty, {
@@ -29,7 +48,16 @@ export function sanitizeThreadHtml(dirty: string | null | undefined): string {
     allowedSchemesByTag: { img: ['http', 'https', 'data', 'cid'] },
     allowProtocolRelative: false,
     transformTags: {
-      a: sanitizeHtml.simpleTransform('a', { rel: 'noopener noreferrer nofollow', target: '_blank' })
+      a: sanitizeHtml.simpleTransform('a', { rel: 'noopener noreferrer nofollow', target: '_blank' }),
+      // CSS scrubbing on every element that carries a style attribute
+      span: scrubStyle,
+      div: scrubStyle,
+      p: scrubStyle,
+      table: scrubStyle,
+      td: scrubStyle,
+      th: scrubStyle,
+      img: scrubStyle,
+      blockquote: scrubStyle
     },
     exclusiveFilter: (frame) => frame.tag === 'img' && typeof frame.attribs?.src === 'string' && frame.attribs.src.trim().startsWith('data:text/html')
   });

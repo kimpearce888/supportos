@@ -130,24 +130,38 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
 
   // ---------------- Attachment file serving (safe: no execution, path constrained) ----------------
   app.get('/api/attachments/:id/file', async (request, reply) => {
-    const id = Number((request.params as { id: string }).id);
+    const rawId = (request.params as { id: string }).id;
+    const id = Number(rawId);
+    if (!Number.isFinite(id) || !Number.isInteger(id)) {
+      reply.code(400).send({ statusCode: 400, error: 'BadRequest', message: 'Invalid attachment id.' });
+      return;
+    }
     const att = ctx.conversationRepo.getAttachment(id);
     if (!att?.local_path || !fs.existsSync(att.local_path)) {
       reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Attachment not downloaded yet. Use the download action first.' });
       return;
     }
     const resolved = path.resolve(att.local_path);
-    if (!resolved.startsWith(path.resolve(ctx.config.attachmentsPath))) {
+    const root = path.resolve(ctx.config.attachmentsPath);
+    // Separator-aware containment: blocks sibling dirs that share a prefix (e.g. data-x/ vs data/)
+    const rel = path.relative(root, resolved);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
       reply.code(400).send({ statusCode: 400, error: 'BadRequest', message: 'Invalid attachment path.' });
       return;
     }
-    // Only serve safe content types inline; everything else downloads as an attachment
-    const inlineTypes = /^(text\/|image\/)/;
+    // Only raster/vector images are served inline; every other type (including
+    // text/html, which would execute same-origin script against this unauthenticated
+    // local API) is forced to download.
     const type = att.mime_type ?? 'application/octet-stream';
-    reply.header('Content-Type', type);
-    if (!inlineTypes.test(type)) reply.header('Content-Disposition', 'attachment');
+    const safeInline = /^image\/(png|jpe?g|gif|webp|bmp|svg\+xml)$/i;
+    reply.header('Content-Type', safeInline.test(type) ? type : 'application/octet-stream');
+    reply.header('Content-Disposition', `attachment; filename="${(att.filename ?? 'attachment').replace(/["\\\r\n]/g, '_')}"`);
     reply.header('X-Content-Type-Options', 'nosniff');
-    return reply.sendFile ? reply.sendFile(resolved) : fs.createReadStream(resolved);
+    // Stream directly from disk: reply.sendFile() joins paths onto the SPA root
+    // (dist/client) when the static plugin is registered and would 404 here.
+    return fs.createReadStream(resolved).on('error', () => {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Attachment file is no longer readable on disk.' });
+    });
   });
 
   // ---------------- Table stats for queue/db panel ----------------

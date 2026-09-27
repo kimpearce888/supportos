@@ -649,8 +649,11 @@ export interface InteractionChange {
   dimension: InteractionDimension;
   baseline_value: string | null;
   current_value: string | null;
-  direction: 'increase' | 'decrease' | 'same' | 'new';
-  magnitude: number; // 0..1
+  /** Ordinal dimensions get increase/decrease/same; nominal dimensions (tone,
+   * expectation, question structure) only get 'changed' — an "increase" of
+   * tone would be a meaningless direction. */
+  direction: 'increase' | 'decrease' | 'same' | 'new' | 'changed';
+  magnitude: number; // 0..1 (0 for nominal 'changed')
   significant: boolean;
 }
 

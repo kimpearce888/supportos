@@ -1,4 +1,5 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { BookOpen, FilePlus2, Trash2, RefreshCw, FileText } from 'lucide-react';
 import { api } from '../api/client.js';
@@ -11,7 +12,26 @@ interface KnowledgeDoc { id: number; source_id: number; title: string; visibilit
 export function KnowledgePage(): ReactNode {
   const [tab, setTab] = useState<'documents' | 'sources'>('documents');
   const [importing, setImporting] = useState(false);
-  const [reading, setReading] = useState<number | null>(null);
+  // Deep links: /knowledge?doc=N opens that document's reader (used by search
+  // results and the AI evidence chips - previously this link was dead).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const docParam = searchParams.get('doc');
+  const [reading, setReading] = useState<number | null>(docParam != null && Number.isFinite(Number(docParam)) ? Number(docParam) : null);
+  useEffect(() => {
+    if (docParam != null && Number.isFinite(Number(docParam))) setReading(Number(docParam));
+  }, [docParam]);
+  const openDoc = (id: number): void => {
+    setReading(id);
+    const next = new URLSearchParams(searchParams);
+    next.set('doc', String(id));
+    setSearchParams(next, { replace: true });
+  };
+  const closeDoc = (): void => {
+    setReading(null);
+    const next = new URLSearchParams(searchParams);
+    next.delete('doc');
+    setSearchParams(next, { replace: true });
+  };
   const pushToast = useUiStore((s) => s.pushToast);
   const { data, refetch, isFetching } = useQuery({ queryKey: ['knowledge-docs'], queryFn: () => api.get<{ documents: KnowledgeDoc[] }>('/api/knowledge/documents') });
   const { data: sources } = useQuery({ queryKey: ['knowledge-sources'], queryFn: () => api.get<{ sources: { id: number; name: string; kind: string; visibility: string; document_count: number }[] }>('/api/knowledge/sources') });
@@ -77,7 +97,7 @@ export function KnowledgePage(): ReactNode {
               <thead><tr><th>Title</th><th>Visibility</th><th>Version</th><th>Chunks</th><th>Updated</th><th></th></tr></thead>
               <tbody>
                 {(data?.documents ?? []).map((d) => (
-                  <tr key={d.id} className="clickable" onClick={() => setReading(d.id)}>
+                  <tr key={d.id} className="clickable" onClick={() => openDoc(d.id)}>
                     <td><strong>{d.title}</strong><div className="text-xs muted">{d.content_preview.slice(0, 90)}…</div></td>
                     <td><span className={`badge ${d.visibility === 'customer_safe' ? 'ok' : ''}`}>{d.visibility === 'customer_safe' ? 'customer-safe' : 'internal-only'}</span></td>
                     <td>v{d.version}</td>
@@ -119,7 +139,7 @@ export function KnowledgePage(): ReactNode {
           {(importable?.files ?? []).length === 0 ? <span className="muted text-sm">The folder is empty or does not exist. Create it and copy your documents there.</span> : null}
         </Modal>
       ) : null}
-      {reading ? <DocReader id={reading} onClose={() => setReading(null)} /> : null}
+      {reading ? <DocReader id={reading} onClose={closeDoc} /> : null}
     </div>
   );
 }

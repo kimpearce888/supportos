@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import { useDashboard } from '../api/hooks.js';
-import { Spinner, EmptyState } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState } from '../components/common/ui.js';
 import type { HealthStatus, IssueRadarAlert } from '../../shared/types.js';
 
 const RANGES = [
@@ -15,10 +15,11 @@ const RANGES = [
 
 export function DashboardPage(): ReactNode {
   const [days, setDays] = useState(30);
-  const { data, isLoading } = useDashboard(days);
+  const { data, isLoading, error } = useDashboard(days);
   const { data: health } = useQuery({ queryKey: ['health-ui'], queryFn: () => api.get<HealthStatus>('/health/detailed?format=ui'), refetchInterval: 60_000 });
   const { data: radar } = useQuery({ queryKey: ['issue-radar'], queryFn: () => api.get<{ alerts: IssueRadarAlert[] }>('/api/reports/issue-radar'), refetchInterval: 120_000 });
 
+  if (error) return <div className="page"><ErrorState message="Could not load dashboard" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} /></div>;
   if (isLoading || !data) return <div className="page"><Spinner label="Loading dashboard" /></div>;
 
   const maxDaily = Math.max(1, ...data.daily_new.map((d) => d.value));

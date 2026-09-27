@@ -1,14 +1,14 @@
 import { type ReactNode, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '../api/client.js';
-import { Spinner, KV } from '../components/common/ui.js';
+import { Spinner, ErrorState, KV } from '../components/common/ui.js';
 import { useUiStore } from '../state/uiStore.js';
 import type { AppSettings } from '../../shared/types.js';
 
 export function SettingsPage(): ReactNode {
   const [tab, setTab] = useState<'general' | 'helpscout' | 'lmstudio' | 'qdrant' | 'backups' | 'capability'>('general');
   const pushToast = useUiStore((s) => s.pushToast);
-  const { data: settings, refetch } = useQuery({ queryKey: ['settings'], queryFn: () => api.get<AppSettings>('/api/settings') });
+  const { data: settings, error: settingsError, refetch } = useQuery({ queryKey: ['settings'], queryFn: () => api.get<AppSettings>('/api/settings') });
   const { data: oauth } = useQuery({ queryKey: ['oauth-status'], queryFn: () => api.get<{ configured: boolean; authenticated: boolean; demo_mode: boolean; expires_at: string | null; me: { name: string; email: string | null } | null }>('/api/oauth/status') });
   const { data: lm } = useQuery({ queryKey: ['lm-settings'], queryFn: () => api.get<{ base_url: string; chat_model: string | null; embedding_model: string | null; timeout_ms: number; concurrency: number }>('/api/settings/lmstudio') });
   const { data: qdrant } = useQuery({ queryKey: ['qdrant-settings'], queryFn: () => api.get<{ url: string; enabled: boolean }>('/api/settings/qdrant') });
@@ -20,9 +20,11 @@ export function SettingsPage(): ReactNode {
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       void refetch();
-    }
+    },
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Settings could not be saved.' })
   });
 
+  if (settingsError) return <div className="page"><ErrorState message="Could not load settings" detail={settingsError instanceof Error ? settingsError.message : 'The request failed. Retry or check the logs.'} /></div>;
   if (!settings) return <div className="page"><Spinner /></div>;
 
   return (
@@ -99,16 +101,16 @@ function GeneralSettings({ settings, onSave }: { settings: AppSettings; onSave: 
         <h3 className="card-title">Synchronization</h3>
         <div className="form-row">
           <label className="field" htmlFor="sync-int">Sync interval (minutes)</label>
-          <input id="sync-int" type="number" min={1} max={1440} className="input" defaultValue={settings.sync_interval_minutes} onBlur={(e) => Number(e.target.value) !== settings.sync_interval_minutes && onSave({ sync_interval_minutes: Number(e.target.value) })} />
+          <input id="sync-int" type="number" min={1} max={1440} className="input" defaultValue={settings.sync_interval_minutes} onBlur={(e) => { const n = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(n) && n !== settings.sync_interval_minutes) onSave({ sync_interval_minutes: n }); }} />
         </div>
         <div className="form-row">
           <label className="field" htmlFor="api-conc">API concurrency</label>
-          <input id="api-conc" type="number" min={1} max={10} className="input" defaultValue={settings.api_concurrency} onBlur={(e) => Number(e.target.value) !== settings.api_concurrency && onSave({ api_concurrency: Number(e.target.value) })} />
+          <input id="api-conc" type="number" min={1} max={10} className="input" defaultValue={settings.api_concurrency} onBlur={(e) => { const n = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(n) && n !== settings.api_concurrency) onSave({ api_concurrency: n }); }} />
         </div>
         <Toggle label="Attachment auto-download" hint="Download attachments in the background after sync" value={settings.attachment_auto_download} onChange={(v) => onSave({ attachment_auto_download: v })} />
         <div className="form-row mt-16">
           <label className="field" htmlFor="retention">Retention days (blank = keep forever)</label>
-          <input id="retention" type="number" className="input" defaultValue={settings.retention_days ?? ''} onBlur={(e) => onSave({ retention_days: e.target.value ? Number(e.target.value) : null })} />
+          <input id="retention" type="number" className="input" defaultValue={settings.retention_days ?? ''} onBlur={(e) => { const n = Number(e.target.value); onSave({ retention_days: e.target.value !== '' && Number.isFinite(n) && n > 0 ? n : null }); }} />
         </div>
         <div className="form-row">
           <label className="field" htmlFor="backup-int">Automatic backup interval (hours, blank = off)</label>

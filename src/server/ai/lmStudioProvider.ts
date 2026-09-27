@@ -170,15 +170,24 @@ export class LmStudioProvider implements AiProvider {
       throw new LmStudioError('The local model did not return a valid interaction observation JSON.', false);
     }
     // Safety gate: enum vocabulary + evidence requirement + forbidden-claim scan (spec #7, #8, #55)
+    // Evidence integrity: a hallucinated thread id would become a stored citation
+    // to an unrelated message - only ids that were actually in the prompt survive.
+    const validThreadIds = new Set(input.currentMessages.map((m) => m.thread_local_id).filter((id) => id != null));
     const signals: InteractionSignal[] = parsed.data.signals
       .filter((s) => isValidValue(s.dimension as InteractionDimension, s.value))
-      .map((s) => ({
-        dimension: s.dimension,
-        value: s.value,
-        confidence: s.confidence,
-        evidence: s.evidence_excerpt ? { excerpt: s.evidence_excerpt, thread_local_id: s.evidence_thread_local_id ?? null, conversation_local_id: null } : null,
-        source: 'ai' as const
-      }));
+      .map((s) => {
+        // Evidence excerpts are model-authored free text: scan them like every
+        // other free-text field so forbidden claims cannot ride in as "evidence".
+        const excerptSafe = s.evidence_excerpt ? assertInteractionTextSafe(s.evidence_excerpt).ok : false;
+        const threadId = s.evidence_thread_local_id != null && validThreadIds.has(s.evidence_thread_local_id) ? s.evidence_thread_local_id : null;
+        return {
+          dimension: s.dimension,
+          value: s.value,
+          confidence: s.confidence,
+          evidence: excerptSafe && s.evidence_excerpt ? { excerpt: s.evidence_excerpt, thread_local_id: threadId, conversation_local_id: null } : null,
+          source: 'ai' as const
+        };
+      });
     const sanitized = sanitizeSignals(signals);
     const goalCheck = assertInteractionTextSafe(parsed.data.customer_goal);
     const notes = parsed.data.notes.filter((n) => assertInteractionTextSafe(n).ok).slice(0, 6);

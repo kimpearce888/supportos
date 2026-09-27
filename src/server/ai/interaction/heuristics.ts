@@ -37,7 +37,7 @@ export interface MessageStats {
 
 const TECHNICAL_VOCAB = [
   'api', 'endpoint', 'webhook', 'payload', 'json', 'oauth', 'token', 'http', 'https', 'ssl', 'tls', 'dns',
-  'timezone', 'utc', 'cron', 'queue', 'cache', 'latency', 'payload', 'http status', '401', '403', '404', '500',
+  'timezone', 'utc', 'cron', 'queue', 'cache', 'latency', 'http status', '401', '403', '404', '500',
   'console', 'log', 'stack trace', 'exception', 'database', 'sql', 'index', 'migration', 'deploy', 'build',
   'header', 'request', 'response', 'callback', 'integration', 'sdk', 'environment variable', 'rate limit'
 ];
@@ -116,7 +116,9 @@ export function heuristicSignals(messages: MessageForAnalysis[], stats: MessageS
   const directHits = countMarkers(all, DIRECT_MARKERS);
   const indirectHits = countMarkers(all, INDIRECT_MARKERS);
   const directness: string = directHits >= 2 ? 'highly_direct' : directHits === 1 && indirectHits === 0 ? 'direct' : indirectHits >= 1 ? 'conversational' : 'conversational';
-  push('directness', directness, directHits + indirectHits >= 1 ? 'medium' : 'low', findEvidence(messages, (t) => DIRECT_MARKERS.some((m) => hasMarker(t, m))));
+  // Evidence must point at whichever marker class drove the classification
+  // (a 'conversational' verdict derived from indirect markers had no evidence).
+  push('directness', directness, directHits + indirectHits >= 1 ? 'medium' : 'low', findEvidence(messages, (t) => DIRECT_MARKERS.some((m) => hasMarker(t, m)) || INDIRECT_MARKERS.some((m) => hasMarker(t, m))));
 
   // Detail level from average message length
   const detail: string = avgLen > 900 ? 'very_high' : avgLen > 450 ? 'high' : avgLen > 150 ? 'moderate' : avgLen > 60 ? 'low' : 'very_low';
@@ -143,7 +145,13 @@ export function heuristicSignals(messages: MessageForAnalysis[], stats: MessageS
   const frustration: string = frustrationHits >= 3 ? 'strong' : frustrationHits >= 1 ? 'moderate' : 'none';
   push('frustration', frustration, frustrationHits >= 1 ? 'medium' : 'low', findEvidence(messages, (t) => FRUSTRATION_MARKERS.some((m) => hasMarker(t, m))));
 
-  // Expectation
+  // Expectation — confidence follows whether an actual marker/phrase drove the
+  // classification (the plain 'information' fallback without any marker is low
+  // confidence, and low-confidence signals carry no evidence requirement).
+  const expectationMarkerHit =
+    ESCALATION_MARKERS.some((m) => hasMarker(all, m)) ||
+    countMarkers(all, ACTION_EXPECTATION_MARKERS) >= 1 ||
+    /how do i|how can i|what is|when will|where is|which|why|explain|reason|cause/.test(all);
   const expectation: string = ESCALATION_MARKERS.some((m) => hasMarker(all, m))
     ? 'escalation'
     : countMarkers(all, ACTION_EXPECTATION_MARKERS) >= 2 || (urgency === 'high' && ACTION_EXPECTATION_MARKERS.some((m) => hasMarker(all, m)))
@@ -155,7 +163,7 @@ export function heuristicSignals(messages: MessageForAnalysis[], stats: MessageS
           : /why|explain|reason|cause/.test(all)
             ? 'explanation'
             : 'information';
-  push('expectation', expectation, 'medium', findEvidence(messages, (t) => ACTION_EXPECTATION_MARKERS.some((m) => hasMarker(t, m)) || /why|explain|how do/i.test(t)));
+  push('expectation', expectation, expectationMarkerHit ? 'medium' : 'low', findEvidence(messages, (t) => ACTION_EXPECTATION_MARKERS.some((m) => hasMarker(t, m)) || ESCALATION_MARKERS.some((m) => hasMarker(t, m)) || /why|explain|how do|how can|when will|where is|which|what is/i.test(t)));
 
   return signals;
 }
@@ -163,14 +171,17 @@ export function heuristicSignals(messages: MessageForAnalysis[], stats: MessageS
 /** Response preference needs repeated evidence (spec #39): heuristics NEVER emit it from one ticket. */
 export function heuristicResponsePreference(messages: MessageForAnalysis[]): InteractionSignal | null {
   const all = messages.map((m) => m.text).join('\n').toLowerCase();
+  // Every trigger phrase must also be findable by the evidence predicate below
+  // it: a preference signal with no evidence excerpt violates the spec's
+  // evidence mandate.
   if (/keep (it |this )?(short|brief)|concise|short answer|no lengthy|brief answer|be brief/.test(all)) {
-    return { dimension: 'response_preference', value: 'concise', confidence: 'high', evidence: findEvidence(messages, (t) => /keep (it |this )?(short|brief)|concise|be brief/i.test(t)), source: 'heuristic' };
+    return { dimension: 'response_preference', value: 'concise', confidence: 'high', evidence: findEvidence(messages, (t) => /keep (it |this )?(short|brief)|concise|short answer|no lengthy|brief answer|be brief/i.test(t)), source: 'heuristic' };
   }
   if (/step by step|step-by-step|walk me through|instructions/.test(all)) {
-    return { dimension: 'response_preference', value: 'step_by_step', confidence: 'high', evidence: findEvidence(messages, (t) => /step by step|step-by-step|walk me through/i.test(t)), source: 'heuristic' };
+    return { dimension: 'response_preference', value: 'step_by_step', confidence: 'high', evidence: findEvidence(messages, (t) => /step by step|step-by-step|walk me through|instructions/i.test(t)), source: 'heuristic' };
   }
   if (/detailed|thorough|in depth|in-depth|full explanation|comprehensive/.test(all)) {
-    return { dimension: 'response_preference', value: 'detailed', confidence: 'high', evidence: findEvidence(messages, (t) => /detailed|thorough|in depth|in-depth|comprehensive/i.test(t)), source: 'heuristic' };
+    return { dimension: 'response_preference', value: 'detailed', confidence: 'high', evidence: findEvidence(messages, (t) => /detailed|thorough|in depth|in-depth|full explanation|comprehensive/i.test(t)), source: 'heuristic' };
   }
   return null;
 }

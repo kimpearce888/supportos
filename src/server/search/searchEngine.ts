@@ -166,7 +166,7 @@ export class SearchEngine {
       subtitle: `Knowledge · ${r.visibility === 'customer_safe' ? 'customer-safe' : 'internal'}`,
       snippet: r.snippet,
       score: 1,
-      href: `/knowledge/${r.document_id}`,
+      href: `/knowledge?doc=${r.document_id}`,
       why: ['knowledge match']
     }));
   }
@@ -188,7 +188,7 @@ export class SearchEngine {
       subtitle: 'Known issue',
       snippet: r.snippet,
       score: 1,
-      href: `/issues/known/${r.id}`,
+      href: `/issues?tab=known`,
       why: ['known issue match']
     }));
   }
@@ -210,7 +210,7 @@ export class SearchEngine {
       subtitle: 'Saved reply',
       snippet: r.snippet,
       score: 1,
-      href: `/saved-replies`,
+      href: `/inbox`,
       why: ['saved reply match']
     }));
   }

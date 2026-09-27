@@ -19,10 +19,21 @@ export class InteractionRepository {
     sources: 'heuristic' | 'heuristic+ai' | 'ai';
     analysis_version: string | null;
   }): void {
+    // ONE row per conversation (unique index): repeated refreshes update in
+    // place instead of appending forever.
     this.db
       .prepare(
         `INSERT INTO client_current_signals (conversation_id, customer_id, signals_json, message_stats_json, customer_goal, sources, analysis_version, generated_at, provenance)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+         ON CONFLICT (conversation_id) DO UPDATE SET
+           customer_id = excluded.customer_id,
+           signals_json = excluded.signals_json,
+           message_stats_json = excluded.message_stats_json,
+           customer_goal = excluded.customer_goal,
+           sources = excluded.sources,
+           analysis_version = excluded.analysis_version,
+           generated_at = datetime('now'),
+           provenance = excluded.provenance`
       )
       .run(
         row.conversation_id,
@@ -36,31 +47,72 @@ export class InteractionRepository {
       );
   }
 
-  getLatestCurrentInteraction(conversationId: number): { signals: InteractionSignal[]; message_stats: CurrentInteraction['message_stats'] | null; customer_goal: string | null; sources: string; generated_at: string } | null {
+  getLatestCurrentInteraction(conversationId: number): { signals: InteractionSignal[]; message_stats: CurrentInteraction['message_stats'] | null; customer_goal: string | null; sources: string; generated_at: string; analysis_version: string | null; recommendation: { recommendation: import('../../../shared/types.js').SupportApproach; prompt_version: string | null; model: string | null } | null } | null {
     const row = this.db
-      .prepare('SELECT signals_json, message_stats_json, customer_goal, sources, generated_at FROM client_current_signals WHERE conversation_id = ? ORDER BY id DESC LIMIT 1')
-      .get(conversationId) as { signals_json: string; message_stats_json: string | null; customer_goal: string | null; sources: string; generated_at: string } | undefined;
+      .prepare('SELECT signals_json, message_stats_json, customer_goal, sources, generated_at, analysis_version, recommendation_json FROM client_current_signals WHERE conversation_id = ? ORDER BY id DESC LIMIT 1')
+      .get(conversationId) as { signals_json: string; message_stats_json: string | null; customer_goal: string | null; sources: string; generated_at: string; analysis_version: string | null; recommendation_json: string | null } | undefined;
     if (!row) return null;
+    let recommendation: { recommendation: import('../../../shared/types.js').SupportApproach; prompt_version: string | null; model: string | null } | null = null;
+    if (row.recommendation_json) {
+      try {
+        const parsed = JSON.parse(row.recommendation_json) as { recommendation: import('../../../shared/types.js').SupportApproach; prompt_version: string | null; model: string | null };
+        if (parsed && parsed.recommendation) recommendation = parsed;
+      } catch {
+        recommendation = null;
+      }
+    }
     return {
       signals: safeParseSignals(row.signals_json),
       message_stats: row.message_stats_json ? (JSON.parse(row.message_stats_json) as CurrentInteraction['message_stats']) : null,
       customer_goal: row.customer_goal,
       sources: row.sources,
-      generated_at: row.generated_at
+      generated_at: row.generated_at,
+      analysis_version: row.analysis_version ?? null,
+      recommendation
     };
+  }
+
+  /** Persist a Stage-2 AI recommendation for a conversation (consumed by buildCard). */
+  saveRecommendation(conversationId: number, recommendation: unknown, promptVersion: string | null, model: string | null): void {
+    this.db
+      .prepare('UPDATE client_current_signals SET recommendation_json = ? WHERE conversation_id = ?')
+      .run(JSON.stringify({ recommendation, prompt_version: promptVersion, model }), conversationId);
   }
 
   // ---------------- longitudinal observations ----------------
 
   insertObservations(observations: { customer_id: number; conversation_id: number | null; thread_local_id: number | null; dimension: string; value: string; confidence: string; evidence_excerpt: string | null; source: 'heuristic' | 'ai'; observed_at: string }[]): void {
+    // IDEMPOTENT per (conversation, dimension, source) — unique index from
+    // migration 005/006. A recompute updates the stored value in place; it
+    // never appends a duplicate row. Rows with a NULL conversation_id
+    // (conversation deleted) fall outside the index and insert normally.
     const stmt = this.db.prepare(
       `INSERT INTO client_behavior_observations (customer_id, conversation_id, thread_local_id, dimension, value, confidence, evidence_excerpt, source, observed_at, provenance)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (conversation_id, dimension, source) DO UPDATE SET
+         value = excluded.value,
+         confidence = excluded.confidence,
+         evidence_excerpt = excluded.evidence_excerpt,
+         thread_local_id = excluded.thread_local_id,
+         observed_at = excluded.observed_at,
+         provenance = excluded.provenance`
     );
     const tx = this.db.transaction((rows: typeof observations) => {
       for (const o of rows) stmt.run(o.customer_id, o.conversation_id, o.thread_local_id, o.dimension, o.value, o.confidence, o.evidence_excerpt, o.source, o.observed_at, o.source === 'ai' ? 'ai_generated' : 'heuristic');
     });
     tx(observations);
+  }
+
+  /** Conversations that contributed at least one observation (for honest counting). */
+  observedConversationCount(customerId: number, forValue?: string): number {
+    if (forValue != null) {
+      return (this.db
+        .prepare('SELECT COUNT(DISTINCT conversation_id) AS n FROM client_behavior_observations WHERE customer_id = ? AND value = ? AND conversation_id IS NOT NULL')
+        .get(customerId, forValue) as { n: number }).n;
+    }
+    return (this.db
+      .prepare('SELECT COUNT(DISTINCT conversation_id) AS n FROM client_behavior_observations WHERE customer_id = ? AND conversation_id IS NOT NULL')
+      .get(customerId) as { n: number }).n;
   }
 
   /** Recency-weighted aggregation of observations per customer (spec #23, #41). */
@@ -147,36 +199,54 @@ export class InteractionRepository {
       }));
   }
 
-  setHumanOverride(customerId: number, field: string, aiValue: string | null, humanValue: string, reason: string | null): void {
+  setHumanOverride(customerId: number, value: string, aiValue: string | null, reason: string | null): void {
     const tx = this.db.transaction(() => {
+      // 1. Deactivate previous overrides of this dimension (audit history kept)
       this.db
-        .prepare('UPDATE client_human_overrides SET active = 0 WHERE customer_id = ? AND field = ? AND active = 1')
-        .run(customerId, field);
+        .prepare("UPDATE client_human_overrides SET active = 0 WHERE customer_id = ? AND field = 'response_preference' AND active = 1")
+        .run(customerId);
+      // 2. Record the new override decision
       this.db
-        .prepare(`INSERT INTO client_human_overrides (customer_id, field, ai_value, human_value, reason, active, created_at) VALUES (?, ?, ?, ?, ?, 1, datetime('now'))`)
-        .run(customerId, field, aiValue, humanValue, reason);
-      // Materialize onto the preference row so precedence is queryable (spec #22, #56)
+        .prepare(`INSERT INTO client_human_overrides (customer_id, field, ai_value, human_value, reason, active, created_at) VALUES (?, 'response_preference', ?, ?, ?, 1, datetime('now'))`)
+        .run(customerId, aiValue, value, reason);
+      // 3. Drop rows materialized by earlier overrides that never had evidence
+      //    (only one human-entered preference may be effective at a time)
+      this.db
+        .prepare("DELETE FROM client_communication_preferences WHERE customer_id = ? AND origin = 'human_entered' AND evidence_count = 0")
+        .run(customerId);
+      // 4. Materialize onto the VALUE-keyed preference row so precedence is
+      //    queryable (spec #22, #56). Existing AI evidence is preserved.
       this.db
         .prepare(
           `INSERT INTO client_communication_preferences (customer_id, preference, evidence_count, first_observed, last_observed, confidence, origin, human_override_value, human_override_reason, overridden_at, provenance)
            VALUES (?, ?, 0, NULL, datetime('now'), 'high', 'human_entered', ?, ?, datetime('now'), 'human')
            ON CONFLICT (customer_id, preference) DO UPDATE SET
+             last_observed = datetime('now'),
+             confidence = 'high',
+             origin = 'human_entered',
              human_override_value = excluded.human_override_value,
              human_override_reason = excluded.human_override_reason,
              overridden_at = datetime('now')`
         )
-        .run(customerId, field, humanValue, reason);
+        .run(customerId, value, value, reason);
     });
     tx();
   }
 
-  clearHumanOverride(customerId: number, field: string): void {
+  clearHumanOverride(customerId: number): void {
     this.db
-      .prepare('UPDATE client_human_overrides SET active = 0 WHERE customer_id = ? AND field = ? AND active = 1')
-      .run(customerId, field);
+      .prepare("UPDATE client_human_overrides SET active = 0 WHERE customer_id = ? AND field = 'response_preference' AND active = 1")
+      .run(customerId);
+    // Reverting must fully restore AI semantics (spec #22): a row created by
+    // the override itself (evidence_count = 0, origin human_entered) is
+    // DELETED - otherwise it lingered as a phantom "human-entered preference
+    // with 0 interactions" and leaked the field name into AI draft prompts.
     this.db
-      .prepare('UPDATE client_communication_preferences SET human_override_value = NULL, human_override_reason = NULL, overridden_at = NULL WHERE customer_id = ? AND preference = ?')
-      .run(customerId, field);
+      .prepare("DELETE FROM client_communication_preferences WHERE customer_id = ? AND evidence_count = 0 AND origin = 'human_entered'")
+      .run(customerId);
+    this.db
+      .prepare("UPDATE client_communication_preferences SET human_override_value = NULL, human_override_reason = NULL, overridden_at = NULL, origin = 'ai_inferred', confidence = CASE WHEN evidence_count >= 3 THEN confidence ELSE 'low' END WHERE customer_id = ?")
+      .run(customerId);
   }
 
   getActiveOverrides(customerId: number): { id: number; field: string; ai_value: string | null; human_value: string; reason: string | null; created_at: string; active: boolean }[] {

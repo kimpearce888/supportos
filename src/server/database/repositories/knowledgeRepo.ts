@@ -40,25 +40,25 @@ export class KnowledgeRepository {
     if (existing && existing.checksum === checksum) {
       return { id: existing.id, changed: false };
     }
-    let docId: number;
-    if (existing) {
-      this.db
-        .prepare("UPDATE knowledge_documents SET version = version + 1, checksum = ?, content = ?, format = ?, visibility = ?, updated_at = datetime('now') WHERE id = ?")
-        .run(checksum, content, opts.format ?? 'markdown', opts.visibility, existing.id);
-      docId = existing.id;
-      this.db.prepare('DELETE FROM knowledge_chunks WHERE document_id = ?').run(docId);
-      this.db.prepare('DELETE FROM fts_knowledge WHERE document_id = ?').run(docId);
-    } else {
-      const r = this.db
-        .prepare('INSERT INTO knowledge_documents (source_id, title, visibility, version, checksum, content, format) VALUES (?, ?, ?, 1, ?, ?, ?)')
-        .run(sourceId, title, opts.visibility, checksum, content, opts.format ?? 'markdown');
-      docId = Number(r.lastInsertRowid);
-    }
-    // chunk + FTS
+    let docId = existing?.id ?? 0;
+    // chunk + FTS. The whole insert-or-replace path is atomic: a crash
+    // mid-update previously left a document with deleted chunks and no FTS rows.
     const chunks = chunkText(content, 1200, 150);
     const insChunk = this.db.prepare('INSERT INTO knowledge_chunks (document_id, chunk_index, content, chunk_version) VALUES (?, ?, ?, 2)');
     const insFts = this.db.prepare('INSERT INTO fts_knowledge (title, content, chunk_id, document_id, visibility) VALUES (?, ?, ?, ?, ?)');
     const tx = this.db.transaction(() => {
+      if (existing) {
+        this.db
+          .prepare("UPDATE knowledge_documents SET version = version + 1, checksum = ?, content = ?, format = ?, visibility = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(checksum, content, opts.format ?? 'markdown', opts.visibility, existing.id);
+        this.db.prepare('DELETE FROM knowledge_chunks WHERE document_id = ?').run(existing.id);
+        this.db.prepare('DELETE FROM fts_knowledge WHERE document_id = ?').run(existing.id);
+      } else {
+        const r = this.db
+          .prepare('INSERT INTO knowledge_documents (source_id, title, visibility, version, checksum, content, format) VALUES (?, ?, ?, 1, ?, ?, ?)')
+          .run(sourceId, title, opts.visibility, checksum, content, opts.format ?? 'markdown');
+        docId = Number(r.lastInsertRowid);
+      }
       chunks.forEach((c, i) => {
         const r = insChunk.run(docId, i, c);
         insFts.run(title, c, Number(r.lastInsertRowid), docId, opts.visibility);
@@ -147,8 +147,12 @@ export class KnowledgeRepository {
   }
 
   deleteDocument(id: number): void {
-    this.db.prepare('DELETE FROM knowledge_chunks WHERE document_id = ?').run(id);
-    this.db.prepare('DELETE FROM fts_knowledge WHERE document_id = ?').run(id);
-    this.db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(id);
+    // Atomic: a crash mid-sequence previously left orphaned FTS rows that kept
+    // matching searches for a deleted document.
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM knowledge_chunks WHERE document_id = ?').run(id);
+      this.db.prepare('DELETE FROM fts_knowledge WHERE document_id = ?').run(id);
+      this.db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(id);
+    })();
   }
 }

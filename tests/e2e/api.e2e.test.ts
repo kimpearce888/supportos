@@ -334,9 +334,12 @@ describe('client interaction intelligence (interaction spec: works without AI)',
       body: JSON.stringify({ field: 'response_preference', value: 'concise', reason: 'e2e: customer asked for short answers' })
     });
     expect(set.status).toBe(200);
-    const profile = (await (await fetch(`${baseUrl}/api/interaction/profile/${customerId}`)).json()) as { profile: { preferences: { preference: string; human_override: { value: string; reason: string | null } | null }[] } };
-    const pref = profile.profile.preferences.find((p) => p.preference === 'response_preference');
+    // Value-keyed materialization: the human-entered row carries the VALUE
+    // ('concise'), which is what the UI and the draft pipeline consume.
+    const profile = (await (await fetch(`${baseUrl}/api/interaction/profile/${customerId}`)).json()) as { profile: { preferences: { preference: string; origin: string; human_override: { value: string; reason: string | null } | null }[] } };
+    const pref = profile.profile.preferences.find((p) => p.preference === 'concise');
     expect(pref?.human_override?.value).toBe('concise');
+    expect(pref?.origin).toBe('human_entered');
 
     const card = (await (await fetch(`${baseUrl}/api/interaction/${slackConvId}`)).json()) as { card: { recommendation: { length: string | null; source: string } } };
     expect(card.card.recommendation.length).toBe('concise');
@@ -344,8 +347,11 @@ describe('client interaction intelligence (interaction spec: works without AI)',
 
     const clear = await fetch(`${baseUrl}/api/interaction/profile/${customerId}/override/response_preference`, { method: 'DELETE' });
     expect(clear.status).toBe(200);
-    const after = (await (await fetch(`${baseUrl}/api/interaction/profile/${customerId}`)).json()) as { profile: { preferences: { preference: string; human_override: unknown }[] } };
-    expect(after.profile.preferences.find((p) => p.preference === 'response_preference')?.human_override).toBeNull();
+    const after = (await (await fetch(`${baseUrl}/api/interaction/profile/${customerId}`)).json()) as { profile: { preferences: { preference: string; origin: string; human_override: unknown }[] } };
+    // Revert fully restores AI semantics: no human-entered row remains and
+    // no preference carries an override.
+    expect(after.profile.preferences.some((p) => p.origin === 'human_entered')).toBe(false);
+    expect(after.profile.preferences.every((p) => p.human_override == null)).toBe(true);
   });
 
   it('rejects invalid override payloads with 422', async () => {

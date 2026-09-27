@@ -107,7 +107,10 @@ export class KnowledgeIngestor {
     const header = this.parseCsvLine(lines[0] ?? '');
     const titleIdx = header.findIndex((h) => /^(title|name|question|topic)$/i.test(h.trim()));
     const docs: ImportedDocument[] = [];
-    for (const line of lines.slice(1)) {
+    // Row cap mirrors the JSON import limit (500): a huge CSV would otherwise
+    // run unbounded synchronous upserts + FTS writes on the event loop.
+    const MAX_ROWS = 500;
+    for (const line of lines.slice(1, 1 + MAX_ROWS)) {
       const cells = this.parseCsvLine(line);
       if (cells.every((c) => !c.trim())) continue;
       const title = ((titleIdx >= 0 ? cells[titleIdx] : cells[0]) ?? '').trim() || `${base} entry`;

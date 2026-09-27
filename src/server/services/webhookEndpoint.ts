@@ -31,7 +31,11 @@ export class WebhookEndpoint {
   }
 
   async handle(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const raw = typeof request.body === 'string' ? request.body : JSON.stringify(request.body ?? {});
+    // HMAC must be computed over the RAW bytes as delivered (spec #13):
+    // re-serialized JSON differs from the original payload (whitespace,
+    // escapes, float precision) and would reject legitimate events.
+    const rawBody = (request as unknown as { rawBody?: string }).rawBody;
+    const raw = typeof rawBody === 'string' && rawBody.length > 0 ? rawBody : typeof request.body === 'string' ? request.body : JSON.stringify(request.body ?? {});
     const headers = request.headers as Record<string, string | string[] | undefined>;
     const eventType = (headers['x-helpscout-event'] as string) || 'unknown';
     const signature = headers['x-helpscout-signature'] as string | undefined;

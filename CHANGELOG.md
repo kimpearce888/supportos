@@ -3,6 +3,57 @@
 All notable changes to SupportOS are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-09-27
+
+The hardening release: a full independent audit (static analysis, black-box runtime testing against a fresh database, and line-by-line review of every write path) produced **40+ findings; every confirmed issue is fixed and locked down by a regression test that names it**. 150/150 tests green.
+
+### Fixed — Security & data protection
+- **`@fastify/static` upgraded 8.3.0 → 10.1.5** — closes 4 published advisories (path traversal / route-guard bypass / authorization bypass)
+- **AI evaluation mode now blocks EVERY remote write** — previously only notes and status changes were guarded; replies, assignments, tag/field edits, moves, snoozes, schedules, workflows and bulk actions could still reach Help Scout while users believed nothing left the machine
+- **Demo-mode arbitrary file import closed** — `POST /api/knowledge/import-file` bypassed the allowed-roots check in demo mode, letting an unauthenticated local caller import and read back any `.md/.txt/.csv/.json/.html/.pdf/.docx` file on the machine
+- **Settings API hardened** — `PATCH /api/settings` now validates a strict whitelist of user-facing keys; internal keys (`oauth_state`, `me_remote_id`, …) can no longer be poisoned, a NaN `sync_interval_minutes` can no longer collapse the sync loop to a 1ms runaway timer, and `lmstudio_base_url` can no longer be redirected to an arbitrary URL
+- **Attachment serving rewritten** — production returned 404 for every attachment (`sendFile` joined the absolute path onto the SPA root); dev served `text/html` inline same-origin (stored XSS). Now: direct stream, images-only inline whitelist, forced `Content-Disposition: attachment`, `nosniff`, separator-aware path containment, id validation
+- **Inline CSS scrubbing in sanitized thread HTML** — `position:fixed` overlays and `url()` tracking beacons no longer pass through `style` attributes
+- **CORS rebuilt from the configured port** — running on any custom `PORT` previously broke the SPA's own API calls (the allowlist was hardcoded to 3000/5173); foreign origins are now denied cleanly instead of erroring
+- **Webhook HMAC computed over the raw request bytes** — re-serialized JSON broke signature verification for legitimate Help Scout payloads; a startup warning is now logged when the webhook secret is unset
+- `trustProxy` disabled (spoofable `X-Forwarded-For` no longer defeats rate-limit keying)
+
+### Fixed — Data integrity (Client Interaction Intelligence)
+- **Observations are idempotent** — every refresh/sync tick previously inserted duplicate rows, inflating observation counts and confidence, multiplying the weight of frequently-refreshed conversations in recency-weighted baselines, and letting a SINGLE ticket reach the 3-observation preference threshold (spec #39's repeated-evidence rule). Unique index `(conversation_id, dimension, source)` + in-place upsert; migration 006 collapses existing duplicates
+- **`client_current_signals` capped at one row per conversation** (was append-per-refresh, unbounded growth); Stage-2 AI recommendations are now persisted and actually served on later GETs (the `heuristic+ai` label previously flipped without merging any AI data)
+- **`resolved_after_first_response` requires a CLOSED conversation** — an always-true `|| true` had counted in-flight tickets as resolved, inflating first-response resolution rates and "worked in N cases"
+- **Closing acknowledgments excluded from follow-up counting** — "thanks, that worked, closing from my side" is courtesy, not customer effort
+- **Change detection: nominal dimensions (tone, expectation, question structure) report "changed", not a meaningless "increase"** — only genuinely ordinal dimensions get direction/magnitude/significance
+- **Preference threshold counts DISTINCT conversations**, not repeated rows
+- **Human override flow rebuilt** — the UI previously sent the preference value as the field name (every override attempt returned 422); overrides are value-keyed, validated against the known preference vocabulary, visible in the UI with a manual-entry path when nothing is inferred yet, and reverting now fully restores AI semantics (previously left a phantom "human-entered preference with 0 interactions" and leaked the literal field name into draft prompts)
+- **AI evidence integrity** — hallucinated `evidence_thread_local_id`s no longer persist (validated against the ids actually present in the prompt); evidence excerpts are scanned for forbidden trait claims like every other free-text field
+- **Safety vocabulary extended** — "rude", "entitled", "needy", "passive-aggressive", "the customer is X" trait statements and more are rejected
+- **Heuristic evidence mandate** — every heuristic classifier's evidence predicate now covers its own trigger phrases (a "please give a short answer" preference previously carried no evidence excerpt)
+
+### Fixed — Correctness & crashes
+- **Zod validation failures return 422** (not 500) with a readable message — and no longer pollute `application_errors`
+- **NaN query parameters are clamped** — `?page=abc`, `?pageSize=abc`, `?limit=abc` previously threw 500s ("datatype mismatch")
+- **Schedule publish/delete tolerate missing bodies** (422 instead of a crash) and verify the thread belongs to the conversation
+- **Draft-then-send no longer blocked by duplicate-send protection** — the draft flag is part of the idempotency key; true duplicate sends are still blocked
+- **Rate limiting is mutation-only** — the global 300/min limiter previously 429'd the SPA itself (reads + index.html) during normal polling; webhook endpoint (HMAC-authenticated, deduplicated) is exempt
+- **Custom-field editor sends Help Scout REMOTE field ids** — local-id keys made every save of existing values fail silently and rendered each field twice
+- **Attachment download buttons download the clicked attachment** (not always the first of the thread)
+- **Search deep links work** — knowledge hits open the document reader (`/knowledge?doc=N`), known-issue hits open the Issues tab; previously all three scopes redirected to the Dashboard
+- **Tag filter preserved** when paginating or switching inbox views
+- **Bulk "Unassigned" works** (null instead of empty-string user id) and bulk params accept numbers/null
+- **Query errors surface on every page** — detail pages no longer spin forever on API failure
+- **Fire-and-forget actions report failures** (publish/delete schedule, snooze removal, workflow run, HS draft creation, sync cancel) instead of silently doing nothing
+- **Backups endpoint caches integrity verification** (was a full DB scan of every backup on every request) and closes file handles on error
+- **`retention_days` is now enforced** — webhook events, application errors, audit log entries and AI run records older than the window are pruned by the maintenance worker (conversations mirror Help Scout and are intentionally untouched)
+- Knowledge document replace and FTS index rebuild wrapped in transactions; CSV ingestion row-capped at 500
+- g-chord navigation re-checks typing context; settings number inputs no longer save 0 when cleared; duplicate React keys fixed; modals trap focus; SPA navigation uses `Link` instead of full page reloads
+
+### Added
+- Migration 006 `interaction_integrity` (idempotent upgrade path for v1.1.0 databases)
+- 20 new regression tests that name their audit findings (`tests/integration/audit-fixes.test.ts`, `tests/e2e/audit-fixes.e2e.test.ts`)
+- `README` gains "The Story" — why SupportOS exists and the reasoning behind every major architectural decision
+- Startup warning when webhooks are accepted without signature verification
+
 ## [1.1.0] — 2026-09-27
 
 Client Interaction Intelligence: per-client communication behavior intelligence, built with a deterministic core and optional two-stage local AI.

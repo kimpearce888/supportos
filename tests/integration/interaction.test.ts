@@ -88,16 +88,24 @@ describe('client interaction intelligence (interaction spec)', () => {
     const { db, engine } = await setup();
     const ravi = findConversation(db, 'Slack integration stopped posting');
     const customerId = ravi.customer_local_id!;
-    engine.repo.setHumanOverride(customerId, 'response_preference', 'detailed', 'concise', 'Customer asked for short answers');
-    const pref = engine.repo.getPreferences(customerId).find((p) => p.preference === 'response_preference');
+    // New value-keyed semantics: the override materializes on the preference
+    // VALUE row ('concise'), not on a row named after the field.
+    engine.repo.setHumanOverride(customerId, 'concise', 'detailed', 'Customer asked for short answers');
+    const pref = engine.repo.getPreferences(customerId).find((p) => p.preference === 'concise');
     expect(pref?.human_override?.value).toBe('concise');
     expect(pref?.human_override?.reason).toContain('short answers');
+    expect(pref?.origin).toBe('human_entered');
     const card = engine.buildCard(ravi.id);
     expect(card!.recommendation!.length).toBe('concise');
     expect(card!.recommendation!.source).toBe('ai+human-override');
-    engine.repo.clearHumanOverride(customerId, 'response_preference');
-    const cleared = engine.repo.getPreferences(customerId).find((p) => p.preference === 'response_preference');
-    expect(cleared?.human_override).toBeNull();
+    engine.repo.clearHumanOverride(customerId);
+    // After revert the override-created row is fully removed (no phantom
+    // "human-entered preference with 0 interactions"), and AI semantics apply again.
+    const cleared = engine.repo.getPreferences(customerId).find((p) => p.preference === 'concise');
+    expect(cleared?.human_override ?? null).toBeNull();
+    expect(engine.repo.getPreferences(customerId).some((p) => p.origin === 'human_entered')).toBe(false);
+    const cardAfter = engine.buildCard(ravi.id);
+    expect(cardAfter!.recommendation!.source).not.toBe('ai+human-override');
     closeDatabase();
   });
 

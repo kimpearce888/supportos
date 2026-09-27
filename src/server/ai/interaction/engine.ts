@@ -97,8 +97,11 @@ export class InteractionEngine {
     };
   }
 
-  /** Persist current signals + record observations for the customer's history (spec #29, #30). */
-  recordCurrentInteraction(conversationId: number): CurrentInteraction | null {
+  /** Persist current signals + record observations for the customer's history (spec #29, #30).
+   * Idempotent: observations are keyed (conversation, dimension, source) in the
+   * repository, so repeated refreshes/syncs update in place instead of duplicating.
+   * opts.rebuildBaseline=false is used by history backfill to avoid O(n²) rebuilds. */
+  recordCurrentInteraction(conversationId: number, opts: { rebuildBaseline?: boolean } = {}): CurrentInteraction | null {
     const current = this.computeCurrentInteraction(conversationId);
     if (!current) return null;
     this.repo.saveCurrentInteraction({
@@ -132,7 +135,7 @@ export class InteractionEngine {
           observed_at: observedAt
         }));
       if (observations.length) this.repo.insertObservations(observations);
-      this.rebuildBaseline(current.customer_local_id);
+      if (opts.rebuildBaseline !== false) this.rebuildBaseline(current.customer_local_id);
     }
     return current;
   }
@@ -234,6 +237,12 @@ export class InteractionEngine {
 
   // ---------------- change detection (spec #5, #19) ----------------
 
+  /** Dimensions whose values form a meaningful ORDER (low -> high). Only
+   * these get increase/decrease directions and magnitude math. Nominal
+   * dimensions (tone, expectation, question structure, preference) carry no
+   * order - "tone went up" is meaningless - so they only report "changed". */
+  private static readonly ORDINAL_DIMENSIONS = new Set<string>(['urgency', 'frustration', 'detail', 'directness', 'technical_language']);
+
   computeChanges(current: CurrentInteraction, baseline: BehaviorBaseline | null): InteractionChange[] {
     if (!baseline) return [];
     const changes: InteractionChange[] = [];
@@ -241,9 +250,22 @@ export class InteractionEngine {
     for (const b of baseline.dimensions) {
       const cur = currentByDim.get(b.dimension) ?? null;
       if (!cur) continue;
+      if (!InteractionEngine.ORDINAL_DIMENSIONS.has(b.dimension)) {
+        if (cur === b.typical_value) continue;
+        changes.push({
+          dimension: b.dimension,
+          baseline_value: b.typical_value,
+          current_value: cur,
+          direction: 'changed',
+          magnitude: 0,
+          significant: false
+        });
+        continue;
+      }
       const bRank = dimensionRank(b.dimension, b.typical_value);
       const cRank = dimensionRank(b.dimension, cur);
       if (bRank == null || cRank == null) continue;
+      if (bRank === cRank) continue;
       const span = rankSpan(b.dimension);
       const rawDelta = (cRank - bRank) / span;
       const magnitude = Math.min(1, Math.abs(rawDelta));
@@ -273,18 +295,20 @@ export class InteractionEngine {
     const customerTexts = customerMsgs.map((m) => htmlToText(m.body_html ?? m.body_text ?? '').toLowerCase());
     const replyTexts = replyMsgs.map((m) => htmlToText(m.body_html ?? m.body_text ?? '').toLowerCase());
 
-    // Follow-ups: customer messages after the first support reply
+    // Follow-ups: customer messages after the first support reply that ask for
+    // MORE help. A pure closing acknowledgment ("thanks, that worked, closing
+    // from my side") is not customer effort and must not count as a follow-up
+    // - otherwise a perfectly resolved ticket looks unresolved.
     let followUpCount = 0;
     let sawReply = false;
     for (const r of rows) {
       if (r.type === 'reply') sawReply = true;
-      else if (r.type === 'customer' && sawReply) followUpCount += 1;
+      else if (r.type === 'customer' && sawReply && !isClosingAcknowledgment(htmlToText(r.body_html ?? r.body_text ?? ''))) followUpCount += 1;
     }
     // Clarifications: customer asks for clarification or repeats issue phrasing
     const clarificationCount = customerTexts.slice(1).filter((t) => /still|again|re-?send|clarif|you didn'?t|that didn'?t|not what i|same issue|as i (said|mentioned|wrote)/.test(t)).length;
     const escalated = noteMsgs.some((n) => /escalat|urgent|priority|vip/i.test(htmlToText(n.body_html ?? n.body_text ?? ''))) || replyTexts.some((t) => /escalat/i.test(t));
-    const resolvedAfterFirst = replyMsgs.length > 0 ? followUpCount === 0 && (conv.status === 'closed' || true) : null;
-
+    const resolvedAfterFirst = replyMsgs.length > 0 ? followUpCount === 0 && conv.status === 'closed' : null;
     // Effort score (spec #52): support friction, 0 (low) .. 10 (high)
     const effort = Math.min(10, customerMsgs.length * 1.2 + followUpCount * 1.5 + clarificationCount * 2 + (escalated ? 2 : 0));
     const effortScore = customerMsgs.length ? Number(effort.toFixed(1)) : null;
@@ -325,6 +349,11 @@ export class InteractionEngine {
     const escalated = outcomes.filter((o) => o.escalated === 1).length;
     const avgEffort = outcomes.reduce((a, o) => a + (o.effort_score ?? 0), 0) / total;
 
+    // One history fetch reused for numbers AND subjects (was N+1 per friction flag)
+    const convRows = this.repo.getCustomerConversations(customerId);
+    const convNumbers = new Map(convRows.map((c) => [c.id, c.number]));
+    const convSubjects = new Map(convRows.map((c) => [c.id, c.subject]));
+
     // Historically effective approaches (spec #18, #44): styles linked to resolution
     const styleGroups = new Map<string, { worked: number; total: number; example: number | null }>();
     for (const o of outcomes) {
@@ -337,13 +366,12 @@ export class InteractionEngine {
       }
       styleGroups.set(o.response_style, g);
     }
-    const convNumbers = new Map(this.repo.getCustomerConversations(customerId).map((c) => [c.id, c.number]));
     const effectiveApproaches = [...styleGroups.entries()]
       .map(([approach, g]) => ({ approach: humanizeStyle(approach), worked_count: g.worked, example_conversation_local_id: g.example, example_number: g.example != null ? convNumbers.get(g.example) ?? null : null }))
       .sort((a, b) => b.worked_count - a.worked_count);
     const frictionFlags = outcomes
       .filter((o) => o.friction === 'high' || o.friction === 'moderate')
-      .map((o) => ({ conversation_local_id: o.conversation_id, number: convNumbers.get(o.conversation_id) ?? 0, subject: this.repo.getCustomerConversations(customerId).find((c) => c.id === o.conversation_id)?.subject ?? null, friction: o.friction as 'moderate' | 'high' }));
+      .map((o) => ({ conversation_local_id: o.conversation_id, number: convNumbers.get(o.conversation_id) ?? 0, subject: convSubjects.get(o.conversation_id) ?? null, friction: o.friction as 'moderate' | 'high' }));
 
     return {
       customer_local_id: customerId,
@@ -362,7 +390,10 @@ export class InteractionEngine {
 
   heuristicRecommendation(current: CurrentInteraction, changes: InteractionChange[], baseline: BehaviorBaseline | null, overrides: { field: string; human_value: string }[]): SupportApproach | null {
     const sig = new Map(current.signals.map((s) => [s.dimension, s.value]));
-    const prefOverride = overrides.find((o) => o.field === 'response_preference');
+    // Only VALID preference values participate: a malformed/legacy override
+    // value must not silently steer the recommendation or leak into prompts.
+    const validPrefs = new Set<string>(RESPONSE_PREFERENCE_VALUES);
+    const prefOverride = overrides.find((o) => o.field === 'response_preference' && validPrefs.has(o.human_value)) ?? null;
     const explicitPref = current.signals.find((s) => s.dimension === 'response_preference' && s.source === 'heuristic' && s.confidence === 'high')?.value ?? null;
     const urgency = sig.get('urgency') ?? 'none';
     const frustration = sig.get('frustration') ?? 'none';
@@ -464,7 +495,9 @@ export class InteractionEngine {
     for (const c of convs) {
       if (covered.has(c.id)) continue;
       try {
-        this.recordCurrentInteraction(c.id);
+        // rebuildBaseline=false: the baseline is rebuilt ONCE after the loop
+        // instead of per conversation (backfill was O(n²) on large histories)
+        this.recordCurrentInteraction(c.id, { rebuildBaseline: false });
         this.computeOutcome(c.id);
         added = true;
       } catch {
@@ -478,7 +511,7 @@ export class InteractionEngine {
     const conv = this.conversationInfo(conversationId);
     if (!conv) return null;
     this.ensureHistoryBackfill(conv.customer_local_id);
-    const current = this.repo.getLatestCurrentInteraction(conversationId) as (ReturnType<InteractionRepository['getLatestCurrentInteraction']> extends infer R ? (R extends null ? never : R & { customer_goal: string | null }) : never) | null;
+    const current = this.repo.getLatestCurrentInteraction(conversationId);
     let currentSignals: InteractionSignal[];
     let messageStats: CurrentInteraction['message_stats'];
     let goal: string | null;
@@ -515,7 +548,10 @@ export class InteractionEngine {
     const baseline = customerId ? this.comparisonBaseline(customerId, conversationId) : null;
     const changes = this.computeChanges(currentInteraction, baseline);
     const overrides = customerId ? this.repo.getActiveOverrides(customerId).map((o) => ({ field: o.field, human_value: o.human_value })) : [];
-    const recommendation = aiEnrichment?.recommendation ?? this.heuristicRecommendation(currentInteraction, changes, baseline, overrides);
+    // Recommendation precedence: explicit AI enrichment (refresh response) >
+    // STORED Stage-2 recommendation (persisted for later GETs) > deterministic heuristic.
+    const storedRec = current?.recommendation ?? null;
+    const recommendation = aiEnrichment?.recommendation ?? storedRec?.recommendation ?? this.heuristicRecommendation(currentInteraction, changes, baseline, overrides);
     const outcome = this.computeOutcome(conversationId);
     const repeatIssue = this.detectRepeatIssue(conversationId);
     return {
@@ -529,30 +565,37 @@ export class InteractionEngine {
       effort_score: outcome?.effort_score ?? null,
       friction: outcome?.friction ?? null,
       repeat_issue: repeatIssue,
-      provenance: { ai_generated: !!aiEnrichment, prompt_version: aiEnrichment?.promptVersion ?? null, model: aiEnrichment?.model ?? null, generated_at: current?.generated_at ?? null }
+      provenance: { ai_generated: !!aiEnrichment || !!storedRec, prompt_version: aiEnrichment?.promptVersion ?? storedRec?.prompt_version ?? null, model: aiEnrichment?.model ?? storedRec?.model ?? null, generated_at: current?.generated_at ?? null }
     };
   }
 
   // ---------------- customer profile assembly (spec #25) ----------------
 
   buildProfile(customerId: number): ClientInteractionProfile | null {
+    // Unknown/NaN customer id -> 404, not an empty-but-200 profile
+    const customerExists = this.db.prepare('SELECT id FROM customers WHERE id = ?').get(customerId);
+    if (!customerExists) return null;
     this.ensureHistoryBackfill(customerId);
     const convRows = this.repo.getCustomerConversations(customerId);
     const baseline = this.repo.getBaseline(customerId) as BehaviorBaseline | null;
-    // Preferences with overfit guard (spec #39, #40)
+    // Preferences with overfit guard (spec #39, #40): the threshold counts
+    // DISTINCT CONVERSATIONS exhibiting the preference, not raw observation
+    // rows - one ticket mentioned three times is still ONE data point.
     const observations = this.repo.getObservationsForCustomer(customerId);
     const prefObservations = observations.filter((o) => o.dimension === 'response_preference');
-    const prefGroups = new Map<string, { count: number; first: string | null; last: string | null }>();
+    const prefConvSets = new Map<string, Set<number>>();
     for (const o of prefObservations) {
-      const g = prefGroups.get(o.value) ?? { count: 0, first: o.observed_at, last: o.observed_at };
-      g.count += 1;
-      if (o.observed_at && (!g.last || o.observed_at > g.last)) g.last = o.observed_at;
-      prefGroups.set(o.value, g);
+      if (o.conversation_id == null) continue;
+      const set = prefConvSets.get(o.value) ?? new Set<number>();
+      set.add(o.conversation_id);
+      prefConvSets.set(o.value, set);
     }
     const preferences = this.repo.getPreferences(customerId);
-    for (const [value, g] of prefGroups) {
-      if (g.count >= INTERACTION_MIN_OBSERVATIONS_FOR_PREFERENCE && !preferences.some((p) => p.preference === value && p.origin === 'human_entered')) {
-        this.repo.upsertPreference(customerId, value, g.count, g.first, g.last, g.count >= 5 ? 'high' : 'medium', 'ai_inferred');
+    for (const [value, convs] of prefConvSets) {
+      if (convs.size >= INTERACTION_MIN_OBSERVATIONS_FOR_PREFERENCE && !preferences.some((p) => p.preference === value && p.origin === 'human_entered')) {
+        const rows = prefObservations.filter((o) => o.value === value && o.observed_at);
+        const dates = rows.map((r) => r.observed_at).sort();
+        this.repo.upsertPreference(customerId, value, convs.size, dates[0] ?? null, dates[dates.length - 1] ?? null, convs.size >= 5 ? 'high' : 'medium', 'ai_inferred');
       }
     }
     const finalPreferences = this.repo.getPreferences(customerId).filter((p) => p.origin === 'human_entered' || p.evidence_count >= INTERACTION_MIN_OBSERVATIONS_FOR_PREFERENCE);
@@ -598,6 +641,19 @@ export class InteractionEngine {
 // ---------------- helpers ----------------
 
 const STOPWORDS = new Set(['this', 'that', 'with', 'from', 'have', 'been', 'after', 'before', 'about', 'would', 'could', 'their', 'there', 'issue', 'problem', 'help', 'support', 'email']);
+
+/**
+ * A pure closing/acknowledgment message: short, no question, no continued
+ * problem statement - "thanks, that worked", "closing from my side". Such
+ * messages are courteous closures, not customer effort, and are excluded
+ * from follow-up counting (spec #16 resolution semantics, #52 effort).
+ */
+export function isClosingAcknowledgment(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0 || t.length > 400 || t.includes('?')) return false;
+  if (/still|again|but\b|however|issue|problem|not work|broken|error|fail|doesn'?t|didn'?t|can'?t|cannot/i.test(t)) return false;
+  return /^(thanks|thank you|thankyou|thx|appreciate|that (is|was|'s|sounds|seems) (exactly |just |very )?(what i|great|perfect|helpful|awesome|amazing|clear)|perfect|great|works|working|resolved|closing|closed|all set|confirmed|done|sorted)/i.test(t);
+}
 
 function ratio(n: number, d: number): number | null {
   return d > 0 ? Number((n / d).toFixed(2)) : null;

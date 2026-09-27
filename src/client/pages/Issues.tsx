@@ -1,9 +1,9 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Radar, Layers, BookPlus, Trash2, Link2 } from 'lucide-react';
 import { api } from '../api/client.js';
-import { Spinner, EmptyState, RelativeTime } from '../components/common/ui.js';
+import { Spinner, EmptyState, ErrorState, RelativeTime } from '../components/common/ui.js';
 import { Modal, ConfirmDialog } from '../components/common/overlays.js';
 import { useUiStore } from '../state/uiStore.js';
 import type { IssueRadarAlert, DocGap, AnswerReuseCandidate } from '../../shared/types.js';
@@ -12,7 +12,14 @@ interface Cluster { id: number; title: string; summary: string; category: string
 interface KnownIssue { id: number; title: string; symptoms: string; product: string | null; feature: string | null; known_cause: string | null; workaround: string | null; customer_safe_explanation: string | null; internal_explanation: string | null; status: string; first_seen_at: string | null; last_seen_at: string | null; conversation_count: number; provenance: string; conversation_ids: number[]; engineering_refs: { id: number; system: string; reference_id: string; url: string | null; title: string | null; status: string | null }[] }
 
 export function IssuesPage(): ReactNode {
-  const [tab, setTab] = useState<'radar' | 'clusters' | 'known' | 'gaps' | 'reuse'>('radar');
+  // Deep link: /issues?tab=known (from search results) opens that tab directly
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const initialTab = (['radar', 'clusters', 'known', 'gaps', 'reuse'] as const).includes(tabParam as never) ? (tabParam as 'radar' | 'clusters' | 'known' | 'gaps' | 'reuse') : 'radar';
+  const [tab, setTab] = useState<'radar' | 'clusters' | 'known' | 'gaps' | 'reuse'>(initialTab);
+  useEffect(() => {
+    if (tabParam && (['radar', 'clusters', 'known', 'gaps', 'reuse'] as const).includes(tabParam as never)) setTab(tabParam as 'radar' | 'clusters' | 'known' | 'gaps' | 'reuse');
+  }, [tabParam]);
   return (
     <div className="page">
       <div className="page-header">
@@ -38,7 +45,8 @@ export function IssuesPage(): ReactNode {
 }
 
 function IssueRadar(): ReactNode {
-  const { data } = useQuery({ queryKey: ['issue-radar-full'], queryFn: () => api.get<{ alerts: IssueRadarAlert[] }>('/api/reports/issue-radar') });
+  const { data, error } = useQuery({ queryKey: ['issue-radar-full'], queryFn: () => api.get<{ alerts: IssueRadarAlert[] }>('/api/reports/issue-radar') });
+  if (error) return <ErrorState message="Could not load issue radar" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} />;
   if (!data) return <Spinner />;
   if (data.alerts.length === 0) return <EmptyState icon="sparkles" title="No alerts right now" hint="Alerts appear when clusters rise, new issues appear, volume spikes, or ratings correlate with topics." />;
   return (
@@ -63,9 +71,10 @@ function IssueRadar(): ReactNode {
 }
 
 function Clusters(): ReactNode {
-  const { data, refetch, isFetching } = useQuery({ queryKey: ['clusters'], queryFn: () => api.get<{ clusters: Cluster[] }>('/api/issues/clusters') });
+  const { data, error, refetch, isFetching } = useQuery({ queryKey: ['clusters'], queryFn: () => api.get<{ clusters: Cluster[] }>('/api/issues/clusters') });
   const [deleting, setDeleting] = useState<number | null>(null);
   const del = useMutation({ mutationFn: (id: number) => api.delete(`/api/issues/clusters/${id}`), onSuccess: () => void refetch() });
+  if (error) return <ErrorState message="Could not load issue clusters" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} />;
   if (isFetching && !data) return <Spinner />;
   if (!data || data.clusters.length === 0) return <EmptyState icon="sparkles" title="No issue clusters yet" hint="Run 'Run issue clustering' in the AI Center - clusters are discovered from actual ticket data, not hard-coded categories." />;
   return (
@@ -100,7 +109,7 @@ function Clusters(): ReactNode {
 }
 
 function KnownIssues(): ReactNode {
-  const { data, refetch } = useQuery({ queryKey: ['known-issues'], queryFn: () => api.get<{ known_issues: KnownIssue[] }>('/api/issues/known') });
+  const { data, error, refetch } = useQuery({ queryKey: ['known-issues'], queryFn: () => api.get<{ known_issues: KnownIssue[] }>('/api/issues/known') });
   const [creating, setCreating] = useState(false);
   const pushToast = useUiStore((s) => s.pushToast);
   const create = useMutation({
@@ -111,6 +120,7 @@ function KnownIssues(): ReactNode {
       void refetch();
     }
   });
+  if (error) return <ErrorState message="Could not load known issues" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} />;
   if (!data) return <Spinner />;
   const issues = data.known_issues;
   return (
@@ -195,7 +205,8 @@ function KnownIssues(): ReactNode {
 }
 
 function DocGaps(): ReactNode {
-  const { data } = useQuery({ queryKey: ['doc-gaps'], queryFn: () => api.get<{ gaps: DocGap[] }>('/api/reports/doc-gaps') });
+  const { data, error } = useQuery({ queryKey: ['doc-gaps'], queryFn: () => api.get<{ gaps: DocGap[] }>('/api/reports/doc-gaps') });
+  if (error) return <ErrorState message="Could not load doc gaps" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} />;
   if (!data) return <Spinner />;
   if (data.gaps.length === 0) return <EmptyState title="No documentation gaps detected" hint="Gaps appear when the same question repeats and local knowledge coverage is thin. AI analysis needs to run for question extraction." />;
   return (
@@ -218,7 +229,8 @@ function DocGaps(): ReactNode {
 }
 
 function AnswerReuse(): ReactNode {
-  const { data } = useQuery({ queryKey: ['answer-reuse'], queryFn: () => api.get<{ candidates: AnswerReuseCandidate[] }>('/api/reports/answer-reuse') });
+  const { data, error } = useQuery({ queryKey: ['answer-reuse'], queryFn: () => api.get<{ candidates: AnswerReuseCandidate[] }>('/api/reports/answer-reuse') });
+  if (error) return <ErrorState message="Could not load answer reuse candidates" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} />;
   if (!data) return <Spinner />;
   if (data.candidates.length === 0) return <EmptyState title="No reuse candidates yet" hint="Detected when the same question is answered repeatedly. This is a recommendation system - nothing is modified automatically." />;
   return (

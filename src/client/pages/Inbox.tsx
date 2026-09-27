@@ -29,8 +29,8 @@ export function InboxPage(): ReactNode {
   const [params, setParams] = useSearchParams();
   const { id } = useParams();
   const view = params.get('view') ?? 'active';
-  const page = parseInt(params.get('page') ?? '1', 10);
-  const selectedId = id ? Number(id) : null;
+  const page = Math.max(1, Number.parseInt(params.get('page') ?? '1', 10) || 1);
+  const selectedId = id != null && Number.isFinite(Number(id)) ? Number(id) : null;
   const { data, isLoading } = useConversations(view, page, params.get('tag'));
   const pushToast = useUiStore((s) => s.pushToast);
 
@@ -38,7 +38,12 @@ export function InboxPage(): ReactNode {
   const [bulkAction, setBulkAction] = useState<string | null>(null);
 
   const setView = (v: string): void => {
-    setParams({ view: v, page: '1' });
+    // Preserve the tag filter (and any other params) when switching views -
+    // replacing the whole object silently dropped an active tag filter.
+    const next = new URLSearchParams(params);
+    next.set('view', v);
+    next.set('page', '1');
+    setParams(next);
     setSelection([]);
   };
 
@@ -50,7 +55,7 @@ export function InboxPage(): ReactNode {
   };
 
   const bulk = useMutation({
-    mutationFn: (input: { action: string; params: Record<string, string> }) => api.post<{ ok: boolean; message: string }>('/api/conversations/bulk', { conversationIds: selection, ...input }),
+    mutationFn: (input: { action: string; params: Record<string, string | number | null> }) => api.post<{ ok: boolean; message: string }>('/api/conversations/bulk', { conversationIds: selection, action: input.action, params: input.params }),
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       setBulkAction(null);
@@ -126,13 +131,13 @@ export function InboxPage(): ReactNode {
         </div>
         {data && data.total > (data.page_size ?? 50) ? (
           <div className="flex-between" style={{ padding: 8, borderTop: '1px solid var(--border)' }}>
-            <button className="btn small" disabled={page <= 1} onClick={() => setParams({ view, page: String(page - 1) })}>
+            <button className="btn small" disabled={page <= 1} onClick={() => { const next = new URLSearchParams(params); next.set('view', view); next.set('page', String(Math.max(1, page - 1))); setParams(next); }}>
               <ChevronLeft size={12} /> Prev
             </button>
             <span className="text-xs muted">
               {data.total} conversations
             </span>
-            <button className="btn small" disabled={page * (data.page_size ?? 50) >= data.total} onClick={() => setParams({ view, page: String(page + 1) })}>
+            <button className="btn small" disabled={page * (data.page_size ?? 50) >= data.total} onClick={() => { const next = new URLSearchParams(params); next.set('view', view); next.set('page', String(page + 1)); setParams(next); }}>
               Next <ChevronRight size={12} />
             </button>
           </div>
@@ -151,7 +156,7 @@ export function InboxPage(): ReactNode {
   );
 }
 
-function BulkActionModal({ action, count, onClose, onConfirm }: { action: string; count: number; onClose: () => void; onConfirm: (params: Record<string, string>) => void }): ReactNode {
+function BulkActionModal({ action, count, onClose, onConfirm }: { action: string; count: number; onClose: () => void; onConfirm: (params: Record<string, string | number | null>) => void }): ReactNode {
   const [tag, setTag] = useState('');
   const [assignee, setAssignee] = useState('');
   const { data: users } = useReference().tags;
@@ -165,7 +170,7 @@ function BulkActionModal({ action, count, onClose, onConfirm }: { action: string
       footer={
         <>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={action === 'tag' && !tag.trim()} onClick={() => onConfirm(action === 'tag' ? { tag } : action === 'assign' ? { userId: assignee } : {})}>
+          <button className="btn primary" disabled={action === 'tag' && !tag.trim()} onClick={() => onConfirm(action === 'tag' ? { tag } : action === 'assign' ? { userId: assignee === '' ? null : Number(assignee) } : {})}>
             Apply to {count} conversation{count > 1 ? 's' : ''}
           </button>
         </>
@@ -415,15 +420,18 @@ function TagEditor({ conversationId, current, onClose, onSaved }: { conversation
 function FieldEditor({ conversationId, fields, inboxFields, onClose, onSaved }: { conversationId: number; fields: { field_id: number; name: string; type: string; system_type: string | null; value: string | null; text_value: string | null; field_remote_id: number; options: { id: number; label: string }[] }[]; inboxFields: { id: number; remote_id: number; name: string; type: string; system_type: string | null; options: { id: number; remote_id: number; label: string }[] }[]; onClose: () => void; onSaved: () => void }): ReactNode {
   const pushToast = useUiStore((s) => s.pushToast);
   const [values, setValues] = useState<Record<number, string>>(() => {
+    // Keyed by the REMOTE field id: that is what the write path (Help Scout
+    // PUT /fields and the fake provider) resolves. The previous local-id
+    // keys made every save of existing values fail silently.
     const init: Record<number, string> = {};
-    for (const f of fields) init[f.field_id] = f.value ?? '';
+    for (const f of fields) init[f.field_remote_id] = f.value ?? '';
     return init;
   });
   const act = useMutation({
     mutationFn: () =>
       api.post<{ ok: boolean; message: string; detail?: string }>(`/api/conversations/${conversationId}/fields`, {
         fields: Object.entries(values)
-          .filter(([k]) => fields.some((f) => f.field_id === Number(k)) || inboxFields.some((f) => f.remote_id === Number(k)))
+          .filter(([k]) => inboxFields.some((f) => f.remote_id === Number(k)) || fields.some((f) => f.field_remote_id === Number(k)))
           .map(([k, v]) => ({ id: Number(k), value: v || null }))
       }),
     onSuccess: (r) => {
@@ -434,7 +442,7 @@ function FieldEditor({ conversationId, fields, inboxFields, onClose, onSaved }: 
   });
   const allFields = [
     ...inboxFields.map((f) => ({ remote_id: f.remote_id, name: f.name, type: f.type, system_type: f.system_type, options: f.options.map((o) => ({ id: o.id, label: o.label })), value: values[f.remote_id] ?? '' })),
-    ...fields.filter((f) => !inboxFields.some((i) => i.remote_id === f.field_id)).map((f) => ({ remote_id: f.field_id, name: f.name, type: f.type, system_type: f.system_type, options: f.options, value: f.text_value ?? f.value ?? '' }))
+    ...fields.filter((f) => !inboxFields.some((i) => i.remote_id === f.field_remote_id)).map((f) => ({ remote_id: f.field_remote_id, name: f.name, type: f.type, system_type: f.system_type, options: f.options, value: values[f.field_remote_id] ?? f.text_value ?? f.value ?? '' }))
   ];
   return (
     <Modal
@@ -495,7 +503,7 @@ function SnoozeModal({ conversationId, snoozed, onClose, onSaved }: { conversati
                   pushToast({ kind: 'success', message: r.message });
                   onSaved();
                   onClose();
-                })
+                }).catch((e: unknown) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Could not remove snooze.' }))
               }
             >
               Remove snooze
@@ -519,11 +527,12 @@ function ThreadItem({ thread, conversationId, onRefresh }: { thread: NonNullable
   const isReply = thread.type === 'reply';
   const pushToast = useUiStore((s) => s.pushToast);
   const download = useMutation({
-    mutationFn: () => api.post<{ ok: boolean; message: string }>(`/api/attachments/${thread.attachments[0]?.id}/download`),
+    mutationFn: (attachmentId: number) => api.post<{ ok: boolean; message: string }>(`/api/attachments/${attachmentId}/download`),
     onSuccess: (r) => {
       pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
       onRefresh();
-    }
+    },
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Attachment download failed.' })
   });
   const initials = (thread.from_name ?? thread.created_by_name ?? '?')
     .split(' ')
@@ -553,7 +562,7 @@ function ThreadItem({ thread, conversationId, onRefresh }: { thread: NonNullable
                 {a.filename}
                 {a.size ? <span className="muted">({(a.size / 1024).toFixed(0)} KB)</span> : null}
                 {a.state !== 'downloaded' ? (
-                  <button className="btn ghost small" title="Download attachment" onClick={() => download.mutate()} disabled={download.isPending}>
+                  <button className="btn ghost small" title="Download attachment" onClick={() => download.mutate(a.id)} disabled={download.isPending}>
                     <Download size={10} />
                   </button>
                 ) : (
@@ -573,7 +582,7 @@ function ThreadItem({ thread, conversationId, onRefresh }: { thread: NonNullable
                 api.post<{ ok: boolean; message: string }>(`/api/conversations/${conversationId}/schedule/publish`, { threadId: thread.id }).then((r) => {
                   pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
                   onRefresh();
-                })
+                }).catch((e: unknown) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Publish failed.' }))
               }
             >
               <Send size={11} /> Send now
@@ -584,7 +593,7 @@ function ThreadItem({ thread, conversationId, onRefresh }: { thread: NonNullable
                 api.delete<{ ok: boolean; message: string }>(`/api/conversations/${conversationId}/schedule`, { threadId: thread.id }).then((r) => {
                   pushToast({ kind: 'success', message: r.message });
                   onRefresh();
-                })
+                }).catch((e: unknown) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Delete failed.' }))
               }
             >
               <Trash2 size={11} /> Delete schedule
@@ -770,7 +779,7 @@ function Composer({ conversationId, customerId: _customerId, customerEmail, draf
               className="btn small"
               title="Create this draft in Help Scout (does not send)"
               onClick={() => {
-                void api.post<{ ok: boolean; message: string }>(`/api/conversations/${conversationId}/reply`, { text: aiDraft.content, draft: true }).then((r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message }));
+                void api.post<{ ok: boolean; message: string }>(`/api/conversations/${conversationId}/reply`, { text: aiDraft.content, draft: true }).then((r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message })).catch((e: unknown) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Draft creation failed.' }));
               }}
             >
               Create HS draft
@@ -952,8 +961,8 @@ function AiSidebar({ data, onRefresh }: { data: NonNullable<ReturnType<typeof us
             <div className="text-xs muted" style={{ marginTop: 2 }}>{s.resolution.slice(0, 140) || '(no resolution recorded)'}</div>
             <div className="flex wrap" style={{ gap: 4, marginTop: 4 }}>
               <StatusBadge status={s.status} />
-              {s.why.map((w) => (
-                <span key={w} className="badge">{w}</span>
+              {s.why.map((w, i) => (
+                <span key={`${i}-${w}`} className="badge">{w}</span>
               ))}
             </div>
           </div>
@@ -979,7 +988,7 @@ function AiSidebar({ data, onRefresh }: { data: NonNullable<ReturnType<typeof us
               key={w.id}
               className="btn small mb-8"
               onClick={() =>
-                api.post<{ ok: boolean; message: string }>(`/api/conversations/${data.conversation.id}/workflow/${w.remote_id}`).then((r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message }))
+                api.post<{ ok: boolean; message: string }>(`/api/conversations/${data.conversation.id}/workflow/${w.remote_id}`).then((r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message })).catch((e: unknown) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Workflow failed.' }))
               }
             >
               Run “{w.name}”

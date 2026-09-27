@@ -30,3 +30,7 @@ Documented honestly rather than claimed: connecting a real Help Scout account, r
 - e2e — all six `/api/interaction/*` endpoints over the real Fastify app, including the 422 validation path, safety labeling and 404s
 
 Total: 130 tests (`npm run test:all`).
+
+## v1.2.0 audit regression tests
+
+`tests/integration/audit-fixes.test.ts` and `tests/e2e/audit-fixes.e2e.test.ts` lock down every confirmed finding from the independent audit — observation idempotency, closed-only resolution, nominal-dimension change semantics, the CSS scrubber, NaN-param clamping, 422 validation semantics, settings whitelist, demo-mode import containment, evaluation-mode write blocking, draft-then-send idempotency, mutation-only rate limiting and the CORS port allowlist. Each test names the finding it protects, so a regression fails with an explanation.

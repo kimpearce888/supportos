@@ -31,12 +31,10 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
       const results = await ctx.coordinator.initialSync();
       return { ok: true, message: 'Initial sync completed.', results };
     }
-    void ctx.coordinator
-      .initialSync()
-      .then(async () => {
-        if (ctx.settingsRepo.get('attachment_auto_download', true)) ctx.jobsRepo.enqueue('attachments', 'download_recent_attachments', {}, 4, 2);
-      })
-      .catch(() => undefined);
+    // Attachment auto-download after initial sync is enqueued ONCE, by the
+    // worker's onAfterInitialSync hook (a duplicate enqueue here caused every
+    // attachment to be downloaded twice).
+    void ctx.coordinator.initialSync().catch(() => undefined);
     return { ok: true, message: 'Initial sync started. Watch Sync Health for progress.' };
   });
 
@@ -76,8 +74,10 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
   // Queue management (developer/admin panel)
   app.get('/api/queue', async (request) => {
     const q = request.query as Record<string, string>;
+    const rawLimit = q.limit != null && q.limit !== '' ? Number(q.limit) : NaN;
+    const limit = Number.isFinite(rawLimit) ? Math.min(500, Math.max(1, Math.trunc(rawLimit))) : 100;
     return {
-      jobs: ctx.jobsRepo.listJobs({ status: q.status, queue: q.queue, limit: q.limit ? Number(q.limit) : 100 }),
+      jobs: ctx.jobsRepo.listJobs({ status: q.status, queue: q.queue, limit }),
       stats: ctx.jobsRepo.queueStats(),
       outbound: ctx.jobsRepo.listOutboundJobs(q.outbound_status, 50)
     };

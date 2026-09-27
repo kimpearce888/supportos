@@ -49,9 +49,11 @@ export class WorkerManager {
     // Main job loop every 2s
     this.loopTimer = setInterval(() => void this.tick(), 2000);
     this.timers.push(this.loopTimer);
-    // Periodic incremental sync
-    const syncMinutes = this.ctx.settingsRepo.get('sync_interval_minutes', 5);
-    const syncTimer = setInterval(() => void this.autoSync(), Math.max(1, syncMinutes) * 60_000);
+    // Periodic incremental sync (guard against a malformed stored interval:
+    // a NaN/0 value previously collapsed setInterval to a 1ms runaway loop)
+    const rawSyncMinutes = Number(this.ctx.settingsRepo.get('sync_interval_minutes', 5));
+    const syncMinutes = Number.isFinite(rawSyncMinutes) ? Math.min(1440, Math.max(1, rawSyncMinutes)) : 5;
+    const syncTimer = setInterval(() => void this.autoSync(), syncMinutes * 60_000);
     this.timers.push(syncTimer);
     // Maintenance: backup + cluster trends + cleanup every 6h
     const maintenanceTimer = setInterval(() => void this.maintenance(), 6 * 3600_000);
@@ -91,8 +93,36 @@ export class WorkerManager {
         const result = this.ctx.backup.backup();
         if (result.ok) this.logger.info('Automatic backup created', { operation: 'backup' });
       }
+      this.enforceRetention();
     } catch (e) {
       this.logger.warn('Maintenance failed', { operation: 'maintenance', error: String(e) });
+    }
+  }
+
+  /**
+   * Data-retention window (Settings > Data): prunes LOCAL operational data
+   * older than retention_days - webhook events, application errors, audit log
+   * entries and AI run records. Conversations/threads/customers are NOT
+   * pruned: they mirror Help Scout and would simply re-sync; delete them in
+   * Help Scout itself. 0/null disables pruning.
+   */
+  private enforceRetention(): void {
+    const days = Number(this.ctx.settingsRepo.get<number | null>('retention_days', null));
+    if (!Number.isFinite(days) || days <= 0) return;
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().replace('T', ' ').slice(0, 19);
+    const tables: [string, string][] = [
+      ['webhook_events', 'received_at'],
+      ['application_errors', 'timestamp'],
+      ['audit_log', 'timestamp'],
+      ['ai_runs', 'created_at']
+    ];
+    for (const [table, column] of tables) {
+      try {
+        const result = this.ctx.db.prepare(`DELETE FROM ${table} WHERE ${column} < ?`).run(cutoff);
+        if (result.changes > 0) this.logger.info('Retention pruning', { operation: 'retention', table, removed: result.changes });
+      } catch {
+        /* table/column missing on older schemas - skip */
+      }
     }
   }
 
@@ -248,17 +278,23 @@ export class WorkerManager {
         }
         // ---------- maintenance queue ----------
         case 'rebuild_search_index': {
-          this.ctx.db.exec('DELETE FROM fts_conversations');
-          this.ctx.db.exec('DELETE FROM fts_threads');
-          const convIds = this.ctx.db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL').all() as { id: number }[];
-          for (const c of convIds) this.ctx.conversationRepo.reindexConversationFts(c.id);
-          this.ctx.db.exec(
-            `INSERT INTO fts_threads (body, thread_id, conversation_id)
-             SELECT t.body_text, t.id, t.conversation_id FROM threads t
-             WHERE t.body_text IS NOT NULL AND LENGTH(t.body_text) > 0 AND t.deleted_at IS NULL`
-          );
-          this.ctx.db.exec('UPDATE threads SET fts_indexed = 1 WHERE body_text IS NOT NULL AND LENGTH(body_text) > 0');
-          this.ctx.settingsRepo.setIndexVersion('fts_version', 3);
+          // Atomic rebuild: wiping FTS outside a transaction left search empty
+          // or degraded if the process died mid-rebuild.
+          const convCount = this.ctx.db.transaction(() => {
+            this.ctx.db.exec('DELETE FROM fts_conversations');
+            this.ctx.db.exec('DELETE FROM fts_threads');
+            const convIds = this.ctx.db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL').all() as { id: number }[];
+            for (const c of convIds) this.ctx.conversationRepo.reindexConversationFts(c.id);
+            this.ctx.db.exec(
+              `INSERT INTO fts_threads (body, thread_id, conversation_id)
+               SELECT t.body_text, t.id, t.conversation_id FROM threads t
+               WHERE t.body_text IS NOT NULL AND LENGTH(t.body_text) > 0 AND t.deleted_at IS NULL`
+            );
+            this.ctx.db.exec('UPDATE threads SET fts_indexed = 1 WHERE body_text IS NOT NULL AND LENGTH(body_text) > 0');
+            this.ctx.settingsRepo.setIndexVersion('fts_version', 3);
+            return convIds.length;
+          })() as number;
+          this.logger.info('Search index rebuilt', { operation: 'rebuild_search_index', conversations: convCount });
           break;
         }
         case 'rebuild_embeddings': {

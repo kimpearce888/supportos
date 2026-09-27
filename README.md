@@ -7,14 +7,14 @@
 **Fast support tooling with a privacy guarantee: your customer data never leaves your machine.**
 
 [![CI](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml/badge.svg)](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-130%2F130-brightgreen)](docs/TESTING.md)
+[![Tests](https://img.shields.io/badge/tests-150%2F150-brightgreen)](docs/TESTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-green)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](tsconfig.base.json)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](docs/LOCAL-RUN.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4)](CONTRIBUTING.md)
 
-[What is SupportOS?](#-what-is-supportos) · [Screenshots](#-see-it-in-action) · [2-Minute Demo](#-try-it-in-2-minutes-no-credentials-needed) · [Features](#-features) · [Safety Model](#-safety--trust-by-design) · [Docs](#-documentation)
+[What is SupportOS?](#-what-is-supportos) · [The Story](#-the-story-why-it-exists-and-why-its-built-this-way) · [Screenshots](#-see-it-in-action) · [2-Minute Demo](#-try-it-in-2-minutes-no-credentials-needed) · [Features](#-features) · [Safety Model](#-safety--trust-by-design) · [Docs](#-documentation)
 
 </div>
 
@@ -30,8 +30,45 @@ SupportOS is a **self-hosted help desk companion and support intelligence platfo
 - **🛡️ Privacy by architecture** — support tickets contain payment details, personal data and secrets. SupportOS keeps them local-first, GDPR-friendly and audit-logged
 - **🔬 Support intelligence** — Issue Radar surfaces emerging problems before they become incidents; answer-reuse shows which tickets could have been deflected by docs
 - **✍️ Human in command** — AI never sends a customer reply. Every remote write is validated, merged, confirmed and audited
+- **🔬 Audited, not assumed** — v1.2.0 ships after a full independent audit (static analysis, black-box runtime testing, line-by-line write-path review): 40+ findings found, fixed, and each locked down by a regression test that names it
 
 > **Help Scout stays the source of truth.** SupportOS is a local mirror + intelligence layer — it reads your mailbox and writes back through Help Scout's official API with full write protection. Your team can keep using Help Scout (and its mobile app) exactly as before.
+
+---
+
+## 📖 The Story — why it exists, and why it's built this way
+
+### The problem
+
+Every support team eventually hits the same wall. Your ticket archive — years of customer conversations, the issues they hit, the words they used, the fixes that worked — lives inside a SaaS tool you rent. Search is slow because every query round-trips to someone else's data center. Analytics are limited to whatever the vendor exposes. And the moment you want AI assistance, the obvious path means shipping your customers' emails, payment references and secrets to a third-party model API.
+
+That's the trade nobody should have to make: **intelligence in exchange for privacy**. SupportOS exists because a support workspace can be fast, smart and *yours* — all three at once, on hardware you already own.
+
+### How it got built
+
+The first version was a single question: *what if the whole mailbox lived in one local SQLite file?* That decision — a mirror, not a replacement — shaped everything after it. Help Scout stays the source of truth; SupportOS syncs it through the official API, adds a fast workspace on top, and writes back through the same protected path. Your team keeps the Help Scout mobile app; the support lead gets millisecond search, an issue radar and local AI that no one else can read.
+
+Client Interaction Intelligence (v1.1.0) came from a second observation: experienced reps *know* their regulars — who wants bullet points, who is detail-hungry, whose tone today is off. That knowledge usually lives in one person's head and leaves when they do. SupportOS turns it into observable, evidence-backed signals a team can share — with hard guardrails, because describing *behavior* is useful and labeling *people* is not.
+
+v1.2.0 is the unglamorous, essential chapter: an independent audit of every write path, every route, every signal. Not the project's own test suite — a from-scratch review with black-box testing against a fresh database. It found real bugs (an evaluation-mode bypass, a broken attachment endpoint, duplicated behavioral data inflating baselines). Every one is fixed, and every fix ships with a regression test that names its finding, so the audit can never silently rot.
+
+### The decision log — the logic behind every major choice
+
+| # | Decision | The reasoning |
+|---|---|---|
+| 1 | **One local SQLite file (WAL + FTS5), not a cloud DB** | Your data physically cannot leak if it never leaves the machine. SQLite in WAL mode gives concurrent reads during sync; FTS5 gives millisecond full-text search with zero infrastructure. The database is a file you can back up with `cp`. |
+| 2 | **A mirror, not a Help Scout replacement** | Fighting the source of truth is a losing battle. SupportOS syncs through the official API, writes back through the same protected path, and never becomes the only place data lives. Teams keep their existing workflows and mobile app. |
+| 3 | **TypeScript strict end-to-end, Zod at every boundary** | A local API that can lie about shapes is a debugging time bomb. Every request body, every Help Scout response and every AI output is schema-validated at runtime — the types and the runtime checks cannot drift. |
+| 4 | **Write protection: validate → auth → fresh-read → merge → write → confirm → persist → audit** | The classic support-tool disaster is the stale-state overwrite (two agents edit tags; one silently wins). Before every remote write, SupportOS re-reads the live remote state, merges the intended change into it, confirms the result and records an immutable audit entry. |
+| 5 | **Idempotent, durable replies with an explicit no-auto-retry rule** | A timed-out send may still have been delivered. SupportOS deduplicates identical sends via an idempotency key and *never* automatically resends — the safest failure mode for customer-visible email. |
+| 6 | **Deterministic intelligence first, AI second** | The Client Intelligence engine (signals, baselines, change detection, effort scores) runs on pure heuristics — zero AI required. LM Studio enrichment layers on top when available. The feature cannot break when a model is down, and every result degrades gracefully. |
+| 7 | **The evidence mandate** | A behavioral signal without a quoted excerpt is an opinion. Every signal carries evidence linked to the thread it came from; significant signals without evidence are dropped by the safety layer. |
+| 8 | **Behavior, never psychology** | The vocabulary is fixed and observable (urgency, directness, detail level…). Personality labels, diagnoses and protected-attribute claims are structurally impossible — enforced at the schema, the sanitizer, the prompts and the UI labels, in depth. |
+| 9 | **Human overrides beat AI, everywhere** | When a rep corrects an inferred preference, that correction wins — in storage, in the recommendation engine and in the draft prompts. The override is audited, revertible, and the revert fully restores AI semantics. |
+| 10 | **A fake Help Scout provider as the test backbone** | The entire 150-test suite runs against a deterministic simulated mailbox. It is architecturally impossible for a test to email a real customer — the provider interface simply has no path to production credentials. |
+| 11 | **Demo mode runs the REAL sync engine** | The 2-minute demo is not a mockup; it is the production sync pipeline pointed at the fake provider. What you evaluate is what you run. |
+| 12 | **Local-first AI via LM Studio (OpenAI-compatible)** | Same ergonomics as the cloud APIs, zero data egress. And because the AI layer is optional (see #6), the product's value does not depend on anyone's model — including ours. |
+| 13 | **Audit your own release** | v1.2.0's audit did not trust the project's own green test suite — it re-derived the findings from scratch (static analysis plus black-box runtime testing) and turned each fix into a named regression test. Trust, but verify; then lock it in. |
 
 ---
 
@@ -157,6 +194,8 @@ Built for teams whose tickets contain **payment data, credentials and personal d
 - 🔒 **Verified webhooks** — HMAC-SHA1 timing-safe signature checks, persist-first processing, hash deduplication
 - 🔒 **Write-protection pipeline** — every remote mutation: validate → auth → fresh-read → merge → write → confirm → persist → audit
 - 🔒 **Internal knowledge stays internal** — internal-only knowledge never enters customer-facing AI drafts
+- 🔒 **AI evaluation mode stops EVERY remote write** — replies, notes, status changes, assignments, tags, fields, moves, snoozes, schedules, workflows and bulk actions are all blocked while you trial AI features
+- 🔒 **Independently audited (v1.2.0)** — every write path reviewed line-by-line plus black-box runtime testing; each confirmed finding is fixed and covered by a named regression test
 
 The full model is documented in [SECURITY.md](SECURITY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -234,6 +273,7 @@ Yes for everything local: the mirror, search, analytics, knowledge base and prev
 
 - [x] v1.0.0 — local mirror, inbox workspace, FTS5 search, local AI pipeline, Issue Radar, reports, automation, backups, 108-test CI ([changelog](CHANGELOG.md))
 - [x] v1.1.0 — Client Interaction Intelligence: current-vs-normal change detection, evidence-linked signals, support approaches, human overrides, playbooks, effort/friction metrics
+- [x] v1.2.0 — the hardening release: full independent audit, 40+ fixes (security, data integrity, correctness), 150-test CI with named regression tests ([changelog](CHANGELOG.md))
 - [ ] Help Scout **Chat / Docs / Beacon** API coverage (currently conversations/mailbox APIs)
 - [ ] Real-time ratings refresh (currently polled during sync)
 - [ ] Multi-mailbox dashboards
