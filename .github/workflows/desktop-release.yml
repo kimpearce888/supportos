@@ -77,4 +77,5 @@ jobs:
           releaseBody: 'Desktop installers for SupportOS v__VERSION__ (bundled Node runtime + SQLite; no system dependencies). See the release notes below for the full changelog.'
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: false
+          includeUpdaterJson: false
           args: ${{ matrix.args }}

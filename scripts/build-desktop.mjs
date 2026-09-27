@@ -64,7 +64,9 @@ function copyDir(src, dest) {
 
 // ---------------------------------------------------------------- 1. client
 log('client', 'building dist/client (vite)');
-execFileSync('npm', ['run', 'build:client'], { cwd: ROOT, stdio: 'inherit' });
+// Windows: npm is npm.cmd and execFileSync refuses .cmd without a shell
+const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+execFileSync(npmCmd, ['run', 'build:client'], { cwd: ROOT, stdio: 'inherit' });
 rmrf(path.join(RESOURCES, 'client'));
 copyDir(path.join(ROOT, 'dist', 'client'), path.join(RESOURCES, 'client'));
 log('client', `copied ${fs.readdirSync(path.join(RESOURCES, 'client')).length} entries`);
@@ -127,9 +129,9 @@ async function downloadNode(url, label) {
   if (!res.ok) throw new Error(`download failed: ${res.status} ${url}`);
   const buf = Buffer.from(await res.arrayBuffer());
   fs.writeFileSync(file, buf);
-  // Universal extraction: bsdtar handles .zip on Windows, .tar.gz/.tar.xz elsewhere
-  const extractFlags = url.endsWith('.tar.xz') ? ['-xJf'] : ['-xzf'];
-  execFileSync('tar', [...extractFlags, file, '-C', tmp]);
+  // Universal extraction: plain -xf auto-detects compression (GNU tar handles
+  // .tar.xz/.tar.gz; Windows bsdtar handles .zip too). No platform branching.
+  execFileSync('tar', ['-xf', file, '-C', tmp]);
   const extractedDir = fs.readdirSync(tmp).find((e) => e.startsWith(`node-v${NODE_VERSION}`));
   if (!extractedDir) throw new Error(`extraction produced no node dir in ${tmp}`);
   return path.join(tmp, extractedDir, 'bin', platform === 'win32' ? 'node.exe' : 'node');
