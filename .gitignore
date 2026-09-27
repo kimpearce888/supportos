@@ -1,0 +1,17 @@
+# Ignore runtime data, secrets and build output
+node_modules/
+dist/
+data/
+backups/
+knowledge-import/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+.env.*.local
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+src-tauri/target/

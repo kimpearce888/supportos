@@ -1,0 +1,602 @@
+/**
+ * Shared domain types for SupportOS.
+ * These are the canonical shapes used by both server and client.
+ */
+
+// ---------------------------------------------------------------- Sync
+export type SyncState =
+  | 'NEW'
+  | 'INITIALIZING'
+  | 'BACKFILLING'
+  | 'CATCHING_UP'
+  | 'LIVE'
+  | 'RECONCILING'
+  | 'PAUSED'
+  | 'ERROR';
+
+export type SyncResourceStatus = 'idle' | 'running' | 'ok' | 'error' | 'skipped';
+
+export interface SyncCheckpoint {
+  resource: string;
+  last_success_at: string | null;
+  remote_cursor: string | null;
+  records_processed: number;
+  records_failed: number;
+  last_error: string | null;
+  retry_count: number;
+  status: SyncResourceStatus;
+}
+
+export interface SyncRunSummary {
+  id: number;
+  kind: 'initial' | 'incremental' | 'manual' | 'reconciliation';
+  state: SyncState;
+  started_at: string;
+  finished_at: string | null;
+  resources_done: number;
+  resources_total: number;
+  records_processed: number;
+  errors: number;
+}
+
+// ---------------------------------------------------------------- Conversations
+export type ConversationStatus = 'active' | 'pending' | 'closed' | 'spam';
+export type ConversationState = 'published' | 'draft' | 'deleted';
+export type ThreadType = 'customer' | 'reply' | 'note' | 'forward' | 'message' | 'lineitem' | 'chat' | 'phone' | 'statuschange' | 'system' | 'action' | 'noresponse';
+
+export interface ConversationSummary {
+  id: number;
+  remote_id: number;
+  number: number;
+  subject: string;
+  preview: string;
+  status: ConversationStatus;
+  mailbox_id: number;
+  mailbox_name: string | null;
+  customer_id: number | null;
+  customer_name: string | null;
+  customer_email: string | null;
+  assignee_id: number | null;
+  assignee_name: string | null;
+  assigned_team_id: number | null;
+  tags: string[];
+  thread_count: number;
+  remote_created_at: string | null;
+  remote_updated_at: string | null;
+  closed_at: string | null;
+  snoozed_until: string | null;
+  is_unread: 0 | 1;
+  ai_analysis_status: 'none' | 'pending' | 'analyzed' | 'failed';
+  known_issue_id: number | null;
+  hs_url: string | null;
+  merged_into_conversation_id: number | null;
+  first_activity_at: string | null;
+  last_activity_at: string | null;
+}
+
+export interface ThreadSummary {
+  id: number;
+  remote_id: number;
+  conversation_id: number;
+  type: ThreadType;
+  state: 'published' | 'draft' | 'scheduled' | 'deleted';
+  body_text: string;
+  body_html: string | null;
+  from_name: string | null;
+  from_email: string | null;
+  from_type: 'customer' | 'user' | 'system_user' | 'team' | null;
+  created_by_id: number | null;
+  created_by_name: string | null;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  saved_reply_id: number | null;
+  attachments: AttachmentMeta[];
+  remote_created_at: string | null;
+  scheduled_for: string | null;
+}
+
+export interface AttachmentMeta {
+  id: number;
+  remote_id: number;
+  filename: string;
+  mime_type: string | null;
+  size: number | null;
+  thread_id: number;
+  conversation_id: number;
+  local_path: string | null;
+  state: 'metadata' | 'downloaded' | 'failed';
+  downloaded_at: string | null;
+}
+
+// ---------------------------------------------------------------- People
+export interface CustomerSummary {
+  id: number;
+  remote_id: number;
+  first_name: string | null;
+  last_name: string | null;
+  emails: string[];
+  phones: string[];
+  organization_id: number | null;
+  organization_name: string | null;
+  photo_url: string | null;
+  job_title: string | null;
+  conversation_count: number;
+  open_conversation_count: number;
+  last_activity_at: string | null;
+  remote_created_at: string | null;
+  remote_updated_at: string | null;
+  average_rating: number | null;
+}
+
+export interface OrganizationSummary {
+  id: number;
+  remote_id: number;
+  name: string;
+  domains: string[];
+  customer_count: number;
+  conversation_count: number;
+  remote_created_at: string | null;
+}
+
+export interface UserSummary {
+  id: number;
+  remote_id: number;
+  first_name: string;
+  last_name: string;
+  email: string | null;
+  role: string | null;
+  type: 'user' | 'system_user';
+  timezone: string | null;
+  photo_url: string | null;
+  initials: string | null;
+}
+
+export interface TeamSummary {
+  id: number;
+  remote_id: number;
+  name: string;
+  member_count: number;
+}
+
+// ---------------------------------------------------------------- Reference data
+export interface MailboxSummary {
+  id: number;
+  remote_id: number;
+  name: string;
+  email: string | null;
+  slug: string | null;
+  folder_count: number;
+  created_at: string | null;
+}
+
+export interface TagSummary {
+  id: number;
+  remote_id: number;
+  name: string;
+  slug: string | null;
+  color: string | null;
+  ticket_count: number;
+}
+
+export interface CustomFieldOption {
+  id: number;
+  remote_id: number;
+  label: string;
+  order: number;
+}
+
+export interface CustomFieldSummary {
+  id: number;
+  remote_id: number;
+  mailbox_id: number;
+  name: string;
+  type: 'dropdown' | 'date' | 'number' | 'singleline' | 'multiline' | 'checkbox';
+  system_type: string | null;
+  required: boolean;
+  order: number;
+  options: CustomFieldOption[];
+}
+
+export interface SavedReplySummary {
+  id: number;
+  remote_id: number;
+  mailbox_id: number | null;
+  name: string;
+  preview: string;
+  text: string | null;
+  updated_at: string | null;
+}
+
+export interface WorkflowSummary {
+  id: number;
+  remote_id: number;
+  mailbox_id: number | null;
+  name: string;
+  type: 'manual' | 'automatic';
+  status: string | null;
+  order: number | null;
+}
+
+export interface RatingSummary {
+  id: number;
+  remote_id: number;
+  conversation_id: number;
+  rating: 'great' | 'okay' | 'not-good';
+  comments: string | null;
+  customer_name: string | null;
+  created_at: string | null;
+}
+
+// ---------------------------------------------------------------- AI
+export type OperationalConfidence = 'high' | 'medium' | 'low' | 'unknown';
+
+export interface AiSourceRef {
+  source_type:
+    | 'conversation'
+    | 'thread'
+    | 'note'
+    | 'knowledge_document'
+    | 'known_issue'
+    | 'saved_reply'
+    | 'support_case'
+    | 'customer_memory'
+    | 'issue_cluster';
+  source_id: number;
+  title: string;
+  relevance: number;
+  visibility: 'customer_safe' | 'internal_only' | 'uncertain';
+  timestamp: string | null;
+}
+
+export interface TicketAnalysis {
+  intent: string | null;
+  primary_question: string | null;
+  secondary_questions: string[];
+  customer_goal: string | null;
+  product: string | null;
+  feature: string | null;
+  problem_type: string | null;
+  requested_action: string | null;
+  urgency: 'low' | 'normal' | 'high' | 'critical' | null;
+  sentiment: 'positive' | 'neutral' | 'negative' | 'frustrated' | null;
+  known_issue_candidate: string | null;
+  issue_cluster_candidate: string | null;
+  missing_information: string[];
+  summary: string | null;
+  confidence: OperationalConfidence;
+}
+
+export interface DraftVerification {
+  verified: boolean;
+  unsupported_claims: string[];
+  missing_questions: string[];
+  internal_leakage: string[];
+  conflicts: string[];
+  warnings: string[];
+}
+
+export interface AiDraftRecord {
+  id: number;
+  conversation_id: number;
+  content: string;
+  mode: 'verified_answer' | 'standard';
+  model: string | null;
+  prompt_version: string;
+  created_at: string;
+  verification: DraftVerification | null;
+  sources: AiSourceRef[];
+  state: 'generated' | 'edited' | 'accepted' | 'rejected' | 'sent';
+}
+
+export interface AiJobRecord {
+  id: number;
+  type: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  conversation_id: number | null;
+  model: string | null;
+  prompt_version: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  latency_ms: number | null;
+}
+
+export interface CustomerMemory {
+  id: number;
+  customer_id: number;
+  key: string;
+  value: string;
+  source: 'ai' | 'human';
+  origin: 'conversation' | 'manual';
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  confidence: OperationalConfidence;
+}
+
+// ---------------------------------------------------------------- Issues
+export interface IssueCluster {
+  id: number;
+  title: string;
+  summary: string;
+  category: string | null;
+  product: string | null;
+  feature: string | null;
+  conversation_count: number;
+  customer_count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  trend: 'rising' | 'stable' | 'falling' | 'new';
+  known_issue_id: number | null;
+  ai_generated: 0 | 1;
+}
+
+export interface KnownIssue {
+  id: number;
+  title: string;
+  symptoms: string;
+  product: string | null;
+  feature: string | null;
+  known_cause: string | null;
+  workaround: string | null;
+  customer_safe_explanation: string | null;
+  internal_explanation: string | null;
+  status: 'investigating' | 'identified' | 'fix_in_progress' | 'resolved' | 'monitoring';
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  conversation_count: number;
+  engineering_refs: { system: string; reference: string; url: string | null; title: string | null; status: string | null }[];
+}
+
+export interface IssueRadarAlert {
+  kind: 'new_cluster' | 'volume_spike' | 'recurring_issue' | 'reappearing_issue' | 'high_volume_question' | 'doc_gap' | 'escalation_heavy' | 'rating_correlated';
+  title: string;
+  detail: string;
+  conversation_ids: number[];
+  cluster_id: number | null;
+  severity: 'info' | 'warning' | 'critical';
+}
+
+export interface DocGap {
+  question: string;
+  conversation_count: number;
+  known_answer: string | null;
+  coverage: 'missing' | 'partial' | 'ambiguous' | 'outdated';
+  suggested_doc_title: string | null;
+}
+
+export interface AnswerReuseCandidate {
+  question: string;
+  conversation_count: number;
+  common_resolution: string | null;
+  saved_reply_name: string | null;
+  knowledge_doc_title: string | null;
+}
+
+// ---------------------------------------------------------------- Knowledge
+export interface KnowledgeDocument {
+  id: number;
+  source_id: number;
+  title: string;
+  visibility: 'customer_safe' | 'internal_only';
+  version: number;
+  checksum: string | null;
+  content_preview: string;
+  chunk_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeSource {
+  id: number;
+  name: string;
+  kind: 'local_file' | 'manual' | 'import';
+  visibility: 'customer_safe' | 'internal_only';
+  document_count: number;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------- Search
+export type SearchScope = 'all' | 'tickets' | 'customers' | 'knowledge' | 'issues' | 'saved_replies' | 'ai';
+
+export interface SearchFilters {
+  status?: ConversationStatus | 'all';
+  mailbox_id?: number | null;
+  tag?: string;
+  since_days?: number;
+  assignee_id?: number | null;
+}
+
+export interface SearchHit {
+  scope: SearchScope;
+  id: number;
+  title: string;
+  subtitle: string;
+  snippet: string;
+  score: number;
+  href: string;
+  why: string[];
+}
+
+export interface SearchResponse {
+  query: string;
+  hits: SearchHit[];
+  total: number;
+  used_semantic: boolean;
+  semantic_available: boolean;
+}
+
+// ---------------------------------------------------------------- Analytics
+export interface MetricPoint {
+  date: string;
+  value: number;
+}
+
+export interface DashboardStats {
+  range: { from: string; to: string };
+  new_conversations: number;
+  active_conversations: number;
+  pending_conversations: number;
+  closed_conversations: number;
+  unassigned: number;
+  backlog: number;
+  first_response_time_avg_min: number | null;
+  resolution_time_avg_min: number | null;
+  replies_sent: number;
+  ratings: { great: number; okay: number; 'not-good': number };
+  by_mailbox: { name: string; count: number }[];
+  by_tag: { name: string; count: number }[];
+  by_agent: { name: string; count: number }[];
+  by_team: { name: string; count: number }[];
+  daily_new: MetricPoint[];
+  source: ('helpscout' | 'local' | 'ai')[];
+}
+
+export interface AiAnalytics {
+  tickets_analyzed: number;
+  analysis_success_rate: number;
+  draft_count: number;
+  draft_accepted: number;
+  draft_rejected: number;
+  draft_edit_rate: number;
+  verification_warnings: number;
+  unsupported_claim_rate: number;
+  common_failure_patterns: { pattern: string; count: number }[];
+  source: 'local';
+}
+
+export interface ReportDefinitionInfo {
+  key: string;
+  name: string;
+  description: string;
+  formula: string;
+  source: 'helpscout' | 'local' | 'ai';
+  limitations: string;
+}
+
+// ---------------------------------------------------------------- Automation
+export type AutomationActionKind =
+  | 'analyze_ticket'
+  | 'search_similar'
+  | 'check_known_issues'
+  | 'create_ai_note'
+  | 'create_ai_draft'
+  | 'add_tag'
+  | 'set_status'
+  | 'assign'
+  | 'manual_review_queue';
+
+export interface AutomationRule {
+  id: number;
+  name: string;
+  enabled: 0 | 1;
+  trigger: 'new_conversation' | 'customer_reply' | 'ai_low_confidence' | 'manual';
+  conditions: { field: string; operator: 'contains' | 'equals' | 'gt' | 'lt'; value: string }[];
+  actions: { kind: AutomationActionKind; params: Record<string, string> }[];
+  priority: number;
+  requires_approval: 0 | 1;
+  last_run_at: string | null;
+  run_count: number;
+}
+
+export interface AutomationRunRecord {
+  id: number;
+  rule_id: number;
+  conversation_id: number | null;
+  triggered_at: string;
+  status: 'completed' | 'failed' | 'awaiting_approval' | 'skipped';
+  detail: string;
+}
+
+// ---------------------------------------------------------------- Health / system
+export interface HealthStatus {
+  status: 'ok' | 'degraded' | 'error';
+  version: string;
+  time: string;
+  database: { ok: boolean; path: string; size_bytes: number; migrations_applied: number; wal: boolean };
+  helpscout: { connected: boolean; demo_mode: boolean; error: string | null; oauth: { configured: boolean; authenticated: boolean; demoMode?: boolean; expiresAt?: string | null } };
+  lmstudio: { connected: boolean; base_url: string; models: string[]; embedding_model: string | null; last_inference: { at: string; latencyMs: number } | null; error: string | null };
+  qdrant: { connected: boolean; url: string; collections: string[]; indexed: { conversations_indexed: number; chunks_indexed: number; chunks_pending: number; chunks_failed: number }; error: string | null };
+  sync: { state: SyncState; last_success: string | null; queued_jobs: number; failed_jobs: number };
+  workers: { running: boolean; queue_depth: number };
+}
+
+export interface QueueJob {
+  id: number;
+  queue: string;
+  type: string;
+  priority: number;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  payload: Record<string, unknown> | null;
+  attempt: number;
+  max_attempts: number;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface AuditEntry {
+  id: number;
+  timestamp: string;
+  actor: 'user' | 'ai' | 'automation' | 'system';
+  action: string;
+  conversation_id: number | null;
+  before_state: string | null;
+  after_state: string | null;
+  remote_operation: string | null;
+  remote_result: string | null;
+  ai_involvement: 0 | 1;
+  job_id: number | null;
+}
+
+// ---------------------------------------------------------------- Settings
+export interface AppSettings {
+  sync_interval_minutes: number;
+  api_concurrency: number;
+  ai_enabled: boolean;
+  automatic_analysis_enabled: boolean;
+  automatic_note_enabled: boolean;
+  automatic_draft_enabled: boolean;
+  automation_enabled: boolean;
+  automation_write_actions_enabled: boolean;
+  qdrant_enabled: boolean;
+  attachment_auto_download: boolean;
+  automatic_reply_sending: boolean; // always false - safety
+  retention_days: number | null;
+  backup_interval_hours: number | null;
+  log_level: 'debug' | 'info' | 'warn' | 'error';
+  display_timezone: string;
+  redaction_enabled: boolean;
+  ai_evaluation_mode: boolean;
+}
+
+// ---------------------------------------------------------------- Webhooks
+export interface WebhookEventRecord {
+  id: number;
+  event_id: string | null;
+  event_hash: string;
+  event_type: string;
+  received_at: string;
+  processing_state: 'pending' | 'processing' | 'processed' | 'failed' | 'duplicate';
+  attempts: number;
+  payload: string;
+  processing_error: string | null;
+}
+
+// ---------------------------------------------------------------- API envelope
+export interface ApiError {
+  statusCode: number;
+  error: string;
+  message: string;
+  detail?: string;
+}
+
+export interface ConversationListResponse {
+  conversations: ConversationSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+  view: string;
+}

@@ -1,0 +1,81 @@
+import type { FastifyInstance } from 'fastify';
+import type { AppContext } from '../services/context.js';
+
+export async function registerPeopleRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
+  app.get('/api/customers', async (request) => {
+    const q = request.query as Record<string, string>;
+    const page = q.page ? Number(q.page) : 1;
+    const result = ctx.peopleRepo.listCustomers(page, q.pageSize ? Number(q.pageSize) : 50, q.q ?? '');
+    return { customers: result.customers, total: result.total, page };
+  });
+
+  app.get('/api/customers/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const customer = ctx.peopleRepo.getCustomerByLocalId(id);
+    if (!customer) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Customer not found.' });
+      return;
+    }
+    const conversations = ctx.db
+      .prepare(
+        `SELECT cv.id, cv.number, cv.subject, cv.status, cv.preview, cv.remote_created_at, cv.closed_at, cv.assignee_local_id,
+           (SELECT TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) FROM users u WHERE u.id = cv.assignee_local_id) AS assignee
+         FROM conversations cv WHERE cv.customer_local_id = ? AND cv.deleted_at IS NULL ORDER BY cv.remote_created_at DESC LIMIT 50`
+      )
+      .all(id) as { id: number; number: number; subject: string | null; status: string; preview: string | null; remote_created_at: string | null; closed_at: string | null; assignee_local_id: number | null; assignee: string | null }[];
+    const openCount = conversations.filter((c) => c.status === 'active' || c.status === 'pending').length;
+    const ratings = ctx.peopleRepo.getRatingsForCustomer(id);
+    const memories = ctx.aiRepo.getMemories(id);
+    const properties = ctx.peopleRepo.getCustomerProperties(id);
+    const websites = ctx.peopleRepo.getCustomerWebsites(id);
+    const social = ctx.peopleRepo.getCustomerSocialProfiles(id);
+    const address = ctx.peopleRepo.getAddress(id);
+    // Recent topics: subjects of recent conversations
+    const topics = conversations.slice(0, 10).map((c) => ({ number: c.number, topic: c.subject ?? '' }));
+    // Previous resolutions: last agent reply per closed conversation
+    const resolutions = ctx.db
+      .prepare(
+        `SELECT cv.number, cv.subject, (SELECT t.body_text FROM threads t WHERE t.conversation_id = cv.id AND t.type='reply' AND t.state='published' ORDER BY t.remote_created_at DESC LIMIT 1) AS resolution, cv.closed_at
+         FROM conversations cv WHERE cv.customer_local_id = ? AND cv.status='closed' AND cv.deleted_at IS NULL ORDER BY cv.closed_at DESC LIMIT 5`
+      )
+      .all(id) as { number: number; subject: string | null; resolution: string | null; closed_at: string | null }[];
+    return {
+      customer: { ...customer, open_conversation_count: openCount },
+      conversations,
+      ratings,
+      memories,
+      properties,
+      websites,
+      social_profiles: social,
+      address,
+      topics,
+      resolutions: resolutions.map((r) => ({ ...r, resolution: (r.resolution ?? '').slice(0, 400) }))
+    };
+  });
+
+  app.get('/api/organizations', async (request) => {
+    const q = request.query as Record<string, string>;
+    const result = ctx.peopleRepo.listOrganizations(q.page ? Number(q.page) : 1, q.pageSize ? Number(q.pageSize) : 50, q.q ?? '');
+    return { organizations: result.organizations, total: result.total };
+  });
+
+  app.get('/api/organizations/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const org = ctx.peopleRepo.getOrganizationDetail(id);
+    if (!org) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Organization not found.' });
+      return;
+    }
+    const customers = ctx.peopleRepo.getOrganizationCustomers(id);
+    const conversations = ctx.db
+      .prepare(
+        `SELECT cv.id, cv.number, cv.subject, cv.status, cv.remote_created_at,
+           TRIM(COALESCE(cu.first_name,'') || ' ' || COALESCE(cu.last_name,'')) AS customer
+         FROM conversations cv JOIN customers cu ON cu.id = cv.customer_local_id
+         WHERE cu.organization_id = ? AND cv.deleted_at IS NULL ORDER BY cv.remote_created_at DESC LIMIT 50`
+      )
+      .all(id) as { id: number; number: number; subject: string | null; status: string; remote_created_at: string | null; customer: string }[];
+    const properties = ctx.peopleRepo.getOrganizationProperties(id);
+    return { organization: org, customers, conversations, properties };
+  });
+}

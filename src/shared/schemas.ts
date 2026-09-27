@@ -1,0 +1,475 @@
+import { z } from 'zod';
+
+/** Runtime validation schemas for important boundaries (Help Scout API responses + local API requests). */
+
+// ---------------- Help Scout API response shapes ----------------
+
+export const halLinkSchema = z.object({ href: z.string() }).passthrough();
+export const halLinksSchema = z.record(z.unknown()).optional();
+
+export const hsPersonRefSchema = z
+  .object({
+    id: z.number().optional(),
+    type: z.string().optional(),
+    first: z.string().nullish(),
+    last: z.string().nullish(),
+    email: z.string().nullish(),
+    photoUrl: z.string().nullish()
+  })
+  .passthrough();
+
+export const hsTagSchema = z
+  .object({ id: z.number().optional(), tag: z.string(), color: z.string().nullish() })
+  .passthrough();
+
+export const hsCustomFieldV3Schema = z
+  .object({
+    id: z.number(),
+    name: z.string().optional(),
+    value: z.union([z.string(), z.number()]).nullish(),
+    text: z.string().nullish(),
+    systemType: z.string().nullish()
+  })
+  .passthrough();
+
+export const hsConversationV3Schema = z
+  .object({
+    id: z.number(),
+    number: z.number().optional(),
+    threads: z.number().optional(),
+    type: z.string().nullish(),
+    folderId: z.number().nullish(),
+    status: z.string().nullish(),
+    state: z.string().nullish(),
+    subject: z.string().nullish(),
+    preview: z.string().nullish(),
+    mailboxId: z.number().optional(),
+    assignee: hsPersonRefSchema.nullish(),
+    assignedTeam: z.object({ id: z.number(), name: z.string().nullish() }).nullish(),
+    createdBy: hsPersonRefSchema.nullish(),
+    closedBy: z.number().nullish(),
+    closedByUser: hsPersonRefSchema.nullish(),
+    closedAt: z.string().nullish(),
+    createdAt: z.string().nullish(),
+    userUpdatedAt: z.string().nullish(),
+    customerWaitingSince: z.object({ time: z.string().nullish() }).nullish(),
+    source: z.object({ type: z.string().nullish(), via: z.string().nullish() }).nullish(),
+    tags: z.array(hsTagSchema).optional(),
+    cc: z.array(z.string()).nullish(),
+    bcc: z.array(z.string()).nullish(),
+    primaryCustomer: hsPersonRefSchema.nullish(),
+    snooze: z
+      .object({ snoozedBy: z.number().nullish(), snoozedUntil: z.string().nullish(), unsnoozeOnCustomerReply: z.boolean().nullish() })
+      .nullish(),
+    customFields: z.array(hsCustomFieldV3Schema).nullish()
+  })
+  .passthrough();
+
+export const hsConversationListV3Schema = z.object({
+  _embedded: z.object({ conversations: z.array(hsConversationV3Schema) }).passthrough(),
+  _links: z
+    .object({ next: halLinkSchema.optional(), self: halLinkSchema.optional(), first: halLinkSchema.optional() })
+    .optional()
+});
+
+export const hsThreadV3Schema = z
+  .object({
+    id: z.number(),
+    type: z.string().nullish(),
+    status: z.string().nullish(),
+    state: z.string().nullish(),
+    action: z
+      .object({ type: z.string().nullish(), text: z.string().nullish(), associatedEntities: z.record(z.unknown()).optional() })
+      .nullish(),
+    body: z.string().nullish(),
+    source: z.object({ type: z.string().nullish(), via: z.string().nullish() }).nullish(),
+    customer: hsPersonRefSchema.nullish(),
+    createdBy: hsPersonRefSchema.nullish(),
+    assignedTo: hsPersonRefSchema.nullish(),
+    savedReplyId: z.number().nullish(),
+    to: z.array(z.string()).nullish(),
+    cc: z.array(z.string()).nullish(),
+    bcc: z.array(z.string()).nullish(),
+    createdAt: z.string().nullish(),
+    openedAt: z.string().nullish(),
+    attachments: z
+      .array(
+        z
+          .object({
+            id: z.number(),
+            filename: z.string().nullish(),
+            mimeType: z.string().nullish(),
+            size: z.number().nullish(),
+            width: z.number().nullish(),
+            height: z.number().nullish()
+          })
+          .passthrough()
+      )
+      .nullish()
+  })
+  .passthrough();
+
+export const hsThreadListV3Schema = z.object({
+  _embedded: z.object({ threads: z.array(hsThreadV3Schema) }).passthrough(),
+  _links: z.record(z.unknown()).optional()
+});
+
+export const hsPageEnvelope = z.object({
+  page: z
+    .object({
+      size: z.number().optional(),
+      totalElements: z.number().optional(),
+      totalPages: z.number().optional(),
+      number: z.number().optional()
+    })
+    .optional()
+});
+
+export const hsMailboxSchema = z
+  .object({
+    id: z.number(),
+    name: z.string(),
+    slug: z.string().nullish(),
+    email: z.string().nullish(),
+    createdAt: z.string().nullish(),
+    updatedAt: z.string().nullish()
+  })
+  .passthrough();
+
+export const hsMailboxListSchema = z
+  .object({ _embedded: z.object({ mailboxes: z.array(hsMailboxSchema) }).passthrough() })
+  .passthrough();
+
+export const hsFolderSchema = z
+  .object({ id: z.number(), name: z.string(), type: z.string().nullish(), userId: z.number().nullish(), totalCount: z.number().nullish(), activeCount: z.number().nullish() })
+  .passthrough();
+
+export const hsUserSchema = z
+  .object({
+    id: z.number(),
+    firstName: z.string().nullish(),
+    lastName: z.string().nullish(),
+    email: z.string().nullish(),
+    role: z.string().nullish(),
+    timezone: z.string().nullish(),
+    photoUrl: z.string().nullish(),
+    type: z.string().nullish(),
+    mention: z.string().nullish(),
+    initials: z.string().nullish(),
+    jobTitle: z.string().nullish(),
+    phone: z.string().nullish(),
+    alternateEmails: z.array(z.string()).nullish(),
+    createdAt: z.string().nullish(),
+    updatedAt: z.string().nullish(),
+    lastVisit: z.string().nullish()
+  })
+  .passthrough();
+
+export const hsTeamSchema = z
+  .object({ id: z.number(), name: z.string().nullish(), createdAt: z.string().nullish(), updatedAt: z.string().nullish() })
+  .passthrough();
+
+export const hsTagObjectSchema = z
+  .object({
+    id: z.number(),
+    slug: z.string().nullish(),
+    name: z.string().nullish(),
+    color: z.string().nullish(),
+    createdAt: z.string().nullish(),
+    updatedAt: z.string().nullish(),
+    ticketCount: z.number().nullish()
+  })
+  .passthrough();
+
+export const hsFieldSchema = z
+  .object({
+    id: z.number(),
+    required: z.boolean().nullish(),
+    order: z.number().nullish(),
+    type: z.string().nullish(),
+    name: z.string().nullish(),
+    systemType: z.string().nullish(),
+    options: z
+      .array(z.object({ id: z.number(), order: z.number().nullish(), label: z.string().nullish() }).passthrough())
+      .nullish()
+  })
+  .passthrough();
+
+export const hsSavedReplySchema = z
+  .object({
+    id: z.number(),
+    name: z.string().nullish(),
+    preview: z.string().nullish(),
+    text: z.string().nullish(),
+    chatPreview: z.string().nullish(),
+    chatText: z.string().nullish(),
+    mailboxIds: z.array(z.number()).nullish()
+  })
+  .passthrough();
+
+export const hsCustomerV3Schema = z
+  .object({
+    id: z.number(),
+    firstName: z.string().nullish(),
+    lastName: z.string().nullish(),
+    photoUrl: z.string().nullish(),
+    jobTitle: z.string().nullish(),
+    phone: z.string().nullish(),
+    address: z.record(z.unknown()).nullish(),
+    emails: z.array(z.object({ value: z.string().nullish(), type: z.string().nullish() }).passthrough()).nullish(),
+    chatHandles: z.array(z.object({ value: z.string().nullish(), type: z.string().nullish() }).passthrough()).nullish(),
+    phones: z.array(z.object({ value: z.string().nullish(), type: z.string().nullish() }).passthrough()).nullish(),
+    websites: z.array(z.object({ value: z.string().nullish() }).passthrough()).nullish(),
+    socialProfiles: z.array(z.object({ value: z.string().nullish(), type: z.string().nullish() }).passthrough()).nullish(),
+    organization: z.object({ id: z.number(), name: z.string().nullish() }).nullish(),
+    createdAt: z.string().nullish(),
+    updatedAt: z.string().nullish(),
+    _embedded: z.record(z.unknown()).optional()
+  })
+  .passthrough();
+
+export const hsCustomerListV3Schema = z.object({
+  _embedded: z.object({ customers: z.array(hsCustomerV3Schema) }).passthrough(),
+  _links: z.record(z.unknown()).optional()
+});
+
+export const hsOrganizationSchema = z
+  .object({
+    id: z.number(),
+    name: z.string().nullish(),
+    domains: z.array(z.string()).nullish(),
+    createdAt: z.string().nullish(),
+    updatedAt: z.string().nullish(),
+    _embedded: z.record(z.unknown()).optional()
+  })
+  .passthrough();
+
+export const hsRatingSchema = z
+  .object({
+    id: z.number(),
+    customer: hsPersonRefSchema.nullish(),
+    threadId: z.number().nullish(),
+    conversationId: z.number().nullish(),
+    conversationNumber: z.number().nullish(),
+    mailboxId: z.number().nullish(),
+    rating: z.string().nullish(),
+    user: hsPersonRefSchema.nullish(),
+    comments: z.string().nullish(),
+    createdAt: z.string().nullish()
+  })
+  .passthrough();
+
+export const hsWorkflowSchema = z
+  .object({
+    id: z.number(),
+    mailboxId: z.number().nullish(),
+    type: z.string().nullish(),
+    status: z.string().nullish(),
+    order: z.number().nullish(),
+    name: z.string().nullish(),
+    createdAt: z.string().nullish(),
+    modifiedAt: z.string().nullish()
+  })
+  .passthrough();
+
+export const hsWebhookSchema = z
+  .object({
+    id: z.number(),
+    url: z.string().nullish(),
+    events: z.array(z.string()).nullish(),
+    status: z.string().nullish(),
+    createdAt: z.string().nullish(),
+    updatedAt: z.string().nullish()
+  })
+  .passthrough();
+
+export const hsOAuthTokenSchema = z.object({
+  access_token: z.string(),
+  refresh_token: z.string().optional(),
+  token_type: z.string().optional(),
+  expires_in: z.number().optional()
+});
+
+// ---------------- Local API request schemas ----------------
+
+export const replyRequestSchema = z.object({
+  conversationId: z.number().int(),
+  text: z.string().min(1),
+  draft: z.boolean().default(false),
+  cc: z.array(z.string().email()).default([]),
+  bcc: z.array(z.string().email()).default([]),
+  statusAfter: z.enum(['active', 'closed', 'pending', 'spam', 'open', 'inbox_predefined']).nullish(),
+  assignTo: z.number().int().nullish(),
+  attachmentIds: z.array(z.number().int()).default([])
+});
+
+export const noteRequestSchema = z.object({
+  conversationId: z.number().int(),
+  text: z.string().min(1)
+});
+
+export const statusRequestSchema = z.object({
+  conversationId: z.number().int(),
+  status: z.enum(['active', 'closed', 'pending', 'spam'])
+});
+
+export const assignRequestSchema = z.object({
+  conversationId: z.number().int(),
+  userId: z.number().int().nullable()
+});
+
+export const moveToInboxRequestSchema = z.object({
+  conversationId: z.number().int(),
+  mailboxId: z.number().int()
+});
+
+export const subjectRequestSchema = z.object({
+  conversationId: z.number().int(),
+  subject: z.string().min(1)
+});
+
+export const tagsRequestSchema = z.object({
+  conversationId: z.number().int(),
+  add: z.array(z.string()).default([]),
+  remove: z.array(z.string()).default([]),
+  set: z.array(z.string()).nullish()
+});
+
+export const fieldsRequestSchema = z.object({
+  conversationId: z.number().int(),
+  fields: z.array(z.object({ id: z.number().int(), value: z.string().nullish() }))
+});
+
+export const snoozeRequestSchema = z.object({
+  conversationId: z.number().int(),
+  snoozedUntil: z.string(),
+  unsnoozeOnCustomerReply: z.boolean().default(true)
+});
+
+export const scheduleRequestSchema = z.object({
+  conversationId: z.number().int(),
+  threadId: z.number().int(),
+  scheduledFor: z.string(),
+  unscheduleOnCustomerReply: z.boolean().default(true)
+});
+
+export const bulkRequestSchema = z.object({
+  conversationIds: z.array(z.number().int()).min(1),
+  action: z.enum(['tag', 'untag', 'assign', 'unassign', 'status', 'close']),
+  params: z.record(z.string()).default({})
+});
+
+export const searchRequestSchema = z.object({
+  query: z.string().default(''),
+  scope: z.enum(['all', 'tickets', 'customers', 'knowledge', 'issues', 'saved_replies', 'ai']).default('all'),
+  filters: z
+    .object({
+      status: z.string().optional(),
+      mailbox_id: z.number().optional(),
+      tag: z.string().optional(),
+      since_days: z.number().optional(),
+      assignee_id: z.number().optional()
+    })
+    .default({})
+});
+
+export const knowledgeImportRequestSchema = z.object({
+  sourceName: z.string().default('Manual import'),
+  visibility: z.enum(['customer_safe', 'internal_only']).default('internal_only'),
+  documents: z
+    .array(
+      z.object({
+        title: z.string(),
+        content: z.string().min(1),
+        format: z.enum(['markdown', 'txt', 'html']).default('markdown')
+      })
+    )
+    .min(1)
+});
+
+export const lmStudioSettingsSchema = z.object({
+  base_url: z.string().url(),
+  chat_model: z.string().nullish(),
+  embedding_model: z.string().nullish(),
+  timeout_ms: z.number().int().min(1000).default(120000),
+  concurrency: z.number().int().min(1).default(2)
+});
+
+export const automationRuleSchema = z.object({
+  name: z.string().min(1),
+  enabled: z.boolean().default(false),
+  trigger: z.enum(['new_conversation', 'customer_reply', 'ai_low_confidence', 'manual']),
+  conditions: z
+    .array(
+      z.object({
+        field: z.enum(['subject', 'body', 'tag', 'mailbox', 'confidence', 'known_issue_match']),
+        operator: z.enum(['contains', 'equals', 'gt', 'lt']),
+        value: z.string()
+      })
+    )
+    .default([]),
+  actions: z
+    .array(
+      z.object({
+        kind: z.enum([
+          'analyze_ticket',
+          'search_similar',
+          'check_known_issues',
+          'create_ai_note',
+          'create_ai_draft',
+          'add_tag',
+          'set_status',
+          'assign',
+          'manual_review_queue'
+        ]),
+        params: z.record(z.string()).default({})
+      })
+    )
+    .min(1),
+  priority: z.number().int().default(100),
+  requires_approval: z.boolean().default(true)
+});
+
+// ---------------- AI output schemas (structured JSON from LM Studio) ----------------
+
+export const ticketAnalysisOutputSchema = z.object({
+  intent: z.string().nullish(),
+  primary_question: z.string().nullish(),
+  secondary_questions: z.array(z.string()).default([]),
+  customer_goal: z.string().nullish(),
+  product: z.string().nullish(),
+  feature: z.string().nullish(),
+  problem_type: z.string().nullish(),
+  requested_action: z.string().nullish(),
+  urgency: z.enum(['low', 'normal', 'high', 'critical']).nullish(),
+  sentiment: z.enum(['positive', 'neutral', 'negative', 'frustrated']).nullish(),
+  known_issue_candidate: z.string().nullish(),
+  issue_cluster_candidate: z.string().nullish(),
+  missing_information: z.array(z.string()).default([]),
+  summary: z.string().nullish(),
+  evidence_quality: z.enum(['strong', 'some', 'limited', 'insufficient']).nullish()
+});
+
+export const draftVerificationOutputSchema = z.object({
+  verified: z.boolean(),
+  unsupported_claims: z.array(z.string()).default([]),
+  missing_questions: z.array(z.string()).default([]),
+  internal_leakage: z.array(z.string()).default([]),
+  conflicts: z.array(z.string()).default([]),
+  warnings: z.array(z.string()).default([])
+});
+
+export const clusteringOutputSchema = z.object({
+  clusters: z
+    .array(
+      z.object({
+        title: z.string(),
+        summary: z.string(),
+        category: z.string().nullish(),
+        product: z.string().nullish(),
+        feature: z.string().nullish(),
+        conversation_numbers: z.array(z.number()).default([])
+      })
+    )
+    .default([])
+});
