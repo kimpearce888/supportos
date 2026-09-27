@@ -6,8 +6,10 @@ import { JobRepository } from '../database/repositories/jobRepo.js';
 import { IssueRepository } from '../database/repositories/issueRepo.js';
 import { SettingsRepository } from '../database/repositories/settingsRepo.js';
 import { ConversationRepository } from '../database/repositories/conversationRepo.js';
+import { InteractionEngine } from './interaction/engine.js';
+import { INTERACTION_STRATEGY_BLOCK } from './prompts.js';
 import { PROMPT_VERSIONS } from '../../shared/constants.js';
-import type { TicketAnalysis, AiSourceRef, AiDraftRecord, DraftVerification } from '../../shared/types.js';
+import type { TicketAnalysis, AiSourceRef, AiDraftRecord, DraftVerification, InteractionSignal, InteractionChange, BehaviorBaseline } from '../../shared/types.js';
 import { htmlToText } from '../../shared/utils.js';
 
 /**
@@ -22,6 +24,7 @@ export class AiPipeline {
   private issues: IssueRepository;
   private settings: SettingsRepository;
   private conv: ConversationRepository;
+  private interaction: InteractionEngine;
 
   constructor(
     private db: DB,
@@ -33,10 +36,156 @@ export class AiPipeline {
     this.issues = new IssueRepository(db);
     this.settings = new SettingsRepository(db);
     this.conv = new ConversationRepository(db);
+    this.interaction = new InteractionEngine(db);
+  }
+
+  /**
+   * Deterministic interaction strategy for the draft prompt (spec #36 stage 3 + #51).
+   * Built from the stored interaction card; degrades to null when no data exists.
+   */
+  private buildInteractionStrategyBlock(conversationLocalId: number): string | null {
+    try {
+      const card = this.interaction.buildCard(conversationLocalId);
+      if (!card || !card.recommendation) return null;
+      const customerId = card.customer_local_id;
+      const preferences = customerId
+        ? this.interaction.repo.getPreferences(customerId).filter((p) => p.origin === 'human_entered' || p.evidence_count >= 3).map((p) => p.human_override?.value ?? p.preference)
+        : [];
+      // Already-provided info (spec #51): customer messages in this thread
+      const alreadyProvided = this.db
+        .prepare("SELECT body_html, body_text FROM threads WHERE conversation_id = ? AND deleted_at IS NULL AND type = 'customer' AND state = 'published' ORDER BY remote_created_at ASC")
+        .all(conversationLocalId) as { body_html: string | null; body_text: string | null }[];
+      const providedFacts = alreadyProvided
+        .map((t) => extractProvidedFacts(htmlToText(t.body_html ?? t.body_text ?? '')))
+        .flat()
+        .slice(0, 10);
+      const r = card.recommendation;
+      return INTERACTION_STRATEGY_BLOCK({
+        tone: r.tone,
+        length: r.length,
+        response_strategy: r.response_strategy,
+        avoid: r.avoid,
+        preferences,
+        alreadyProvided: providedFacts
+      });
+    } catch {
+      return null;
+    }
   }
 
   settingsRepo(): SettingsRepository {
     return this.settings;
+  }
+
+  interactionEngine(): InteractionEngine {
+    return this.interaction;
+  }
+
+  // ---------------- Client Interaction Intelligence (interaction spec #35, #36) ----------------
+
+  /**
+   * Two-stage interaction analysis. Stage 1 (observation) + Stage 2 (recommendation)
+   * run only when the AI provider is enabled; the deterministic engine covers
+   * baseline/change/outcomes with zero AI. AI failure degrades gracefully.
+   */
+  async analyzeInteraction(conversationLocalId: number): Promise<{ ai_enriched: boolean; error?: string }> {
+    const conv = (this.db
+      .prepare('SELECT id, customer_local_id FROM conversations WHERE id = ? AND deleted_at IS NULL')
+      .get(conversationLocalId) as { id: number; customer_local_id: number | null } | undefined) ?? null;
+    if (!conv) throw new Error('Conversation not found');
+    // Deterministic base: current signals + observations + baseline (spec: works without AI)
+    this.interaction.recordCurrentInteraction(conversationLocalId);
+    if (!this.provider.available || this.provider.kind === 'disabled') {
+      return { ai_enriched: false };
+    }
+    const customerId = conv.customer_local_id;
+    if (!customerId) return { ai_enriched: false };
+    const customerName = (this.db
+      .prepare("SELECT TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')) AS name FROM customers WHERE id = ?")
+      .get(customerId) as { name: string | null } | undefined)?.name ?? 'Customer';
+    const messages = (this.db
+      .prepare("SELECT id, body_html, body_text FROM threads WHERE conversation_id = ? AND deleted_at IS NULL AND type = 'customer' AND state = 'published' ORDER BY remote_created_at ASC")
+      .all(conversationLocalId) as { id: number; body_html: string | null; body_text: string | null }[])
+      .map((t) => ({ text: htmlToText(t.body_html ?? t.body_text ?? ''), thread_local_id: t.id }))
+      .filter((m) => m.text.trim().length > 0);
+    if (!messages.length) return { ai_enriched: false };
+    const history = this.interaction.repo.getCustomerConversations(customerId, conversationLocalId);
+    const baseline = this.interaction.repo.getBaseline(customerId) as BehaviorBaseline | null;
+    const baselineSummary = baseline
+      ? baseline.dimensions.map((d) => `${d.dimension}: usually ${d.typical_value.replace(/_/g, ' ')} (${d.observation_count} observations)`).join('\n')
+      : null;
+    const recentHistory = history.slice(0, 5).map((h) => {
+      const firstMsg = (this.db
+        .prepare("SELECT body_html, body_text FROM threads WHERE conversation_id = ? AND deleted_at IS NULL AND type = 'customer' ORDER BY remote_created_at ASC LIMIT 1")
+        .get(h.id) as { body_html: string | null; body_text: string | null } | undefined);
+      return { number: h.number, subject: h.subject, excerpt: htmlToText(firstMsg?.body_html ?? firstMsg?.body_text ?? '').slice(0, 240) };
+    });
+
+    // Stage 1: observation
+    const runId1 = this.ai.startRun('interaction_observation', { conversationId: conversationLocalId, promptVersion: PROMPT_VERSIONS.INTERACTION_OBSERVATION });
+    let aiSignals: InteractionSignal[] = [];
+    let aiGoal: string | null = null;
+    try {
+      const obs = await this.provider.observeInteraction({
+        customerName,
+        clientKind: history.length > 0 ? 'returning' : 'first_time',
+        currentMessages: messages.map((m) => ({ text: m.text, thread_local_id: m.thread_local_id })),
+        baselineSummary,
+        recentHistory
+      });
+      aiSignals = obs.signals;
+      aiGoal = obs.customerGoal;
+      this.ai.completeRun(runId1, { signals: obs.signals, customer_goal: obs.customerGoal, notes: obs.notes }, obs.latencyMs);
+    } catch (e) {
+      this.ai.failRun(runId1, e instanceof Error ? e.message : String(e));
+      return { ai_enriched: false, error: e instanceof Error ? e.message : String(e) };
+    }
+
+    // Merge AI signals into the persisted current interaction + observations
+    const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    if (aiSignals.length) {
+      this.db.prepare("UPDATE client_current_signals SET sources = 'heuristic+ai', analysis_version = ?, customer_goal = COALESCE(?, customer_goal) WHERE id = (SELECT id FROM client_current_signals WHERE conversation_id = ? ORDER BY id DESC LIMIT 1)").run(PROMPT_VERSIONS.INTERACTION_OBSERVATION, aiGoal, conversationLocalId);
+      this.interaction.repo.insertObservations(
+        aiSignals.map((s) => ({
+          customer_id: customerId,
+          conversation_id: conversationLocalId,
+          thread_local_id: s.evidence?.thread_local_id ?? null,
+          dimension: s.dimension,
+          value: s.value,
+          confidence: s.confidence,
+          evidence_excerpt: s.evidence?.excerpt ?? null,
+          source: 'ai' as const,
+          observed_at: nowIso
+        }))
+      );
+      this.interaction.rebuildBaseline(customerId);
+    }
+
+    // Stage 2: recommendation
+    const cardCurrent = this.interaction.computeCurrentInteraction(conversationLocalId);
+    const freshBaseline = this.interaction.repo.getBaseline(customerId) as BehaviorBaseline | null;
+    const changes: InteractionChange[] = cardCurrent ? this.interaction.computeChanges(cardCurrent, freshBaseline) : [];
+    const preferences = this.interaction.repo.getPreferences(customerId).map((p) => ({ preference: p.preference, origin: p.origin }));
+    const outcome = this.interaction.computeOutcome(conversationLocalId);
+    const repeatIssue = this.interaction.detectRepeatIssue(conversationLocalId);
+    const runId2 = this.ai.startRun('interaction_recommendation', { conversationId: conversationLocalId, promptVersion: PROMPT_VERSIONS.INTERACTION_RECOMMENDATION });
+    try {
+      const rec = await this.provider.recommendSupportApproach({
+        clientKind: history.length > 0 ? 'returning' : 'first_time',
+        currentSignals: (cardCurrent?.signals ?? []).map((s) => ({ dimension: s.dimension, value: s.value, confidence: s.confidence })),
+        changes: changes.map((c) => ({ dimension: c.dimension, baseline_value: c.baseline_value, current_value: c.current_value, significant: c.significant })),
+        baselineSummary,
+        preferences,
+        repeatIssue: repeatIssue?.detected ?? false,
+        effortScore: outcome?.effort_score ?? null
+      });
+      this.ai.completeRun(runId2, rec.recommendation, rec.latencyMs);
+      this.db.prepare("UPDATE client_current_signals SET customer_goal = COALESCE(customer_goal, ?) WHERE conversation_id = ?").run(aiGoal, conversationLocalId);
+      return { ai_enriched: true };
+    } catch (e) {
+      this.ai.failRun(runId2, e instanceof Error ? e.message : String(e));
+      return { ai_enriched: false, error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   /**
@@ -75,6 +224,9 @@ export class AiPipeline {
     const analysis = opts.analysis ?? (await this.analyzeTicket(conversationLocalId, { force: opts.force })).analysis;
     const ctx = this.evidence.build(conversationLocalId, { includeInternal: false });
     if (!ctx) throw new Error('Conversation not found');
+    // Interaction strategy injection (interaction spec #36, #51): communication approach
+    // + what the customer already provided, so the draft never makes them repeat themselves.
+    ctx.interactionStrategy = this.buildInteractionStrategyBlock(conversationLocalId);
     const runId = this.ai.startRun('customer_draft', { conversationId: conversationLocalId, promptVersion: PROMPT_VERSIONS.CUSTOMER_DRAFT });
     let draftText: string;
     let model: string;
@@ -244,4 +396,24 @@ export class AiPipeline {
       return { analysis: null, noteCreated: false, draftCreated: false, error: msg };
     }
   }
+}
+
+/** Extract "what the customer already provided" so drafts never ask for it again (spec #51). */
+function extractProvidedFacts(text: string): string[] {
+  const facts: string[] = [];
+  const lower = text.toLowerCase();
+  const patterns: { re: RegExp; label: string }[] = [
+    { re: /(screenshot|screenshot attached|attached (screenshot|image|file|log))/, label: 'screenshots/attachments' },
+    { re: /(browser (is )?(chrome|firefox|safari|edge)|using (chrome|firefox|safari|edge))/, label: 'browser details' },
+    { re: /(version [0-9.]+|v[0-9]+\.[0-9]+)/, label: 'version numbers' },
+    { re: /(error (message|code)[:\s]*.{0,80}|error [0-9]{3})/, label: 'error messages' },
+    { re: /(api key|token|workspace id|account id|email address)/, label: 'account identifiers' },
+    { re: /(already (tried|did|re-?installed|restarted|cleared)|we already|we have already)/, label: 'troubleshooting already performed' },
+    { re: /(timezone|utc[+-][0-9])/, label: 'timezone information' },
+    { re: /(invoice|receipt|payment|card (was )?declined|billing)/, label: 'billing details' }
+  ];
+  for (const { re, label } of patterns) {
+    if (re.test(lower)) facts.push(label);
+  }
+  return facts;
 }

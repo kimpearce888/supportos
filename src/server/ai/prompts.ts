@@ -13,6 +13,8 @@ export interface EvidenceContext {
   knownIssues: { title: string; symptoms: string; customerSafeExplanation: string | null; workaround: string | null }[];
   knowledge: { title: string; text: string; visibility: 'customer_safe' | 'internal_only' }[];
   savedReplies: { name: string; text: string }[];
+  /** Client Interaction Intelligence strategy block (interaction spec #36, #51). */
+  interactionStrategy?: string | null;
 }
 
 function renderEvidence(ctx: EvidenceContext): string {
@@ -40,6 +42,9 @@ function renderEvidence(ctx: EvidenceContext): string {
   if (ctx.savedReplies.length) {
     parts.push('\nSAVED REPLIES:');
     for (const s of ctx.savedReplies) parts.push(`  "${s.name}": ${s.text}`);
+  }
+  if (ctx.interactionStrategy) {
+    parts.push(ctx.interactionStrategy);
   }
   return parts.join('\n');
 }
@@ -147,3 +152,115 @@ export const PROMPT_REGISTRY = {
   report_narrative: { version: PROMPT_VERSIONS.REPORT_NARRATIVE, system: REPORT_NARRATIVE_SYSTEM },
   memory_extraction: { version: PROMPT_VERSIONS.MEMORY_EXTRACTION, system: MEMORY_EXTRACTION_SYSTEM }
 } as const;
+
+// ---------------- Client Interaction Intelligence (interaction spec #33-#37) ----------------
+// Stage 1: observation only. The system prompt uses the spec's enforced wording.
+
+export const INTERACTION_OBSERVATION_SYSTEM = `You analyze the client's observable communication patterns for support purposes. Identify current communication signals, recurring support interaction patterns, relevant communication preferences, and meaningful changes from historical behavior. Do not diagnose mental health or infer sensitive personal traits. Base each important observation on evidence from the supplied conversation history.
+
+HARD RULES:
+- Report ONLY observable communication behavior: tone, directness, detail level, technical language, question structure, urgency cues, frustration cues, expectation, response preference.
+- NEVER produce personality labels, psychological claims, diagnoses, or judgments about the person.
+- Every signal must quote an evidence_excerpt copied from the messages. Signals without evidence are invalid.
+- Allowed values per dimension (use EXACTLY these):
+  tone: neutral|friendly|frustrated|appreciative|disappointed|confrontational|urgent|uncertain
+  directness: indirect|conversational|direct|highly_direct
+  detail: very_low|low|moderate|high|very_high
+  technical_language: non_technical|mixed|technical|highly_technical
+  question_structure: single_question|multiple_questions|troubleshooting_oriented|confirmation_oriented|explanation_oriented
+  urgency: none|low|moderate|high
+  frustration: none|possible|moderate|strong
+  expectation: information|explanation|troubleshooting|action|immediate_resolution|escalation|confirmation
+  response_preference: concise|detailed|step_by_step|technical|conversational|outcome_focused
+- confidence is one of high|medium|low|unknown and is an operational judgment, not a probability.
+
+Respond ONLY with JSON:
+{"signals": [{"dimension": "...", "value": "...", "confidence": "...", "evidence_excerpt": "...", "evidence_thread_local_id": 123}], "customer_goal": "...", "notes": ["..."]}`;
+
+export function buildInteractionObservationUser(input: {
+  customerName: string;
+  clientKind: 'first_time' | 'returning';
+  currentMessages: { text: string; thread_local_id: number | null }[];
+  baselineSummary: string | null;
+  recentHistory: { number: number; subject: string | null; excerpt: string }[];
+}): string {
+  return `Client: ${input.customerName} (${input.clientKind === 'returning' ? 'returning client' : 'first-time client'})
+
+CURRENT TICKET customer messages:
+${input.currentMessages.map((m) => `[thread ${m.thread_local_id ?? '?'}] ${m.text.slice(0, 900)}`).join('\n---\n')}
+
+${input.baselineSummary ? `HISTORICAL BASELINE (observed, recency-weighted):\n${input.baselineSummary}\n` : 'No historical baseline exists (first-time client). Do NOT claim any historical pattern.\n'}
+${input.recentHistory.length ? `RECENT PREVIOUS TICKETS (for context):\n${input.recentHistory.map((h) => `#${h.number} ${h.subject ?? ''}: ${h.excerpt.slice(0, 200)}`).join('\n')}\n` : ''}
+Analyze observable communication behavior for support purposes. Signal what is happening in THIS interaction; only mention a historical pattern if the baseline above supports it.`;
+}
+
+// Stage 2: recommendation (spec #13, #14, #15, #48, #49).
+
+export const INTERACTION_RECOMMENDATION_SYSTEM = `You are a support-approach advisor. Given observations about a client's observable communication (never psychological claims), you recommend how a support rep should approach this specific conversation.
+
+RULES:
+- Be actionable: tone, length, how to start, what to avoid, response strategy steps.
+- Recommend ONLY what the observations support. Do not invent history.
+- Never promise unsupported timeframes; frame expectations conservatively.
+- If frustration is strong, include de-escalation guidance (acknowledge impact, avoid defensiveness, answer the central issue).
+- "why" must reference the concrete observations that justify each recommendation.
+
+Respond ONLY with JSON:
+{"tone": "...", "length": "concise|moderate|detailed", "start_with": "...", "then": "...", "avoid": ["..."], "response_strategy": ["step 1", "step 2"], "de_escalation": false, "escalation_recommendation": null, "why": ["..."]}`;
+
+export function buildInteractionRecommendationUser(input: {
+  clientKind: 'first_time' | 'returning';
+  currentSignals: { dimension: string; value: string; confidence: string }[];
+  changes: { dimension: string; baseline_value: string | null; current_value: string | null; significant: boolean }[];
+  baselineSummary: string | null;
+  preferences: { preference: string; origin: string }[];
+  repeatIssue: boolean;
+  effortScore: number | null;
+}): string {
+  return `Client kind: ${input.clientKind}
+
+CURRENT INTERACTION SIGNALS:
+${input.currentSignals.map((s) => `- ${s.dimension}: ${s.value} (confidence ${s.confidence})`).join('\n')}
+
+${input.changes.length ? `CHANGES VS HISTORICAL BASELINE:\n${input.changes.map((c) => `- ${c.dimension}: ${c.baseline_value ?? '—'} -> ${c.current_value ?? '—'}${c.significant ? ' [SIGNIFICANT]' : ''}`).join('\n')}\n` : 'No baseline comparison available.\n'}
+${input.preferences.length ? `OBSERVED PREFERENCES (human-entered overrides take precedence):\n${input.preferences.map((p) => `- ${p.preference} (${p.origin})`).join('\n')}\n` : ''}
+${input.repeatIssue ? `NOTE: this appears to be a RECURRING unresolved issue for this client — review previous cases before replying.\n` : ''}${input.effortScore != null ? `Customer effort score so far: ${input.effortScore}/10.\n` : ''}
+Recommend a support approach for this conversation.`;
+}
+
+// Stage 3 hooks into the existing draft pipeline via strategy injection (spec #36, #51).
+
+export const INTERACTION_STRATEGY_BLOCK = (recommendation: { tone: string | null; length: string | null; response_strategy: string[]; avoid: string[]; preferences: string[]; alreadyProvided: string[] }): string => `
+COMMUNICATION APPROACH (from client interaction analysis):
+- Tone: ${recommendation.tone ?? 'unspecified'}
+- Length: ${recommendation.length ?? 'moderate'}
+- Response strategy: ${recommendation.response_strategy.join(' -> ') || 'answer the primary question directly'}
+- Avoid: ${recommendation.avoid.join('; ') || 'nothing specific'}
+${recommendation.preferences.length ? `- Client communication preferences: ${recommendation.preferences.join('; ')}\n` : ''}
+${recommendation.alreadyProvided.length ? `ALREADY PROVIDED BY THE CUSTOMER (do NOT ask again, do not repeat):\n${recommendation.alreadyProvided.map((a) => `- ${a}`).join('\n')}\n` : ''}
+Use this to shape HOW you answer, not WHAT you answer.`;
+
+// Register interaction prompts (versioned, spec #58).
+Object.assign(PROMPT_REGISTRY, {
+  interaction_observation: { version: PROMPT_VERSIONS.INTERACTION_OBSERVATION, system: INTERACTION_OBSERVATION_SYSTEM },
+  interaction_recommendation: { version: PROMPT_VERSIONS.INTERACTION_RECOMMENDATION, system: INTERACTION_RECOMMENDATION_SYSTEM }
+});
+
+// Input types for the provider interface (re-exported via provider.ts).
+export interface InteractionObservationInput {
+  customerName: string;
+  clientKind: 'first_time' | 'returning';
+  currentMessages: { text: string; thread_local_id: number | null }[];
+  baselineSummary: string | null;
+  recentHistory: { number: number; subject: string | null; excerpt: string }[];
+}
+
+export interface InteractionRecommendationInput {
+  clientKind: 'first_time' | 'returning';
+  currentSignals: { dimension: string; value: string; confidence: string }[];
+  changes: { dimension: string; baseline_value: string | null; current_value: string | null; significant: boolean }[];
+  baselineSummary: string | null;
+  preferences: { preference: string; origin: string }[];
+  repeatIssue: boolean;
+  effortScore: number | null;
+}

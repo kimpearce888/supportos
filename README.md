@@ -7,7 +7,7 @@
 **Fast support tooling with a privacy guarantee: your customer data never leaves your machine.**
 
 [![CI](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml/badge.svg)](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-108%2F108-brightgreen)](docs/TESTING.md)
+[![Tests](https://img.shields.io/badge/tests-130%2F130-brightgreen)](docs/TESTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-green)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](tsconfig.base.json)
@@ -26,6 +26,7 @@ SupportOS is a **self-hosted help desk companion and support intelligence platfo
 
 - **⚡ Instant everything** — search your entire local archive in milliseconds with local full-text search; no API round-trips, no rate limits, no spinners
 - **🤖 Local AI assistance** — ticket analysis, evidence-backed reply drafts, issue clustering and report narratives via [LM Studio](https://lmstudio.ai) on your own hardware. **No OpenAI. No cloud. No data leakage.**
+- **🧠 Client Interaction Intelligence** — knows how each client *normally* communicates and flags when today's ticket is different (urgency ↑, detail ↓), with an evidence-backed support approach and per-client playbook. Behavior, never psychology.
 - **🛡️ Privacy by architecture** — support tickets contain payment details, personal data and secrets. SupportOS keeps them local-first, GDPR-friendly and audit-logged
 - **🔬 Support intelligence** — Issue Radar surfaces emerging problems before they become incidents; answer-reuse shows which tickets could have been deflected by docs
 - **✍️ Human in command** — AI never sends a customer reply. Every remote write is validated, merged, confirmed and audited
@@ -55,6 +56,16 @@ All screenshots are the **real application** running in demo mode (simulated mai
 **Search — one query across tickets, threads, customers, knowledge, known issues and AI analyses, with match explanations**
 
 [![SupportOS universal support search](docs/screenshots/search.png)](docs/screenshots/search.png)
+
+### 🧠 Client Interaction Intelligence
+
+**Client Intelligence card — current signals with evidence, historical pattern, and today's significant changes vs the client's norm**
+
+[![SupportOS client intelligence card in the inbox sidebar](docs/screenshots/client-intelligence.png)](docs/screenshots/client-intelligence.png)
+
+**Client Interaction Profile — timeline, observed preferences (human-overridable), previous outcomes and a repeat-client support playbook**
+
+[![SupportOS client interaction profile](docs/screenshots/client-profile.png)](docs/screenshots/client-profile.png)
 
 ### 🔬 Support intelligence
 
@@ -126,6 +137,7 @@ See [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md) for the full walkthrough.
 | ✅ **Ticket operations** | Reply, drafts, internal notes, status, assignment, inbox moves, subject edits, merge-safe tags, custom fields (system-field-safe), snooze, scheduled replies, attachments, workflow runs, "Open in Help Scout" links — every write audited and duplicate-protected |
 | **🔍 Universal search** | SQLite FTS5 across tickets, thread text, customers, knowledge, known issues, saved replies and AI analyses — filters (status/inbox/tag/date), exact ticket-number lookup, optional semantic search via local Qdrant |
 | **🤖 Local AI** | Ticket analysis (intent, questions, urgency, sentiment), evidence-backed verified reply drafts, a verification pass (unsupported claims / missing questions / internal leakage), rewrites, customer memory, issue clustering, report narratives — versioned, cached, audited, always labeled AI-generated |
+| **🧠 Client Interaction Intelligence** | Per-client communication behavior: current signals (urgency/frustration/directness/detail/technical, evidence-linked), recency-weighted historical baseline, "today vs normal" change detection, support-approach recommendations, observed preferences with human overrides, support outcomes + effort score, repeat-client playbooks — observable behavior only, never personality claims |
 | **🚨 Issue Radar** | New/rising/recurring issue clusters with linked tickets, known issues (customer-safe vs internal explanations, engineering refs), doc-gap detection, answer-reuse candidates, "why are customers contacting us" |
 | **📊 Reports** | Local analytics (with metric definitions and honest limitations), Help Scout native report import (labeled), AI narratives (labeled AI-derived), release correlation that never claims causation |
 | **⚙️ Automation** | Local rules engine separated from Help Scout workflows; read / non-destructive / higher-risk action tiers; higher-risk actions always require human approval |
@@ -195,13 +207,19 @@ Yes. Sync traffic goes only to Help Scout (your own mailbox). AI runs against **
 <details>
 <summary><b>What if LM Studio / Qdrant aren't running?</b></summary>
 
-The app is fully useful without AI: search, analytics, issue radar (keyword-based), ticket operations and reports all work — LM Studio integration degrades gracefully and says so honestly in the AI Center and capability matrix.
+The app is fully useful without AI: search, analytics, issue radar (keyword-based), ticket operations and reports all work — LM Studio integration degrades gracefully and says so honestly in the AI Center and capability matrix. Client Interaction Intelligence also has a deterministic engine that works entirely without AI (the AI stages only enrich signals and recommendations).
+</details>
+
+<details>
+<summary><b>Does Client Interaction Intelligence profile people psychologically?</b></summary>
+
+No — by design and by enforcement. It reports **observable support-communication behavior only** (tone, directness, detail, technical language, urgency/frustration cues), drawn from a fixed vocabulary so personality labels are structurally impossible. Every significant observation carries evidence and confidence; one angry email never becomes a permanent label (repeated evidence across 3+ interactions is required for a preference, and human overrides always win). See [docs/CLIENT-INTELLIGENCE.md](docs/CLIENT-INTELLIGENCE.md).
 </details>
 
 <details>
 <summary><b>How is this tested?</b></summary>
 
-108 automated tests (unit / integration / e2e) run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
+108 automated tests (unit / integration / e2e) — grown to **130** with Client Interaction Intelligence — run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
 </details>
 
 <details>
@@ -215,6 +233,7 @@ Yes for everything local: the mirror, search, analytics, knowledge base and prev
 ## 🗺️ Roadmap
 
 - [x] v1.0.0 — local mirror, inbox workspace, FTS5 search, local AI pipeline, Issue Radar, reports, automation, backups, 108-test CI ([changelog](CHANGELOG.md))
+- [x] v1.1.0 — Client Interaction Intelligence: current-vs-normal change detection, evidence-linked signals, support approaches, human overrides, playbooks, effort/friction metrics
 - [ ] Help Scout **Chat / Docs / Beacon** API coverage (currently conversations/mailbox APIs)
 - [ ] Real-time ratings refresh (currently polled during sync)
 - [ ] Multi-mailbox dashboards
@@ -231,6 +250,7 @@ Ideas and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, data flow, provenance model |
 | [docs/API-INTEGRATION.md](docs/API-INTEGRATION.md) | Verified Help Scout v2/v3 API usage, capability matrix, known limitations |
 | [docs/AI-SETUP.md](docs/AI-SETUP.md) | LM Studio + Qdrant setup and the AI pipeline |
+| [docs/CLIENT-INTELLIGENCE.md](docs/CLIENT-INTELLIGENCE.md) | Client Interaction Intelligence: design, safety model, API |
 | [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md) | Windows installation incl. Tauri desktop build |
 | [docs/LOCAL-RUN.md](docs/LOCAL-RUN.md) | Everyday running (dev, production, demo) |
 | [docs/BACKUP-RESTORE.md](docs/BACKUP-RESTORE.md) | Backups, restore, CSV/JSON export |

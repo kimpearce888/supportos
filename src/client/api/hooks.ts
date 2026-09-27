@@ -74,3 +74,29 @@ export function useReference() {
     savedReplies: useQuery({ queryKey: ['saved-replies'], queryFn: () => api.get<{ saved_replies: { id: number; name: string; preview: string; text: string | null }[] }>('/api/saved-replies') })
   };
 }
+
+// ---------------- Client Interaction Intelligence ----------------
+
+export function useInteractionCard(conversationId: number | null) {
+  return useQuery({
+    queryKey: ['interaction', conversationId],
+    queryFn: () => api.get<{ card: import('../../shared/types.js').InteractionCard; labels: { featureTitle: string; note: string } }>(`/api/interaction/${conversationId}`),
+    enabled: conversationId != null && conversationId > 0
+  });
+}
+
+export function useInteractionProfile(customerId: number | null) {
+  return useQuery({
+    queryKey: ['interaction-profile', customerId],
+    queryFn: () => api.get<{ profile: import('../../shared/types.js').ClientInteractionProfile }>(`/api/interaction/profile/${customerId}`),
+    enabled: customerId != null && customerId > 0
+  });
+}
+
+export function useInteractionEvidence(conversationId: number | null) {
+  return useQuery({
+    queryKey: ['interaction-evidence', conversationId],
+    queryFn: () => api.get<{ observations: { dimension: string; value: string; confidence: string; evidence_excerpt: string | null; conversation_local_id: number | null; thread_local_id: number | null; observed_at: string; provenance: string }[] }>(`/api/interaction/${conversationId}/evidence`),
+    enabled: conversationId != null && conversationId > 0
+  });
+}

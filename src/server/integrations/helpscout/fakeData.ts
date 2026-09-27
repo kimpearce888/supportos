@@ -133,7 +133,10 @@ export function buildFakeWorld(): FakeWorld {
     { remoteId: 707, name: 'vip', slug: 'vip', color: '#E4BB2F', ticketCount: 2, createdAt: daysAgo(80), updatedAt: daysAgo(7) },
     { remoteId: 708, name: 'escalated', slug: 'escalated', color: '#DE5B49', ticketCount: 2, createdAt: daysAgo(70), updatedAt: daysAgo(2) },
     { remoteId: 709, name: 'release-2-4', slug: 'release-2-4', color: '#929499', ticketCount: 3, createdAt: daysAgo(14), updatedAt: daysAgo(1) },
-    { remoteId: 710, name: 'docs-gap', slug: 'docs-gap', color: '#929499', ticketCount: 1, createdAt: daysAgo(30), updatedAt: daysAgo(30) }
+    { remoteId: 710, name: 'docs-gap', slug: 'docs-gap', color: '#929499', ticketCount: 1, createdAt: daysAgo(30), updatedAt: daysAgo(30) },
+    { remoteId: 711, name: 'api', slug: 'api', color: '#37A4FF', ticketCount: 1, createdAt: daysAgo(60), updatedAt: daysAgo(36) },
+    { remoteId: 712, name: 'sso', slug: 'sso', color: '#517EDB', ticketCount: 1, createdAt: daysAgo(40), updatedAt: daysAgo(15) },
+    { remoteId: 713, name: 'account', slug: 'account', color: '#929499', ticketCount: 1, createdAt: daysAgo(100), updatedAt: daysAgo(15) }
   ];
   const fields: HsField[] = [
     {
@@ -532,6 +535,109 @@ export function buildFakeWorld(): FakeWorld {
     createdBy: { id: 1001, type: 'user', first: 'Alex', last: 'Rivera', email: 'alex@zylker.io' },
     savedReplyId: 403,
     to: ['daniel.kim@brightpathedu.org']
+  });
+
+  // 6a. Ravi history: detailed, technical, calm closed tickets (Client Interaction Intelligence demo baseline)
+  const c6h1 = conversation({
+    subject: 'Webhook payload format after v2.4 upgrade',
+    preview: 'After upgrading to v2.4 our webhook receiver rejects the payload schema...',
+    mailboxId: 201,
+    customer: cust(3006),
+    status: 'closed',
+    tags: ['integration'],
+    assigneeId: 1002,
+    createdDaysAgo: 70,
+    closedDaysAgo: 68,
+    customFields: [{ fieldId: 104, value: '171', text: 'Integrations' }]
+  });
+  thread(c6h1, {
+    body: '<p>Hello,</p><p>After upgrading to v2.4 last Saturday our webhook receiver started rejecting the payload schema. I captured the failing delivery from the integrations log (delivery ID WH-10231) and diffed it against the v2.3 format:</p><p>- The "event.type" field now uses dot notation ("conversation.updated" instead of "conversationUpdated")<br>- The "payload" object is base64-encoded rather than plain JSON<br>- Headers include a new X-Signature-v2 alongside the legacy X-Signature</p><p>Our receiver validates against a strict JSON schema and returns HTTP 422 before the handler runs, so nothing is processed. I could relax the schema, but I would rather understand the intended contract first. Is there a changelog entry describing the new format, and is the legacy format supported during a transition period? We process roughly 4,000 events per day through this endpoint, so I want to migrate deliberately rather than reactively.</p><p>Thanks,<br>Ravi Sundaram<br>PixelWorks IT</p>',
+    createdAt: daysAgo(70, 9, 40),
+    customer: { id: 3006, first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    createdBy: { id: 3006, type: 'customer', first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    to: ['support@zylker.io']
+  });
+  thread(c6h1, {
+    type: 'reply',
+    body: '<p>Hi Ravi,</p><p>The v2.4 release notes cover the webhook contract change under "Breaking changes". The legacy format is supported until the end of the quarter via the workspace setting "Webhooks: legacy payload", after which dot-notation events become the only format. Both signature headers validate with the same secret during the transition.</p><p>Recommended migration order: add schema acceptance for both shapes first, monitor dual-format traffic for a week, then drop the legacy branch.</p><p>Best,<br>Priya</p>',
+    createdAt: daysAgo(69, 11, 20),
+    createdBy: { id: 1002, type: 'user', first: 'Priya', last: 'Nair', email: 'priya@zylker.io' },
+    to: ['ravi@pixelworks.in']
+  });
+  thread(c6h1, {
+    body: '<p>That is exactly what I needed — the dual-format monitoring suggestion made the migration straightforward. Receiver deployed with both schemas accepted and traffic looks clean. Closing from my side.</p>',
+    createdAt: daysAgo(68, 8, 15),
+    customer: { id: 3006, first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    createdBy: { id: 3006, type: 'customer', first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    to: ['support@zylker.io']
+  });
+
+  const c6h2 = conversation({
+    subject: 'API rate limits for bulk export endpoint',
+    preview: 'What are the documented rate limits for the bulk export API and do they reset per token...',
+    mailboxId: 201,
+    customer: cust(3006),
+    status: 'closed',
+    tags: ['api'],
+    assigneeId: 1002,
+    createdDaysAgo: 38,
+    closedDaysAgo: 36,
+    customFields: [{ fieldId: 104, value: '171', text: 'Integrations' }]
+  });
+  thread(c6h2, {
+    body: '<p>Hello,</p><p>Two questions about the bulk export API (<code>/v3/exports</code>):</p><p>1. The documentation mentions a per-minute rate limit but not whether it applies per API token, per workspace, or per endpoint. Which is it? We run two workers with separate tokens from the same workspace and saw inconsistent 429 behavior.<br>2. When a 429 returns the Retry-After header, does the documented limit reset at that instant or at the next window boundary?</p><p>Context: we schedule exports nightly with a 15-minute window, and a mid-run 429 currently aborts the whole job. I would rather back off and resume than abort, but I need to know which clock the limit resets on.</p><p>Thanks,<br>Ravi</p>',
+    createdAt: daysAgo(38, 10, 5),
+    customer: { id: 3006, first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    createdBy: { id: 3006, type: 'customer', first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    to: ['support@zylker.io']
+  });
+  thread(c6h2, {
+    type: 'reply',
+    body: '<p>Hi Ravi,</p><p>Answers below:</p><p>1. The limit is per API token, not per workspace. Your two workers each have the full documented quota, which explains the inconsistency you saw — one worker was likely consuming a shared proxy cache.<br>2. The window is a fixed rolling 60 seconds counted from the first request; Retry-After points to the end of the current window, so backing off until that timestamp is correct and resuming is safe.</p><p>Your resume-instead-of-abort plan is exactly what the header is for.</p><p>Best,<br>Priya</p>',
+    createdAt: daysAgo(37, 9, 50),
+    createdBy: { id: 1002, type: 'user', first: 'Priya', last: 'Nair', email: 'priya@zylker.io' },
+    to: ['ravi@pixelworks.in']
+  });
+  thread(c6h2, {
+    body: '<p>Clear and complete. Implemented per-token accounting with resume-on-429 and the nightly job has been clean since. Thank you!</p>',
+    createdAt: daysAgo(36, 9, 10),
+    customer: { id: 3006, first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    createdBy: { id: 3006, type: 'customer', first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    to: ['support@zylker.io']
+  });
+
+  const c6h3 = conversation({
+    subject: 'SSO SAML metadata renewal question',
+    preview: 'Our identity provider is rotating certificates next month - what do we need to update...',
+    mailboxId: 201,
+    customer: cust(3006),
+    status: 'closed',
+    tags: ['sso', 'account'],
+    assigneeId: 1001,
+    createdDaysAgo: 17,
+    closedDaysAgo: 15,
+    customFields: [{ fieldId: 104, value: '169', text: 'Account & Billing' }]
+  });
+  thread(c6h3, {
+    body: '<p>Hello,</p><p>Our identity provider rotates SAML signing certificates annually and the next rotation lands on the first of next month. Before that date I want to confirm the renewal procedure on your side so logins do not break for our 120 users:</p><p>- Does the workspace accept a metadata URL that serves both the current and the upcoming certificate during overlap, or must the new certificate be uploaded manually?<br>- Is there a documented propagation delay after metadata refresh that we should schedule around?<br>- Are there logs in the admin panel that would show a failing assertion signature specifically, so I can distinguish a rotation issue from a clock-skew issue?</p><p>Historically the annual rotation has been smooth, but last year the overlap window was shorter than the propagation delay and a few users hit a failed login loop. I would like to avoid a repeat.</p><p>Thanks,<br>Ravi</p>',
+    createdAt: daysAgo(17, 9, 25),
+    customer: { id: 3006, first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    createdBy: { id: 3006, type: 'customer', first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    to: ['support@zylker.io']
+  });
+  thread(c6h3, {
+    type: 'reply',
+    body: '<p>Hi Ravi,</p><p>The metadata URL path is the recommended one: we fetch it nightly and accept every certificate it advertises, so serving both during the overlap period is exactly right. Propagation is at most 24 hours after the nightly fetch, so start the overlap window two days early. Admin → Security → SSO log entries distinguish "assertion signature validation failed" (rotation) from "assertion time window exceeded" (clock skew).</p><p>Best,<br>Alex</p>',
+    createdAt: daysAgo(16, 14, 5),
+    createdBy: { id: 1001, type: 'user', first: 'Alex', last: 'Rivera', email: 'alex@zylker.io' },
+    to: ['ravi@pixelworks.in']
+  });
+  thread(c6h3, {
+    body: '<p>Started the overlap window today as suggested. Rotation completed overnight with zero failed logins — the log filter you pointed out made verification quick. Thanks again.</p>',
+    createdAt: daysAgo(15, 9, 0),
+    customer: { id: 3006, first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    createdBy: { id: 3006, type: 'customer', first: 'Ravi', last: 'Sundaram', email: 'ravi@pixelworks.in' },
+    to: ['support@zylker.io']
   });
 
   // 6. Integration broken (Ravi) - escalated

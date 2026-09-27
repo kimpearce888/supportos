@@ -2,6 +2,7 @@
  * Shared domain types for SupportOS.
  * These are the canonical shapes used by both server and client.
  */
+import type { InteractionDimension } from './constants.js';
 
 // ---------------------------------------------------------------- Sync
 export type SyncState =
@@ -599,4 +600,132 @@ export interface ConversationListResponse {
   page: number;
   page_size: number;
   view: string;
+}
+
+// ---------------------------------------------------------------- Client Interaction Intelligence
+// Interaction spec: observable support-communication behavior, never psychology.
+
+export type InteractionSignalValue = string; // constrained to the per-dimension enums in constants.ts
+
+/** One observable signal with its evidence and confidence (spec #8, #9). */
+export interface InteractionSignal {
+  dimension: InteractionDimension;
+  value: InteractionSignalValue;
+  confidence: OperationalConfidence;
+  evidence: { excerpt: string; thread_local_id: number | null; conversation_local_id: number | null } | null;
+  source: 'heuristic' | 'ai';
+}
+
+/** Current-ticket interaction analysis (spec #3, #6). */
+export interface CurrentInteraction {
+  conversation_local_id: number;
+  customer_local_id: number | null;
+  is_returning_client: boolean;
+  signals: InteractionSignal[];
+  customer_goal: string | null;
+  message_stats: {
+    customer_messages: number;
+    avg_message_length: number;
+    question_count: number;
+    exclamation_ratio: number;
+    caps_ratio: number;
+  };
+  generated_at: string;
+  sources: 'heuristic' | 'heuristic+ai' | 'ai';
+}
+
+/** Recency-weighted longitudinal baseline (spec #5, #10, #23). */
+export interface BehaviorBaseline {
+  customer_local_id: number;
+  conversation_count: number;
+  observation_count: number;
+  dimensions: { dimension: InteractionDimension; typical_value: string; confidence: OperationalConfidence; observation_count: number; last_observed: string | null }[];
+  last_updated: string | null;
+  profile_version: number;
+}
+
+/** Current-vs-baseline change detection (spec #5, #19). */
+export interface InteractionChange {
+  dimension: InteractionDimension;
+  baseline_value: string | null;
+  current_value: string | null;
+  direction: 'increase' | 'decrease' | 'same' | 'new';
+  magnitude: number; // 0..1
+  significant: boolean;
+}
+
+/** Recommended support approach (spec #13, #14, #15). */
+export interface SupportApproach {
+  tone: string | null;
+  length: 'concise' | 'moderate' | 'detailed' | null;
+  start_with: string | null;
+  then: string | null;
+  avoid: string[];
+  response_strategy: string[];
+  de_escalation: boolean;
+  escalation_recommendation: string | null;
+  why: string[];
+  source: 'heuristic' | 'ai' | 'ai+human-override';
+  confidence: OperationalConfidence;
+}
+
+/** Observed communication preference with human override (spec #21, #22, #45). */
+export interface CommunicationPreference {
+  preference: string;
+  evidence_count: number;
+  first_observed: string | null;
+  last_observed: string | null;
+  confidence: OperationalConfidence;
+  origin: 'ai_inferred' | 'human_entered';
+  human_override: { value: string; reason: string | null; overridden_at: string } | null;
+}
+
+/** Previous support outcomes (spec #16, #17, #18, #44). */
+export interface SupportOutcomeSummary {
+  customer_local_id: number;
+  total_conversations: number;
+  first_response_resolution_rate: number | null;
+  follow_up_rate: number | null;
+  clarification_rate: number | null;
+  escalation_rate: number | null;
+  avg_effort_score: number | null;
+  effective_approaches: { approach: string; worked_count: number; example_conversation_local_id: number | null; example_number: number | null }[];
+  friction_flags: { conversation_local_id: number; number: number; subject: string | null; friction: 'moderate' | 'high' }[];
+}
+
+/** Repeat-client playbook (spec #46). */
+export interface ClientPlaybook {
+  best_opening: string | null;
+  best_explanation_style: string | null;
+  best_troubleshooting_style: string | null;
+  likely_follow_up: string | null;
+  historically_successful: string | null;
+  avoid: string[];
+}
+
+/** Full ticket-scoped interaction card (spec #26, #62). */
+export interface InteractionCard {
+  conversation_local_id: number;
+  customer_local_id: number | null;
+  client_kind: 'first_time' | 'returning' | 'unknown';
+  current: CurrentInteraction;
+  baseline: BehaviorBaseline | null;
+  changes: InteractionChange[];
+  recommendation: SupportApproach | null;
+  effort_score: number | null;
+  friction: 'none' | 'moderate' | 'high' | null;
+  repeat_issue: { detected: boolean; related_conversations: { local_id: number; number: number; subject: string | null }[] } | null;
+  provenance: { ai_generated: boolean; prompt_version: string | null; model: string | null; generated_at: string | null };
+}
+
+/** Customer-scoped interaction profile (spec #25). */
+export interface ClientInteractionProfile {
+  customer_local_id: number;
+  client_kind: 'first_time' | 'returning';
+  baseline: BehaviorBaseline | null;
+  preferences: CommunicationPreference[];
+  timeline: { month: string; conversation_count: number; summary: string | null; conversation_local_ids: number[] }[];
+  outcomes: SupportOutcomeSummary | null;
+  playbook: ClientPlaybook | null;
+  overrides: { id: number; field: string; ai_value: string | null; human_value: string; reason: string | null; created_at: string; active: boolean }[];
 }

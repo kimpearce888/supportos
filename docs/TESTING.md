@@ -22,3 +22,11 @@ The deterministic parts of the AI pipeline (retrieval, evidence assembly, verifi
 ## Real-world verification steps (require your credentials)
 
 Documented honestly rather than claimed: connecting a real Help Scout account, running a live initial sync, and exercising write operations against your real mailbox are one-time manual verifications — the same code paths are covered by the fake-provider tests above.
+
+## Client Interaction Intelligence (v1.1.0)
+
+- `tests/unit/interaction.test.ts` — heuristic vocabulary, word-boundary marker matching (e.g. "against" must not match "again"), evidence requirements, forbidden-claim sanitizer (personality labels impossible)
+- `tests/integration/interaction.test.ts` — full engine over the real sync engine: returning vs first-time clients, change directions vs baseline, preference overfit guard (3+ observations), human override precedence + revert, outcome metrics, repeat-issue detection, profile/playbook assembly
+- e2e — all six `/api/interaction/*` endpoints over the real Fastify app, including the 422 validation path, safety labeling and 404s
+
+Total: 130 tests (`npm run test:all`).

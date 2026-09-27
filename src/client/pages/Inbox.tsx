@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client.js';
 import { useConversations, useConversationDetail, useReference } from '../api/hooks.js';
+import { ClientIntelligenceCard } from '../components/common/InteractionCard.js';
 import { Spinner, EmptyState, StatusBadge, TagChips, RelativeTime, ConfidenceBadge, VerifiedBadge } from '../components/common/ui.js';
 import { ConfirmDialog, Modal } from '../components/common/overlays.js';
 import { SafeHtml } from '../components/common/SafeHtml.js';
@@ -896,6 +897,7 @@ function AiSidebar({ data, onRefresh }: { data: NonNullable<ReturnType<typeof us
 
   return (
     <>
+      <ClientIntelligenceCard conversationId={data.conversation.id} onRefresh={onRefresh} />
       <div className="ai-sidebar-section">
         <h4><Bot size={12} /> What is the customer asking?</h4>
         {analyzing ? <Spinner label="Analyzing…" /> : null}

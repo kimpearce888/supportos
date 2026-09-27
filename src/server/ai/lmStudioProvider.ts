@@ -1,10 +1,13 @@
 import type { SettingsRepository } from '../database/repositories/settingsRepo.js';
 import { LmStudioClient, LmStudioError, type ChatMessage } from '../integrations/lmstudio/lmStudioClient.js';
 import type { AiProvider } from './provider.js';
-import { buildTicketAnalysisUser, buildCustomerDraftUser, buildDraftVerificationUser, buildIssueClusterUser, buildReportNarrativeUser, buildMemoryExtractionUser, TICKET_ANALYSIS_SYSTEM, CUSTOMER_DRAFT_SYSTEM, DRAFT_VERIFICATION_SYSTEM, ISSUE_CLUSTER_SYSTEM, REPORT_NARRATIVE_SYSTEM, MEMORY_EXTRACTION_SYSTEM, type EvidenceContext } from './prompts.js';
-import { ticketAnalysisOutputSchema, draftVerificationOutputSchema, clusteringOutputSchema } from '../../shared/schemas.js';
-import type { TicketAnalysis, DraftVerification } from '../../shared/types.js';
+import { buildTicketAnalysisUser, buildCustomerDraftUser, buildDraftVerificationUser, buildIssueClusterUser, buildReportNarrativeUser, buildMemoryExtractionUser, buildInteractionObservationUser, buildInteractionRecommendationUser, TICKET_ANALYSIS_SYSTEM, CUSTOMER_DRAFT_SYSTEM, DRAFT_VERIFICATION_SYSTEM, ISSUE_CLUSTER_SYSTEM, REPORT_NARRATIVE_SYSTEM, MEMORY_EXTRACTION_SYSTEM, INTERACTION_OBSERVATION_SYSTEM, INTERACTION_RECOMMENDATION_SYSTEM, type EvidenceContext, type InteractionObservationInput, type InteractionRecommendationInput } from './prompts.js';
+import { ticketAnalysisOutputSchema, draftVerificationOutputSchema, clusteringOutputSchema, interactionObservationOutputSchema, interactionRecommendationOutputSchema } from '../../shared/schemas.js';
+import type { TicketAnalysis, DraftVerification, InteractionSignal, SupportApproach } from '../../shared/types.js';
 import { redactText } from '../security/redaction.js';
+import { sanitizeSignals, assertInteractionTextSafe, sanitizeInteractionText } from './interaction/safety.js';
+import { isValidValue } from './interaction/heuristics.js';
+import type { InteractionDimension } from '../../shared/constants.js';
 
 function extractJson(text: string | null): Record<string, unknown> | null {
   if (!text) return null;
@@ -158,6 +161,63 @@ export class LmStudioProvider implements AiProvider {
     return results.map((r) => r.vector);
   }
 
+  /** Stage 1 (interaction spec #35): evidence-backed observation signals only. */
+  async observeInteraction(input: InteractionObservationInput): Promise<{ signals: InteractionSignal[]; customerGoal: string | null; notes: string[]; latencyMs: number; model: string }> {
+    const res = await this.chatJson(INTERACTION_OBSERVATION_SYSTEM, buildInteractionObservationUser(input), { redact: true, maxTokens: 1400 });
+    const parsed = interactionObservationOutputSchema.safeParse(res.json ?? {});
+    if (!parsed.success) {
+      this.lastErr = 'Interaction observation returned an unparseable structure';
+      throw new LmStudioError('The local model did not return a valid interaction observation JSON.', false);
+    }
+    // Safety gate: enum vocabulary + evidence requirement + forbidden-claim scan (spec #7, #8, #55)
+    const signals: InteractionSignal[] = parsed.data.signals
+      .filter((s) => isValidValue(s.dimension as InteractionDimension, s.value))
+      .map((s) => ({
+        dimension: s.dimension,
+        value: s.value,
+        confidence: s.confidence,
+        evidence: s.evidence_excerpt ? { excerpt: s.evidence_excerpt, thread_local_id: s.evidence_thread_local_id ?? null, conversation_local_id: null } : null,
+        source: 'ai' as const
+      }));
+    const sanitized = sanitizeSignals(signals);
+    const goalCheck = assertInteractionTextSafe(parsed.data.customer_goal);
+    const notes = parsed.data.notes.filter((n) => assertInteractionTextSafe(n).ok).slice(0, 6);
+    if (!goalCheck.ok) this.lastErr = 'Interaction goal text contained forbidden claims and was removed';
+    return {
+      signals: sanitized.signals,
+      customerGoal: goalCheck.ok ? parsed.data.customer_goal ?? null : null,
+      notes,
+      latencyMs: res.latencyMs,
+      model: res.model
+    };
+  }
+
+  /** Stage 2 (interaction spec #35): support-approach recommendation from observations. */
+  async recommendSupportApproach(input: InteractionRecommendationInput): Promise<{ recommendation: SupportApproach; latencyMs: number; model: string }> {
+    const res = await this.chatJson(INTERACTION_RECOMMENDATION_SYSTEM, buildInteractionRecommendationUser(input), { redact: true, maxTokens: 900 });
+    const parsed = interactionRecommendationOutputSchema.safeParse(res.json ?? {});
+    if (!parsed.success) {
+      this.lastErr = 'Interaction recommendation returned an unparseable structure';
+      throw new LmStudioError('The local model did not return a valid support-approach JSON.', false);
+    }
+    const d = parsed.data;
+    const clean = (text: string | null | undefined): string | null => (text ? sanitizeInteractionText(text).ok ? text : null : null);
+    const recommendation: SupportApproach = {
+      tone: clean(d.tone),
+      length: d.length ?? null,
+      start_with: clean(d.start_with),
+      then: clean(d.then),
+      avoid: d.avoid.filter((a) => assertInteractionTextSafe(a).ok).slice(0, 8),
+      response_strategy: d.response_strategy.filter((s) => assertInteractionTextSafe(s).ok).slice(0, 8),
+      de_escalation: d.de_escalation,
+      escalation_recommendation: clean(d.escalation_recommendation),
+      why: d.why.filter((w) => assertInteractionTextSafe(w).ok).slice(0, 6),
+      source: 'ai',
+      confidence: 'medium'
+    };
+    return { recommendation, latencyMs: res.latencyMs, model: res.model };
+  }
+
   async rewriteDraft(draft: string, instruction: 'shorten' | 'expand' | 'warmer' | 'more_direct'): Promise<{ text: string; latencyMs: number }> {
     this.client.refreshFromSettings();
     const instructions: Record<typeof instruction, string> = {
@@ -210,6 +270,12 @@ export class DisabledAiProvider implements AiProvider {
     this.reject();
   }
   async extractMemories(): Promise<never> {
+    this.reject();
+  }
+  async observeInteraction(): Promise<never> {
+    this.reject();
+  }
+  async recommendSupportApproach(): Promise<never> {
     this.reject();
   }
   async embed(): Promise<never> {

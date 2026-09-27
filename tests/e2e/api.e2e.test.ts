@@ -275,6 +275,95 @@ describe('AI behaviors without LM Studio (spec #10: app remains useful without A
   });
 });
 
+describe('client interaction intelligence (interaction spec: works without AI)', () => {
+  let slackConvId: number;
+  let customerId: number | null;
+
+  beforeAll(async () => {
+    const list = (await (await fetch(`${baseUrl}/api/conversations?view=all&pageSize=100`)).json()) as { conversations: { id: number; number: number; subject: string | null }[] };
+    const slack = list.conversations.find((c) => (c.subject ?? '').includes('Slack integration stopped posting'));
+    if (!slack) throw new Error('Slack demo conversation missing');
+    slackConvId = slack.id;
+    const detail = (await (await fetch(`${baseUrl}/api/conversations/${slackConvId}`)).json()) as { customer: { id: number } | null };
+    customerId = detail.customer?.id ?? null;
+  });
+
+  it('refresh produces a deterministic interaction card without AI', async () => {
+    const res = await fetch(`${baseUrl}/api/interaction/${slackConvId}/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; ai_enriched: boolean; card: { client_kind: string; current: { signals: { dimension: string; value: string }[] }; recommendation: { response_strategy: string[] } | null } };
+    expect(body.ok).toBe(true);
+    expect(body.ai_enriched).toBe(false); // no LM Studio in the test environment
+    expect(body.card.client_kind).toBe('returning');
+    expect(body.card.current.signals.length).toBeGreaterThan(3);
+    expect(body.card.recommendation?.response_strategy.length).toBeGreaterThan(0);
+  });
+
+  it('GET card + evidence are served with safety labeling', async () => {
+    const res = await fetch(`${baseUrl}/api/interaction/${slackConvId}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { card: { client_kind: string; changes: { dimension: string; direction: string }[]; baseline: unknown }; labels: { note: string } };
+    expect(body.labels.note).toContain('never a psychological assessment');
+    expect(body.card.baseline).not.toBeNull();
+    const detailDecrease = body.card.changes.find((c) => c.dimension === 'detail' && c.direction === 'decrease');
+    const urgencyIncrease = body.card.changes.find((c) => c.dimension === 'urgency' && c.direction === 'increase');
+    expect(detailDecrease).toBeDefined();
+    expect(urgencyIncrease).toBeDefined();
+
+    const evidence = (await (await fetch(`${baseUrl}/api/interaction/${slackConvId}/evidence`)).json()) as { observations: { dimension: string; provenance: string }[] };
+    expect(evidence.observations.length).toBeGreaterThan(0);
+    expect(evidence.observations.every((o) => o.provenance === 'heuristic' || o.provenance === 'ai_generated')).toBe(true);
+  });
+
+  it('customer interaction profile serves timeline, preferences and playbook', async () => {
+    expect(customerId).not.toBeNull();
+    const res = await fetch(`${baseUrl}/api/interaction/profile/${customerId}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { profile: { client_kind: string; timeline: unknown[]; playbook: { historically_successful: string | null } | null; baseline: { observation_count: number } | null } };
+    expect(body.profile.client_kind).toBe('returning');
+    expect(body.profile.timeline.length).toBeGreaterThan(1);
+    expect(body.profile.playbook?.historically_successful).toBeTruthy();
+    expect(body.profile.baseline!.observation_count).toBeGreaterThan(10);
+  });
+
+  it('human override round-trip: set, reflect, clear (spec #22, #56)', async () => {
+    expect(customerId).not.toBeNull();
+    const set = await fetch(`${baseUrl}/api/interaction/profile/${customerId}/override`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field: 'response_preference', value: 'concise', reason: 'e2e: customer asked for short answers' })
+    });
+    expect(set.status).toBe(200);
+    const profile = (await (await fetch(`${baseUrl}/api/interaction/profile/${customerId}`)).json()) as { profile: { preferences: { preference: string; human_override: { value: string; reason: string | null } | null }[] } };
+    const pref = profile.profile.preferences.find((p) => p.preference === 'response_preference');
+    expect(pref?.human_override?.value).toBe('concise');
+
+    const card = (await (await fetch(`${baseUrl}/api/interaction/${slackConvId}`)).json()) as { card: { recommendation: { length: string | null; source: string } } };
+    expect(card.card.recommendation.length).toBe('concise');
+    expect(card.card.recommendation.source).toBe('ai+human-override');
+
+    const clear = await fetch(`${baseUrl}/api/interaction/profile/${customerId}/override/response_preference`, { method: 'DELETE' });
+    expect(clear.status).toBe(200);
+    const after = (await (await fetch(`${baseUrl}/api/interaction/profile/${customerId}`)).json()) as { profile: { preferences: { preference: string; human_override: unknown }[] } };
+    expect(after.profile.preferences.find((p) => p.preference === 'response_preference')?.human_override).toBeNull();
+  });
+
+  it('rejects invalid override payloads with 422', async () => {
+    expect(customerId).not.toBeNull();
+    const res = await fetch(`${baseUrl}/api/interaction/profile/${customerId}/override`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field: 'not_a_real_field', value: '' })
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it('404s for unknown conversations', async () => {
+    const res = await fetch(`${baseUrl}/api/interaction/999999`);
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('settings + queue management (spec #60, #111, #112)', () => {
   it('settings round-trip with safe defaults', async () => {
     const res = await fetch(`${baseUrl}/api/settings`);

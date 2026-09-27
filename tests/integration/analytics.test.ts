@@ -26,11 +26,11 @@ describe('analytics (spec #46-#52, #153)', () => {
   it('computes dashboard counts deterministically with labeled sources', async () => {
     const { analytics } = await setup();
     const d = analytics.dashboard(new Date(Date.now() - 90 * 86400000).toISOString(), new Date().toISOString());
-    expect(d.new_conversations).toBe(11);
+    expect(d.new_conversations).toBe(14);
     expect(d.active_conversations).toBe(5);
-    expect(d.closed_conversations).toBe(4);
+    expect(d.closed_conversations).toBe(7);
     expect(d.unassigned).toBeGreaterThanOrEqual(2);
-    expect(d.replies_sent).toBe(8);
+    expect(d.replies_sent).toBe(11);
     expect(d.source).toEqual(['local']);
     expect(d.ratings.great).toBe(3);
     expect(d.by_mailbox.length).toBe(2);

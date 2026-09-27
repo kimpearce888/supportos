@@ -288,6 +288,20 @@ export class WorkerManager {
       this.ctx.jobsRepo.enqueue('attachments', 'download_recent_attachments', {}, PRIORITY.INDEXING, 2);
     }
     this.ctx.jobsRepo.enqueue('embeddings', 'embed_knowledge_chunks', {}, PRIORITY.INDEXING, 2);
+    // Client Interaction Intelligence: build behavioral baselines from all history
+    // (deterministic — no AI needed) so profiles are populated immediately (spec #59).
+    try {
+      const engine = this.ctx.aiPipeline.interactionEngine();
+      const convs = this.ctx.db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL ORDER BY id').all() as { id: number }[];
+      for (const c of convs) {
+        engine.recordCurrentInteraction(c.id);
+        engine.computeOutcome(c.id);
+      }
+      const customers = this.ctx.db.prepare('SELECT DISTINCT customer_local_id AS cid FROM conversations WHERE customer_local_id IS NOT NULL AND deleted_at IS NULL').all() as { cid: number }[];
+      for (const cu of customers) engine.rebuildBaseline(cu.cid);
+    } catch {
+      /* interaction intelligence never breaks sync */
+    }
     if (this.ctx.settingsRepo.get('ai_enabled', true) && this.ctx.settingsRepo.get('automatic_analysis_enabled', true)) {
       const newConversations = this.ctx.db
         .prepare("SELECT id FROM conversations c WHERE NOT EXISTS (SELECT 1 FROM ai_runs a WHERE a.conversation_id = c.id AND a.type='ticket_analysis' AND a.status='completed') AND c.deleted_at IS NULL ORDER BY id LIMIT 50")
@@ -311,6 +325,12 @@ export class WorkerManager {
         await this.ctx.automation.fireTrigger('customer_reply', conversationLocalId).catch(() => undefined);
         if (this.ctx.settingsRepo.get('automatic_analysis_enabled', true) && this.ctx.settingsRepo.get('ai_enabled', true)) {
           this.ctx.jobsRepo.enqueue('ai', 'analyze_ticket', { conversationId: conversationLocalId }, PRIORITY.ANALYTICS, 2);
+        }
+        // Interaction intelligence: refresh deterministic signals on customer activity (spec #59)
+        try {
+          this.ctx.aiPipeline.interactionEngine().recordCurrentInteraction(conversationLocalId);
+        } catch {
+          /* never break sync */
         }
       }
     } catch {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { INTERACTION_DIMENSIONS, OPERATIONAL_CONFIDENCE_VALUES } from './constants.js';
 
 /** Runtime validation schemas for important boundaries (Help Scout API responses + local API requests). */
 
@@ -472,4 +473,43 @@ export const clusteringOutputSchema = z.object({
       })
     )
     .default([])
+});
+
+// ---------------- Client Interaction Intelligence (interaction spec #34, #35, #7, #55) ----------------
+// Stage 1: observation. Every field is enum-constrained so personality labels and
+// diagnoses are structurally impossible; free-text fields are bounded strings
+// later run through the interaction safety sanitizer.
+
+export const interactionSignalOutputSchema = z.object({
+  dimension: z.enum(INTERACTION_DIMENSIONS),
+  value: z.string().min(1).max(64),
+  confidence: z.enum(OPERATIONAL_CONFIDENCE_VALUES),
+  evidence_excerpt: z.string().min(1).max(500).nullish(),
+  evidence_thread_local_id: z.number().int().nullish()
+});
+
+export const interactionObservationOutputSchema = z.object({
+  signals: z.array(interactionSignalOutputSchema).max(24).default([]),
+  customer_goal: z.string().max(300).nullish(),
+  notes: z.array(z.string().max(300)).default([])
+});
+
+// Stage 2: recommendation (spec #13, #14, #15, #48, #49).
+export const interactionRecommendationOutputSchema = z.object({
+  tone: z.string().max(120).nullish(),
+  length: z.enum(['concise', 'moderate', 'detailed']).nullish(),
+  start_with: z.string().max(300).nullish(),
+  then: z.string().max(300).nullish(),
+  avoid: z.array(z.string().max(200)).max(8).default([]),
+  response_strategy: z.array(z.string().max(200)).max(8).default([]),
+  de_escalation: z.boolean().default(false),
+  escalation_recommendation: z.string().max(300).nullish(),
+  why: z.array(z.string().max(300)).max(6).default([])
+});
+
+// API request bodies
+export const interactionOverrideSchema = z.object({
+  field: z.enum(['response_preference', 'tone', 'detail', 'technical_language', 'directness']),
+  value: z.string().min(1).max(120),
+  reason: z.string().max(500).nullish()
 });

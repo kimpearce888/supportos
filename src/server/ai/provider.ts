@@ -1,5 +1,5 @@
-import type { TicketAnalysis, DraftVerification, AiSourceRef } from '../../shared/types.js';
-import type { EvidenceContext } from './prompts.js';
+import type { TicketAnalysis, DraftVerification, AiSourceRef, InteractionSignal, SupportApproach } from '../../shared/types.js';
+import type { EvidenceContext, InteractionObservationInput, InteractionRecommendationInput } from './prompts.js';
 
 /**
  * AI provider interface (spec #28): business logic never depends on the AI backend.
@@ -17,6 +17,8 @@ export interface AiProvider {
   clusterIssues(conversations: { number: number; subject: string; preview: string; tags: string[] }[]): Promise<{ clusters: { title: string; summary: string; category: string | null; product: string | null; feature: string | null; conversation_numbers: number[] }[]; latencyMs: number }>;
   generateReportNarrative(reportName: string, facts: Record<string, unknown>): Promise<{ narrative: string; latencyMs: number }>;
   extractMemories(customerName: string, threads: { author: string; text: string }[]): Promise<{ memories: { key: string; value: string; confidence: 'high' | 'medium' | 'low' }[]; latencyMs: number }>;
+  observeInteraction(input: InteractionObservationInput): Promise<{ signals: InteractionSignal[]; customerGoal: string | null; notes: string[]; latencyMs: number; model: string }>;
+  recommendSupportApproach(input: InteractionRecommendationInput): Promise<{ recommendation: SupportApproach; latencyMs: number; model: string }>;
   embed(texts: string[]): Promise<number[][]>;
   rewriteDraft(draft: string, instruction: 'shorten' | 'expand' | 'warmer' | 'more_direct'): Promise<{ text: string; latencyMs: number }>;
 }

@@ -1,7 +1,7 @@
 /** Shared constants */
 
 export const APP_NAME = 'SupportOS';
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 /** Help Scout API bases (documented, current) */
 export const HS_API_BASE = 'https://api.helpscout.net';
@@ -54,8 +54,47 @@ export const PROMPT_VERSIONS = {
   DRAFT_VERIFICATION: 'draft_verification_v1',
   ISSUE_CLUSTER: 'issue_cluster_v1',
   REPORT_NARRATIVE: 'report_narrative_v1',
-  MEMORY_EXTRACTION: 'memory_extraction_v1'
+  MEMORY_EXTRACTION: 'memory_extraction_v1',
+  INTERACTION_OBSERVATION: 'interaction_observation_v1',
+  INTERACTION_RECOMMENDATION: 'interaction_recommendation_v1'
 } as const;
+
+// ---------------------------------------------------------------- Client Interaction Intelligence
+// Observable communication dimensions ONLY (interaction spec #6, #7, #55).
+// These enums are the complete vocabulary: the AI can never produce a value
+// outside them, so personality labels / diagnoses are impossible by schema.
+
+export const INTERACTION_DIMENSIONS = [
+  'tone',
+  'directness',
+  'detail',
+  'technical_language',
+  'question_structure',
+  'urgency',
+  'frustration',
+  'expectation',
+  'response_preference'
+] as const;
+export type InteractionDimension = (typeof INTERACTION_DIMENSIONS)[number];
+
+export const TONE_VALUES = ['neutral', 'friendly', 'frustrated', 'appreciative', 'disappointed', 'confrontational', 'urgent', 'uncertain'] as const;
+export const DIRECTNESS_VALUES = ['indirect', 'conversational', 'direct', 'highly_direct'] as const;
+export const DETAIL_VALUES = ['very_low', 'low', 'moderate', 'high', 'very_high'] as const;
+export const TECHNICAL_VALUES = ['non_technical', 'mixed', 'technical', 'highly_technical'] as const;
+export const QUESTION_STRUCTURE_VALUES = ['single_question', 'multiple_questions', 'troubleshooting_oriented', 'confirmation_oriented', 'explanation_oriented'] as const;
+export const URGENCY_VALUES = ['none', 'low', 'moderate', 'high'] as const;
+export const FRUSTRATION_VALUES = ['none', 'possible', 'moderate', 'strong'] as const;
+export const EXPECTATION_VALUES = ['information', 'explanation', 'troubleshooting', 'action', 'immediate_resolution', 'escalation', 'confirmation'] as const;
+export const RESPONSE_PREFERENCE_VALUES = ['concise', 'detailed', 'step_by_step', 'technical', 'conversational', 'outcome_focused'] as const;
+
+export const OPERATIONAL_CONFIDENCE_VALUES = ['high', 'medium', 'low', 'unknown'] as const;
+
+/** Preference requires repeated evidence before it counts as a pattern (spec #39, #40). */
+export const INTERACTION_MIN_OBSERVATIONS_FOR_PREFERENCE = 3;
+/** Recency weighting half-life in days (spec #23: recent behavior dominates). */
+export const INTERACTION_RECENCY_HALF_LIFE_DAYS = 90;
+/** Change magnitude above which a dimension change is "significant" (0-1 scale). */
+export const INTERACTION_CHANGE_SIGNIFICANCE_THRESHOLD = 0.34;
 
 /** Visibility labels (section 73) */
 export type Visibility = 'customer_safe' | 'internal_only' | 'uncertain';

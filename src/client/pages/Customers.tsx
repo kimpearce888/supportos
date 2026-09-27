@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Search } from 'lucide-react';
 import { api, qs } from '../api/client.js';
 import { Spinner, EmptyState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
+import { InteractionProfileSection } from '../components/common/InteractionProfile.js';
 import type { CustomerSummary } from '../../shared/types.js';
 
 export function CustomersPage(): ReactNode {
@@ -137,6 +138,7 @@ export function CustomerDetailPage(): ReactNode {
           ))}
         </div>
       </div>
+      <InteractionProfileSection customerId={c.id} />
       <div className="card mt-16">
         <h3 className="card-title">Conversations</h3>
         <table className="table">

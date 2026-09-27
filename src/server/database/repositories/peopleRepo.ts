@@ -97,7 +97,7 @@ export class PeopleRepository {
   }
 
   getCustomerByRemoteId(remoteId: number): CustomerSummary | undefined {
-    return this.db
+    const row = this.db
       .prepare(
         `SELECT c.id, c.remote_id, c.first_name, c.last_name, c.photo_url, c.job_title,
            c.remote_created_at, c.remote_updated_at,
@@ -112,7 +112,8 @@ export class PeopleRepository {
          FROM customers c LEFT JOIN organizations o ON o.id = c.organization_id
          WHERE c.remote_id = ? AND c.deleted_at IS NULL`
       )
-      .get(remoteId) as CustomerSummary | undefined;
+      .get(remoteId) as (CustomerSummary & { emails: string | null; phones: string | null }) | undefined;
+    return row ? normalizeCustomer(row) : undefined;
   }
 
   getCustomerByLocalId(localId: number): CustomerSummary | undefined {
@@ -148,8 +149,8 @@ export class PeopleRepository {
          ORDER BY c.last_name, c.first_name
          LIMIT @limit OFFSET @offset`
       )
-      .all({ q: `%${query}%`, limit: pageSize, offset: (page - 1) * pageSize }) as CustomerSummary[];
-    return { customers, total };
+      .all({ q: `%${query}%`, limit: pageSize, offset: (page - 1) * pageSize }) as (CustomerSummary & { emails: string | null; phones: string | null })[];
+    return { customers: customers.map(normalizeCustomer), total };
   }
 
   getCustomerProperties(localId: number): { name: string; value: string | null }[] {
@@ -242,7 +243,7 @@ export class PeopleRepository {
   }
 
   getOrganizationCustomers(localId: number): CustomerSummary[] {
-    return this.db
+    const rows = this.db
       .prepare(
         `SELECT c.id, c.remote_id, c.first_name, c.last_name, c.photo_url, c.job_title, c.remote_created_at, c.remote_updated_at,
            (SELECT GROUP_CONCAT(ce.value) FROM customer_emails ce WHERE ce.customer_id = c.id) AS emails,
@@ -253,7 +254,8 @@ export class PeopleRepository {
          FROM customers c JOIN organizations o ON o.id = c.organization_id
          WHERE c.organization_id = ? AND c.deleted_at IS NULL ORDER BY c.last_name`
       )
-      .all(localId) as CustomerSummary[];
+      .all(localId) as (CustomerSummary & { emails: string | null; phones: string | null })[];
+    return rows.map(normalizeCustomer);
   }
 
   // ---------------- Ratings ----------------
@@ -285,4 +287,13 @@ export class PeopleRepository {
       .prepare('SELECT rating, comments, remote_created_at AS created_at, conversation_id FROM ratings WHERE customer_local_id = ? ORDER BY remote_created_at DESC LIMIT 50')
       .all(customerLocalId) as { rating: string; comments: string | null; created_at: string | null; conversation_id: number | null }[];
   }
+}
+
+/**
+ * GROUP_CONCAT returns a comma-joined STRING (or null); the API contract and UI
+ * expect arrays. Normalize every customer row once, here, at the repository boundary.
+ */
+function normalizeCustomer(row: CustomerSummary & { emails: string | null; phones: string | null }): CustomerSummary {
+  const split = (v: string | null): string[] => (v ? v.split(',').map((s) => s.trim()).filter(Boolean) : []);
+  return { ...row, emails: split(row.emails ?? (Array.isArray(row.emails) ? (row.emails as unknown as string[]).join(',') : null)), phones: split(row.phones ?? (Array.isArray(row.phones) ? (row.phones as unknown as string[]).join(',') : null)) };
 }

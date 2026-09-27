@@ -30,7 +30,7 @@ describe('initial synchronization (spec #8, #10)', () => {
     expect(ref.getUsers().length).toBe(3);
     expect(ref.getSystemUsers().length).toBe(1);
     expect(ref.getTeams().length).toBe(2);
-    expect(ref.getTags().length).toBe(10);
+    expect(ref.getTags().length).toBe(13);
     expect(ref.getInboxFields().length).toBeGreaterThanOrEqual(3);
     expect(ref.getSavedReplies().length).toBe(5);
     expect(ref.getWorkflows().length).toBe(3);
@@ -42,15 +42,15 @@ describe('initial synchronization (spec #8, #10)', () => {
     // conversations + threads
     const conv = new ConversationRepository(db);
     const all = conv.listConversations({ view: 'all', pageSize: 100 });
-    expect(all.total).toBe(11); // 12 minus the merged one
+    expect(all.total).toBe(14); // 15 (12 + 3 Ravi history tickets) minus the merged one
     const withThreads = all.conversations.filter((c) => c.thread_count > 0);
-    expect(withThreads.length).toBe(11);
+    expect(withThreads.length).toBe(14);
     // ratings (fake provider provides them)
     const ratings = (db.prepare('SELECT COUNT(*) AS n FROM ratings').get() as { n: number }).n;
     expect(ratings).toBe(4);
     // raw JSON retained (spec #16)
     const raw = (db.prepare('SELECT COUNT(*) AS n FROM conversations WHERE raw_json IS NOT NULL AND raw_json_hash IS NOT NULL').get() as { n: number }).n;
-    expect(raw).toBe(11);
+    expect(raw).toBe(14);
     closeDatabase();
     void provider;
   });

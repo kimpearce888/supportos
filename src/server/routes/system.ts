@@ -1,3 +1,4 @@
+import { APP_VERSION } from '../../shared/constants.js';
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
 import { tableStats } from '../database/connection.js';
@@ -19,7 +20,7 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
     })();
     const healthy = dbOk;
     reply.code(healthy ? 200 : 503);
-    return { status: healthy ? 'ok' : 'error', database: dbOk, version: '1.0.0', time: new Date().toISOString() };
+    return { status: healthy ? 'ok' : 'error', database: dbOk, version: APP_VERSION, time: new Date().toISOString() };
   });
 
   app.get('/health/detailed', async (request, reply) => {
@@ -61,7 +62,7 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
 
     const result = {
       status: dbOk ? (helpscout.connected || ctx.provider.kind === 'fake' ? 'ok' : 'degraded') : 'error',
-      version: '1.0.0',
+      version: APP_VERSION,
       time: new Date().toISOString(),
       database: { ok: dbOk, path: ctx.dbStats().path, size_bytes: ctx.dbStats().size_bytes, migrations_applied: migrationsApplied(ctx.db), wal: true },
       helpscout: { connected: helpscout.connected, demo_mode: ctx.provider.kind === 'fake', error: helpscout.error ?? null, oauth: ctx.realProvider ? ctx.realProvider.auth.status(false) : { configured: false, authenticated: true, demoMode: true, expiresAt: null } },
