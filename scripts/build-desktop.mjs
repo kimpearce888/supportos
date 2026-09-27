@@ -64,9 +64,12 @@ function copyDir(src, dest) {
 
 // ---------------------------------------------------------------- 1. client
 log('client', 'building dist/client (vite)');
-// Windows: npm is npm.cmd and execFileSync refuses .cmd without a shell
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-execFileSync(npmCmd, ['run', 'build:client'], { cwd: ROOT, stdio: 'inherit' });
+// Run vite's bin with the current Node directly: no npm.cmd/shell quirks on Windows
+// (Node >= 20 refuses .cmd without a shell), identical behavior on every OS.
+execFileSync(process.execPath, [path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], {
+  cwd: ROOT,
+  stdio: 'inherit'
+});
 rmrf(path.join(RESOURCES, 'client'));
 copyDir(path.join(ROOT, 'dist', 'client'), path.join(RESOURCES, 'client'));
 log('client', `copied ${fs.readdirSync(path.join(RESOURCES, 'client')).length} entries`);

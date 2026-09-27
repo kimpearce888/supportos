@@ -56,7 +56,7 @@ pub fn run() {
         .expect("error while running SupportOS")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
-                if let Some(child) = app.state::<ServerState>().child.lock().unwrap().take() {
+                if let Some(mut child) = app.state::<ServerState>().child.lock().unwrap().take() {
                     let _ = child.kill();
                 }
             }
