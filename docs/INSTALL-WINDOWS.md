@@ -60,26 +60,27 @@ Install from https://lmstudio.ai, download a chat model (e.g. a 7B instruct mode
 
 ## 8. Optional: Tauri desktop build
 
-The web application is fully functional on its own; the Tauri shell is optional packaging.
+The web application is fully functional on its own; the Tauri shell is optional packaging. **Since v1.3.0 the easiest route is downloading the MSI from the [releases page](https://github.com/kimpearce888/supportos/releases) — it bundles the Node runtime, so nothing else is needed.**
 
 ```powershell
 # one-time setup
 winget install Rustlang.Rustup        # or https://rustup.rs
-npm install -g @tauri-apps/cli
 
-# develop the desktop shell
-tauri dev
+# build everything (client + server bundle + bundled Node runtime + installers)
+npm ci
+npm run desktop:build
+# → installers under src-tauri\target\release\bundle\ (msi\ + nsis\)
 
-# produce installers (MSI / NSIS) under src-tauri/target/release/bundle/
-tauri build
+# develop the desktop shell (talks to the Vite dev server)
+npm run desktop:dev
 ```
 
 Notes:
 
-- `src-tauri/tauri.conf.json` builds the frontend (`npm run build`) and serves `dist/client`
-- The shell launches the Node backend as a sidecar process and stores data under `%APPDATA%/com.supportos.local`
-- For a fully self-contained installer (no system Node), bundle the server as a single executable (e.g. `pkg`, `nexe`, or Node's SEA) and reference it from `src-tauri/src/main.rs` (`get_node_binary()` already prefers `supportos-server.exe`)
+- `scripts/build-desktop.mjs` assembles `src-tauri/resources/` (esbuild server bundle, `better-sqlite3`, the built client and a stock official Node runtime downloaded from nodejs.org, version-matched to your Node so the native ABI fits)
+- The shell launches the bundled Node backend as a sidecar process on a free port and stores data under `%APPDATA%\com.supportos.local`
 - Missing Rust/native dependencies never break the normal web build (`npm run build` / `npm run start` work without them)
+- Full walkthrough of the packaging design: [docs/DESKTOP.md](DESKTOP.md)
 
 ## Daily use
 

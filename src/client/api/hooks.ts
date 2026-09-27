@@ -1,13 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client.js';
-import type { ConversationSummary, ConversationListResponse, DashboardStats } from '../../shared/types.js';
+import type { ConversationSummary, ConversationListResponse, DashboardStats, DocsCollectionInfo, DocsArticleSummary, DocsArticleDetail, DocsStats } from '../../shared/types.js';
 
-export function useConversations(view: string, page: number, tag?: string | null) {
+export function useConversations(view: string, page: number, tag?: string | null, channel?: string | null) {
   return useQuery({
-    queryKey: ['conversations', view, page, tag ?? null],
+    queryKey: ['conversations', view, page, tag ?? null, channel ?? null],
     queryFn: () =>
       api.get<ConversationListResponse>(
-        `/api/conversations?view=${encodeURIComponent(view)}&page=${page}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}`
+        `/api/conversations?view=${encodeURIComponent(view)}&page=${page}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}${channel ? `&channel=${encodeURIComponent(channel)}` : ''}`
       )
   });
 }
@@ -60,10 +60,13 @@ export function useConversationDetail(id: number | null) {
   };
 }
 
-export function useDashboard(days: number) {
+export function useDashboard(days: number, mailboxIds?: number[] | null, channel?: string | null) {
   return useQuery({
-    queryKey: ['dashboard', days],
-    queryFn: () => api.get<DashboardStats>(`/api/analytics/dashboard?days=${days}`)
+    queryKey: ['dashboard', days, (mailboxIds ?? []).join(',') || null, channel ?? null],
+    queryFn: () =>
+      api.get<DashboardStats>(
+        `/api/analytics/dashboard?days=${days}${mailboxIds && mailboxIds.length > 0 ? `&mailboxIds=${mailboxIds.join(',')}` : ''}${channel ? `&channel=${encodeURIComponent(channel)}` : ''}`
+      )
   });
 }
 
@@ -73,6 +76,37 @@ export function useReference() {
     tags: useQuery({ queryKey: ['tags-all'], queryFn: () => api.get<{ id: number; name: string; ticket_count: number }[]>('/api/tags') }),
     savedReplies: useQuery({ queryKey: ['saved-replies'], queryFn: () => api.get<{ saved_replies: { id: number; name: string; preview: string; text: string | null }[] }>('/api/saved-replies') })
   };
+}
+
+// ---------------- Docs mirror (v1.3.0) ----------------
+
+export function useDocsStats() {
+  return useQuery({ queryKey: ['docs', 'stats'], queryFn: () => api.get<DocsStats>('/api/docs/stats') });
+}
+
+export function useDocsCollections() {
+  return useQuery({
+    queryKey: ['docs', 'collections'],
+    queryFn: () => api.get<{ collections: DocsCollectionInfo[]; docs_sync_available: boolean }>('/api/docs/collections')
+  });
+}
+
+export function useDocsArticles(collectionId: number | null, q: string, status?: string | null) {
+  return useQuery({
+    queryKey: ['docs', 'articles', collectionId, q, status ?? null],
+    queryFn: () =>
+      api.get<{ articles: DocsArticleSummary[]; total: number; page: number; page_size: number }>(
+        `/api/docs/articles?page=1&pageSize=50${collectionId ? `&collectionId=${collectionId}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}${status ? `&status=${encodeURIComponent(status)}` : ''}`
+      )
+  });
+}
+
+export function useDocsArticle(id: number | null) {
+  return useQuery({
+    queryKey: ['docs', 'article', id],
+    queryFn: () => api.get<{ article: DocsArticleDetail }>(`/api/docs/articles/${id}`),
+    enabled: id != null && id > 0
+  });
 }
 
 // ---------------- Client Interaction Intelligence ----------------

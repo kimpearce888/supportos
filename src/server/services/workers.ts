@@ -2,7 +2,8 @@ import type { AppContext } from './context.js';
 import type { SyncCoordinator } from '../sync/coordinator.js';
 import type { AiPipeline } from '../ai/pipeline.js';
 import { ConversationOperations } from './operations.js';
-import { PRIORITY } from '../../shared/constants.js';
+import { PRIORITY, RATINGS_REFRESH_DEFAULT_SECONDS } from '../../shared/constants.js';
+import { serverEventBus } from './eventBus.js';
 import { createLogger, type StructuredLogger } from '../config/logger.js';
 
 /**
@@ -21,6 +22,7 @@ export class WorkerManager {
   private running = false;
   private processing = false;
   private stopped = false;
+  private refreshingRatings = false;
   private lastAiHealthCheck: { at: string; connected: boolean } | null = null;
 
   constructor(private ctx: AppContext) {
@@ -55,10 +57,21 @@ export class WorkerManager {
     const syncMinutes = Number.isFinite(rawSyncMinutes) ? Math.min(1440, Math.max(1, rawSyncMinutes)) : 5;
     const syncTimer = setInterval(() => void this.autoSync(), syncMinutes * 60_000);
     this.timers.push(syncTimer);
+    // Real-time ratings refresh (v1.3.0): a LIGHTWEIGHT loop, decoupled from the
+    // full sync, that re-checks ratings and pushes new ones over SSE immediately.
+    // The real provider has no list-ratings endpoint (webhooks are the primary
+    // path there); the watcher still runs - it is cheap, and demo/fake mode plus
+    // any future list endpoint light up without configuration.
+    const rawRatingsSeconds = Number(this.ctx.settingsRepo.get('ratings_refresh_seconds', RATINGS_REFRESH_DEFAULT_SECONDS));
+    const ratingsSeconds = Number.isFinite(rawRatingsSeconds) ? Math.min(3600, Math.max(0, Math.trunc(rawRatingsSeconds))) : RATINGS_REFRESH_DEFAULT_SECONDS;
+    if (ratingsSeconds > 0) {
+      const ratingsTimer = setInterval(() => void this.refreshRatings(), ratingsSeconds * 1000);
+      this.timers.push(ratingsTimer);
+    }
     // Maintenance: backup + cluster trends + cleanup every 6h
     const maintenanceTimer = setInterval(() => void this.maintenance(), 6 * 3600_000);
     this.timers.push(maintenanceTimer);
-    this.logger.info('Background workers started', { operation: 'start', sync_interval_minutes: syncMinutes });
+    this.logger.info('Background workers started', { operation: 'start', sync_interval_minutes: syncMinutes, ratings_refresh_seconds: ratingsSeconds });
   }
 
   stop(): void {
@@ -82,6 +95,55 @@ export class WorkerManager {
       this.logger.debug('Incremental sync completed', { operation: 'incremental_sync' });
     } catch (e) {
       this.logger.warn('Incremental sync failed', { operation: 'incremental_sync', error: String(e) });
+    }
+  }
+
+  /**
+   * Ratings-only refresh (real-time path, v1.3.0): fetch ratings from the
+   * provider, upsert, and emit rating-received for every NEW rating so SSE
+   * subscribers (dashboard) update within seconds instead of waiting for a
+   * full sync pass. Failures are logged and never retried within the tick -
+   * the next interval picks them up.
+   */
+  private async refreshRatings(): Promise<void> {
+    if (this.stopped || this.refreshingRatings) return;
+    this.refreshingRatings = true;
+    try {
+      const ratings = await this.ctx.provider.listAllRatings();
+      let fresh = 0;
+      for (const r of ratings) {
+        const convRow = r.conversationId ? this.ctx.conversationRepo.getConversationByRemoteId(r.conversationId) : undefined;
+        const inserted = this.ctx.peopleRepo.upsertRating({
+          remote_id: r.remoteId,
+          conversation_local_id: convRow?.id ?? null,
+          rating: r.rating,
+          comments: r.comments,
+          customer_local_id: r.customerId ? this.ctx.referenceRepo.getLocalId('customers', r.customerId) : null,
+          user_local_id: r.userId ? this.ctx.referenceRepo.getLocalId('users', r.userId) : null,
+          createdAt: r.createdAt,
+          raw: r
+        });
+        if (inserted) {
+          fresh++;
+          serverEventBus.emit('rating-received', {
+            rating: r.rating,
+            conversationId: convRow?.id ?? null,
+            conversationNumber: convRow?.number ?? null,
+            customerId: r.customerId ? this.ctx.referenceRepo.getLocalId('customers', r.customerId) : null,
+            customerName: r.customerName ?? null,
+            comments: r.comments,
+            at: new Date().toISOString()
+          });
+        }
+      }
+      if (fresh > 0) {
+        serverEventBus.emit('ratings-refreshed', { processed: ratings.length, fresh, at: new Date().toISOString() });
+        this.logger.info('Ratings refresh pushed new ratings', { operation: 'ratings_refresh', fresh, processed: ratings.length });
+      }
+    } catch (e) {
+      this.logger.warn('Ratings refresh failed', { operation: 'ratings_refresh', error: String(e) });
+    } finally {
+      this.refreshingRatings = false;
     }
   }
 

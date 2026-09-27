@@ -1,12 +1,13 @@
 import { type ReactNode, useEffect } from 'react';
 import { Routes, Route, NavLink, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Inbox, Search, Users, Building2, Bot, AlertTriangle, BookOpen,
+  LayoutDashboard, Inbox, Search, Users, Building2, Bot, AlertTriangle, BookOpen, BookMarked,
   BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command
 } from 'lucide-react';
 import { useUiStore } from './state/uiStore.js';
 import { Toasts } from './components/common/overlays.js';
 import { CommandPalette } from './components/common/CommandPalette.js';
+import { ServerEventsBridge } from './api/events.js';
 import { DashboardPage } from './pages/Dashboard.js';
 import { InboxPage } from './pages/Inbox.js';
 import { SearchPage } from './pages/SearchPage.js';
@@ -15,6 +16,7 @@ import { OrganizationsPage, OrganizationDetailPage } from './pages/Organizations
 import { AiCenterPage } from './pages/AiCenter.js';
 import { IssuesPage } from './pages/Issues.js';
 import { KnowledgePage } from './pages/Knowledge.js';
+import { DocsPage } from './pages/Docs.js';
 import { ReportsPage } from './pages/Reports.js';
 import { AutomationPage } from './pages/Automation.js';
 import { SyncHealthPage } from './pages/SyncHealth.js';
@@ -118,6 +120,7 @@ export function App(): ReactNode {
         <NavItem to="/ai" icon={<Bot />} label="AI Center" />
         <NavItem to="/issues" icon={<AlertTriangle />} label="Issues" />
         <NavItem to="/knowledge" icon={<BookOpen />} label="Knowledge" />
+        <NavItem to="/docs" icon={<BookMarked />} label="Docs" />
         <div className="nav-section">Operations</div>
         <NavItem to="/reports" icon={<BarChart3 />} label="Reports" />
         <NavItem to="/automation" icon={<Workflow />} label="Automation" />
@@ -146,6 +149,7 @@ export function App(): ReactNode {
           <Route path="/ai" element={<AiCenterPage />} />
           <Route path="/issues" element={<IssuesPage />} />
           <Route path="/knowledge" element={<KnowledgePage />} />
+          <Route path="/docs" element={<DocsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/automation" element={<AutomationPage />} />
           <Route path="/sync-health" element={<SyncHealthPage />} />
@@ -155,6 +159,7 @@ export function App(): ReactNode {
         </Routes>
       </div>
       <Toasts />
+      <ServerEventsBridge />
       {commandPaletteOpen ? <CommandPalette /> : null}
       <div className="shortcut-bar" aria-hidden="true">
         <span><span className="kbd">⌘K</span> search</span>

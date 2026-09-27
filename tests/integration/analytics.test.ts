@@ -26,15 +26,18 @@ describe('analytics (spec #46-#52, #153)', () => {
   it('computes dashboard counts deterministically with labeled sources', async () => {
     const { analytics } = await setup();
     const d = analytics.dashboard(new Date(Date.now() - 90 * 86400000).toISOString(), new Date().toISOString());
-    expect(d.new_conversations).toBe(14);
-    expect(d.active_conversations).toBe(5);
-    expect(d.closed_conversations).toBe(7);
+    expect(d.new_conversations).toBe(20);
+    expect(d.active_conversations).toBe(6);
+    expect(d.closed_conversations).toBe(12);
     expect(d.unassigned).toBeGreaterThanOrEqual(2);
-    expect(d.replies_sent).toBe(11);
+    expect(d.replies_sent).toBe(16);
     expect(d.source).toEqual(['local']);
-    expect(d.ratings.great).toBe(3);
+    expect(d.ratings.great).toBe(5);
     expect(d.by_mailbox.length).toBe(2);
     expect(d.by_tag.some((t) => t.name === 'timezone')).toBe(true);
+    // v1.3.0: channel split (email vs Beacon chat) is part of the dashboard
+    expect(d.by_channel.some((c) => c.channel === 'chat' && c.count === 6)).toBe(true);
+    expect(d.by_channel.some((c) => c.channel === 'email')).toBe(true);
   });
 
   it('first response time is computed from thread data', async () => {

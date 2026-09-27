@@ -130,6 +130,9 @@ export interface HsConversation {
   remoteId: number;
   number: number;
   type: string | null;
+  /** Source attribution (v3 `source` object): e.g. type='chat', via='beacon' for Beacon chats. Optional: older/v2-style data may not carry it. */
+  sourceType?: string | null;
+  sourceVia?: string | null;
   folderId: number | null;
   status: 'active' | 'pending' | 'closed' | 'spam';
   state: string | null;
@@ -195,6 +198,41 @@ export interface HsUserStatus {
   mailboxStatuses: Record<string, string>;
 }
 
+// ------- Docs API (docsapi.helpscout.net) -------
+
+export interface HsDocCollection {
+  remoteId: number;
+  name: string;
+  slug: string | null;
+  description: string | null;
+  visibility: string | null;
+  articleCount: number | null;
+}
+
+export interface HsDocCategory {
+  remoteId: number;
+  collectionId: number;
+  name: string;
+  slug: string | null;
+  order: number | null;
+}
+
+export interface HsDocArticle {
+  remoteId: number;
+  collectionId: number;
+  categoryId: number | null;
+  number: number | null;
+  slug: string | null;
+  name: string;
+  status: 'published' | 'draft' | 'internal' | null;
+  text: string | null;
+  /** Optional on the wire; derived from text when absent. */
+  preview?: string | null;
+  views: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
 // ------- Read query types -------
 
 export interface ConversationQuery {
@@ -213,6 +251,11 @@ export interface CustomerQuery {
   modifiedSince?: string;
   cursor?: string | null;
   pageSize?: number;
+}
+
+export interface ChatSessionQuery {
+  mailboxId?: number;
+  modifiedSince?: string;
 }
 
 export interface Page<T> {
@@ -293,6 +336,21 @@ export interface HelpScoutProvider {
   listConversations(query: ConversationQuery): Promise<Page<HsConversation>>;
   getConversation(conversationId: number): Promise<HsConversation | null>;
   listThreads(conversationId: number): Promise<HsThread[]>;
+
+  // Chat (Beacon) sessions
+  /**
+   * Chat sessions: Help Scout surfaces Beacon chats as conversations with
+   * type='chat' and source={type:'chat', via:'beacon'}. The conversations
+   * endpoint has no documented type filter, so implementations page the
+   * conversation list and filter locally (honest capability note).
+   */
+  listChatSessions(query?: ChatSessionQuery): Promise<HsConversation[]>;
+
+  // Docs (docsapi.helpscout.net - separate Docs API key)
+  /** Collections, categories and articles from the Docs API. Without a Docs API key the real provider returns [] (honest capability). */
+  listDocCollections(): Promise<HsDocCollection[]>;
+  listDocCategories(collectionId: number): Promise<HsDocCategory[]>;
+  listDocArticles(collectionId: number): Promise<HsDocArticle[]>;
 
   // Ratings
   getRating(ratingId: number): Promise<HsRating | null>;

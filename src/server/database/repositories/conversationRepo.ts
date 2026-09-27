@@ -9,6 +9,7 @@ interface ConversationV3 {
   number?: number;
   threads?: number;
   type?: string | null;
+  source?: { type?: string | null; via?: string | null } | null;
   folderId?: number | null;
   status?: string | null;
   state?: string | null;
@@ -54,6 +55,8 @@ interface ThreadV3 {
 export interface InboxViewParams {
   view: string;
   mailboxId?: number | null;
+  /** Channel filter: 'email' or 'chat' (Beacon); undefined = all channels. */
+  channel?: 'email' | 'chat' | null;
   page?: number;
   pageSize?: number;
   assigneeLocalId?: number | null;
@@ -89,14 +92,16 @@ export class ConversationRepository {
 
     this.db
       .prepare(
-        `INSERT INTO conversations (remote_id, number, subject, preview, status, state, type, mailbox_local_id, folder_local_id,
+        `INSERT INTO conversations (remote_id, number, subject, preview, status, state, type, source_type, source_via, mailbox_local_id, folder_local_id,
            customer_local_id, assignee_local_id, assigned_team_local_id, closed_at, snoozed_until, thread_count, hs_url,
            remote_created_at, remote_updated_at, first_activity_at, last_activity_at, raw_json, raw_json_hash, last_seen_at, last_synced_at)
-         VALUES (@rid, @number, @subject, @preview, @status, @state, @type, @mailbox, @folder, @customer, @assignee, @team,
+         VALUES (@rid, @number, @subject, @preview, @status, @state, @type, @sourceType, @sourceVia, @mailbox, @folder, @customer, @assignee, @team,
            @closedAt, @snoozedUntil, @threadCount, @hsUrl, @rc, @ru, @firstActivity, @lastActivity, @raw, @hash, @seen, @synced)
          ON CONFLICT(remote_id) DO UPDATE SET
            number=excluded.number, subject=excluded.subject, preview=excluded.preview, status=excluded.status, state=excluded.state,
-           type=excluded.type, mailbox_local_id=excluded.mailbox_local_id, folder_local_id=excluded.folder_local_id,
+           type=excluded.type, source_type=COALESCE(excluded.source_type, conversations.source_type),
+           source_via=COALESCE(excluded.source_via, conversations.source_via),
+           mailbox_local_id=excluded.mailbox_local_id, folder_local_id=excluded.folder_local_id,
            customer_local_id=excluded.customer_local_id, assignee_local_id=excluded.assignee_local_id,
            assigned_team_local_id=excluded.assigned_team_local_id, closed_at=excluded.closed_at, snoozed_until=excluded.snoozed_until,
            thread_count=excluded.thread_count, hs_url=excluded.hs_url, remote_created_at=excluded.remote_created_at,
@@ -114,6 +119,8 @@ export class ConversationRepository {
         status: this.mapStatus(c.status),
         state: c.state ?? 'published',
         type: c.type ?? null,
+        sourceType: c.source?.type ?? null,
+        sourceVia: c.source?.via ?? null,
         mailbox: mailboxLocal,
         folder: folderLocal,
         customer: customerLocal,
@@ -244,6 +251,10 @@ export class ConversationRepository {
       where.push('c.mailbox_local_id = @mailbox');
       args.mailbox = params.mailboxId;
     }
+    if (params.channel) {
+      where.push("c.type = @channel");
+      args.channel = params.channel;
+    }
     if (params.tag) {
       where.push('EXISTS (SELECT 1 FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = c.id AND t.name = @tag COLLATE NOCASE)');
       args.tag = params.tag;
@@ -283,6 +294,8 @@ export class ConversationRepository {
       subject: r.subject ?? '(no subject)',
       preview: r.preview ?? '',
       status: r.status as ConversationSummary['status'],
+      type: r.type ?? null,
+      source_via: r.source_via ?? null,
       mailbox_id: r.mailbox_local_id ?? 0,
       mailbox_name: mailbox?.name ?? null,
       customer_id: r.customer_local_id,

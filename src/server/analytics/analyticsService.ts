@@ -1,12 +1,22 @@
 import type { DB } from '../database/connection.js';
-import type { DashboardStats, MetricPoint, AiAnalytics, IssueRadarAlert, DocGap, AnswerReuseCandidate, ReportDefinitionInfo } from '../../shared/types.js';
+import type { DashboardStats, MetricPoint, AiAnalytics, IssueRadarAlert, DocGap, AnswerReuseCandidate, ReportDefinitionInfo, MailboxComparisonRow } from '../../shared/types.js';
 import { AnalyticsRepository } from '../database/repositories/analyticsRepo.js';
 import { IssueRepository } from '../database/repositories/issueRepo.js';
 import { AiRepository } from '../database/repositories/aiRepo.js';
 
+export interface DashboardScope {
+  /** Local mailbox ids to include; null/undefined = all mailboxes. */
+  mailboxLocalIds?: number[] | null;
+  /** Channel filter: 'email' or 'chat'; null/undefined = all channels. */
+  channel?: 'email' | 'chat' | null;
+}
+
 /**
  * Local analytics (spec #46-#52, #153-#154): SQL computes numbers deterministically;
  * AI (when used) only explains them. Metric provenance is labeled everywhere.
+ * v1.3.0: dashboard() accepts a scope - selected mailboxes and channel - so the
+ * same deterministic SQL powers multi-mailbox comparison dashboards. Scope ids are
+ * sanitized to integers before being interpolated into IN(...) clauses.
  */
 export class AnalyticsService {
   private analytics: AnalyticsRepository;
@@ -19,7 +29,22 @@ export class AnalyticsService {
     this.ai = new AiRepository(db);
   }
 
-  dashboard(from: string, to: string): DashboardStats {
+  dashboard(from: string, to: string, scope: DashboardScope = {}): DashboardStats {
+    // --- scope fragments (safe: ids are sanitized integers) ---
+    const mailboxIds = (scope.mailboxLocalIds ?? []).map((id) => Math.trunc(Number(id))).filter((id) => Number.isInteger(id) && id > 0);
+    const mailboxIn = mailboxIds.length > 0 ? mailboxIds.join(',') : null;
+    const convMailboxSql = mailboxIn ? ` AND c.mailbox_local_id IN (${mailboxIn})` : '';
+    const convChannelSql = scope.channel ? ` AND c.type = @channelType` : '';
+    const convScopeArgs: Record<string, unknown> = scope.channel ? { channelType: scope.channel } : {};
+    // Ratings scope: join back to conversations (ratings carry conversation_id only).
+    // Ratings with no linked conversation are excluded from mailbox-scoped counts -
+    // they cannot be attributed to a mailbox.
+    const ratingJoinSql = `
+      FROM ratings r LEFT JOIN conversations c ON c.id = r.conversation_id
+      WHERE r.remote_created_at >= @from AND r.remote_created_at <= @to
+        ${mailboxIn ? ` AND c.mailbox_local_id IN (${mailboxIn})` : ''}
+        ${scope.channel ? ' AND c.type = @channelType' : ''}`;
+
     const counts = (this.db
       .prepare(
         `SELECT
@@ -29,16 +54,16 @@ export class AnalyticsService {
           SUM(CASE WHEN c.closed_at IS NOT NULL AND c.closed_at >= @from AND c.closed_at <= @to THEN 1 ELSE 0 END) AS closed_conversations,
           SUM(CASE WHEN c.status IN ('active','pending') AND c.assignee_local_id IS NULL AND c.deleted_at IS NULL THEN 1 ELSE 0 END) AS unassigned,
           SUM(CASE WHEN c.status IN ('active','pending') AND (julianday('now') - COALESCE(julianday(c.last_activity_at), julianday(c.remote_created_at))) >= 7 AND c.deleted_at IS NULL THEN 1 ELSE 0 END) AS backlog
-         FROM conversations c WHERE c.deleted_at IS NULL`
+         FROM conversations c WHERE c.deleted_at IS NULL${convMailboxSql}${convChannelSql}`
       )
-      .get({ from, to }) as Record<string, number | null>) ?? {};
+      .get({ from, to, ...convScopeArgs }) as Record<string, number | null>) ?? {};
 
     const replies = (this.db
       .prepare(
         `SELECT COUNT(*) AS n FROM threads t JOIN conversations c ON c.id = t.conversation_id
-         WHERE t.type='reply' AND t.state='published' AND t.deleted_at IS NULL AND t.remote_created_at >= @from AND t.remote_created_at <= @to`
+         WHERE t.type='reply' AND t.state='published' AND t.deleted_at IS NULL AND t.remote_created_at >= @from AND t.remote_created_at <= @to${convMailboxSql}${convChannelSql}`
       )
-      .get({ from, to }) as { n: number }).n;
+      .get({ from, to, ...convScopeArgs }) as { n: number }).n;
 
     const firstResponse = (this.db
       .prepare(
@@ -46,58 +71,98 @@ export class AnalyticsService {
          FROM conversations c
          JOIN (SELECT conversation_id, MIN(remote_created_at) AS first_reply FROM threads WHERE type='reply' AND state='published' AND deleted_at IS NULL GROUP BY conversation_id) fr
            ON fr.conversation_id = c.id
-         WHERE c.remote_created_at >= @from AND c.remote_created_at <= @to`
+         WHERE c.remote_created_at >= @from AND c.remote_created_at <= @to AND c.deleted_at IS NULL${convMailboxSql}${convChannelSql}`
       )
-      .get({ from, to }) as { avg_min: number | null }).avg_min;
+      .get({ from, to, ...convScopeArgs }) as { avg_min: number | null }).avg_min;
 
     const resolution = (this.db
       .prepare(
         `SELECT AVG((julianday(c.closed_at) - julianday(COALESCE(c.first_activity_at, c.remote_created_at))) * 1440) AS avg_min
-         FROM conversations c WHERE c.closed_at IS NOT NULL AND c.closed_at >= @from AND c.closed_at <= @to AND c.deleted_at IS NULL`
+         FROM conversations c WHERE c.closed_at IS NOT NULL AND c.closed_at >= @from AND c.closed_at <= @to AND c.deleted_at IS NULL${convMailboxSql}${convChannelSql}`
       )
-      .get({ from, to }) as { avg_min: number | null }).avg_min;
+      .get({ from, to, ...convScopeArgs }) as { avg_min: number | null }).avg_min;
 
     const ratings = (this.db
       .prepare(
         `SELECT
-          SUM(CASE WHEN rating='great' THEN 1 ELSE 0 END) AS great,
-          SUM(CASE WHEN rating='okay' THEN 1 ELSE 0 END) AS okay,
-          SUM(CASE WHEN rating='not-good' THEN 1 ELSE 0 END) AS notGood
-         FROM ratings WHERE remote_created_at >= @from AND remote_created_at <= @to`
+          SUM(CASE WHEN r.rating='great' THEN 1 ELSE 0 END) AS great,
+          SUM(CASE WHEN r.rating='okay' THEN 1 ELSE 0 END) AS okay,
+          SUM(CASE WHEN r.rating='not-good' THEN 1 ELSE 0 END) AS notGood
+         ${ratingJoinSql}`
       )
-      .get({ from, to }) as { great: number; okay: number; notGood: number });
+      .get({ from, to, ...convScopeArgs }) as { great: number; okay: number; notGood: number });
 
     const byMailbox = this.db
       .prepare(
         `SELECT m.name AS name, COUNT(*) AS count FROM conversations c JOIN mailboxes m ON m.id = c.mailbox_local_id
-         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to GROUP BY m.name ORDER BY count DESC`
+         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to${convChannelSql} GROUP BY m.name ORDER BY count DESC`
       )
-      .all({ from, to }) as { name: string; count: number }[];
+      .all({ from, to, ...convScopeArgs }) as { name: string; count: number }[];
     const byTag = this.db
       .prepare(
         `SELECT t.name AS name, COUNT(*) AS count FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id JOIN conversations c ON c.id = ct.conversation_id
-         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to GROUP BY t.name ORDER BY count DESC LIMIT 12`
+         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to${convMailboxSql}${convChannelSql} GROUP BY t.name ORDER BY count DESC LIMIT 12`
       )
-      .all({ from, to }) as { name: string; count: number }[];
+      .all({ from, to, ...convScopeArgs }) as { name: string; count: number }[];
     const byAgent = this.db
       .prepare(
         `SELECT TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS name, COUNT(*) AS count
          FROM conversations c JOIN users u ON u.id = c.assignee_local_id
-         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to GROUP BY u.id ORDER BY count DESC`
+         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to${convMailboxSql}${convChannelSql} GROUP BY u.id ORDER BY count DESC`
       )
-      .all({ from, to }) as { name: string; count: number }[];
+      .all({ from, to, ...convScopeArgs }) as { name: string; count: number }[];
     const byTeam = this.db
       .prepare(
         `SELECT tm.name AS name, COUNT(*) AS count FROM conversations c JOIN teams tm ON tm.id = c.assigned_team_local_id
-         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to GROUP BY tm.name ORDER BY count DESC`
+         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to${convMailboxSql}${convChannelSql} GROUP BY tm.name ORDER BY count DESC`
       )
-      .all({ from, to }) as { name: string; count: number }[];
+      .all({ from, to, ...convScopeArgs }) as { name: string; count: number }[];
     const dailyNew = this.db
       .prepare(
         `SELECT date(c.remote_created_at) AS date, COUNT(*) AS value FROM conversations c
-         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to GROUP BY date(c.remote_created_at) ORDER BY date`
+         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to${convMailboxSql}${convChannelSql} GROUP BY date(c.remote_created_at) ORDER BY date`
       )
-      .all({ from, to }) as MetricPoint[];
+      .all({ from, to, ...convScopeArgs }) as MetricPoint[];
+
+    // v1.3.0: channel split + per-channel speed (chat should be far faster than email)
+    const byChannel = this.db
+      .prepare(
+        `SELECT COALESCE(c.type, 'unknown') AS channel, COUNT(*) AS count FROM conversations c
+         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to${convMailboxSql} GROUP BY COALESCE(c.type, 'unknown') ORDER BY count DESC`
+      )
+      .all({ from, to }) as { channel: string; count: number }[];
+    const channelMetrics = this.db
+      .prepare(
+        `SELECT COALESCE(c.type, 'unknown') AS channel, COUNT(*) AS count,
+           AVG((julianday(fr.first_reply) - julianday(COALESCE(c.first_activity_at, c.remote_created_at))) * 1440) AS first_response_avg_min,
+           AVG((julianday(c.closed_at) - julianday(COALESCE(c.first_activity_at, c.remote_created_at))) * 1440) AS resolution_avg_min
+         FROM conversations c
+         LEFT JOIN (SELECT conversation_id, MIN(remote_created_at) AS first_reply FROM threads WHERE type='reply' AND state='published' AND deleted_at IS NULL GROUP BY conversation_id) fr
+           ON fr.conversation_id = c.id
+         WHERE c.deleted_at IS NULL AND c.remote_created_at >= @from AND c.remote_created_at <= @to${convMailboxSql}
+         GROUP BY COALESCE(c.type, 'unknown') ORDER BY count DESC`
+      )
+      .all({ from, to }) as { channel: string; count: number; first_response_avg_min: number | null; resolution_avg_min: number | null }[];
+
+    // v1.3.0: multi-mailbox comparison - one full KPI row per mailbox in scope
+    const mailboxComparison = this.db
+      .prepare(
+        `SELECT m.id AS mailbox_id, m.name AS name,
+           SUM(CASE WHEN c.remote_created_at >= @from AND c.remote_created_at <= @to THEN 1 ELSE 0 END) AS new_conversations,
+           SUM(CASE WHEN c.status='active' AND c.deleted_at IS NULL THEN 1 ELSE 0 END) AS active_conversations,
+           SUM(CASE WHEN c.closed_at IS NOT NULL AND c.closed_at >= @from AND c.closed_at <= @to THEN 1 ELSE 0 END) AS closed_conversations,
+           SUM(CASE WHEN c.status IN ('active','pending') AND (julianday('now') - COALESCE(julianday(c.last_activity_at), julianday(c.remote_created_at))) >= 7 AND c.deleted_at IS NULL THEN 1 ELSE 0 END) AS backlog,
+           AVG((julianday(fr.first_reply) - julianday(COALESCE(c.first_activity_at, c.remote_created_at))) * 1440) AS first_response_avg_min,
+           AVG((julianday(c.closed_at) - julianday(COALESCE(c.first_activity_at, c.remote_created_at))) * 1440) AS resolution_avg_min,
+           (SELECT COUNT(*) FROM ratings r JOIN conversations c2 ON c2.id = r.conversation_id WHERE c2.mailbox_local_id = m.id AND r.rating='great' AND r.remote_created_at >= @from AND r.remote_created_at <= @to${scope.channel ? ' AND c2.type = @channelType' : ''}) AS great_ratings,
+           (SELECT COUNT(*) FROM ratings r JOIN conversations c2 ON c2.id = r.conversation_id WHERE c2.mailbox_local_id = m.id AND r.remote_created_at >= @from AND r.remote_created_at <= @to${scope.channel ? ' AND c2.type = @channelType' : ''}) AS total_ratings
+         FROM mailboxes m
+         LEFT JOIN conversations c ON c.mailbox_local_id = m.id AND c.deleted_at IS NULL${scope.channel ? ' AND c.type = @channelType' : ''}
+         LEFT JOIN (SELECT conversation_id, MIN(remote_created_at) AS first_reply FROM threads WHERE type='reply' AND state='published' AND deleted_at IS NULL GROUP BY conversation_id) fr ON fr.conversation_id = c.id
+         WHERE m.deleted_at IS NULL${mailboxIn ? ` AND m.id IN (${mailboxIn})` : ''}
+         GROUP BY m.id, m.name ORDER BY new_conversations DESC`
+      )
+      .all({ from, to, ...convScopeArgs }) as MailboxComparisonRow[];
 
     // Cache daily new metrics for report snapshots
     for (const d of dailyNew) this.analytics.upsertDailyMetric('new_conversations', d.date, d.value);
@@ -119,6 +184,18 @@ export class AnalyticsService {
       by_agent: byAgent,
       by_team: byTeam,
       daily_new: dailyNew,
+      by_channel: byChannel,
+      channel_metrics: channelMetrics.map((m) => ({
+        channel: m.channel,
+        count: m.count,
+        first_response_avg_min: m.first_response_avg_min != null ? Math.round(m.first_response_avg_min) : null,
+        resolution_avg_min: m.resolution_avg_min != null ? Math.round(m.resolution_avg_min) : null
+      })),
+      mailbox_comparison: mailboxComparison.map((m) => ({
+        ...m,
+        first_response_avg_min: m.first_response_avg_min != null ? Math.round(m.first_response_avg_min) : null,
+        resolution_avg_min: m.resolution_avg_min != null ? Math.round(m.resolution_avg_min) : null
+      })),
       source: ['local']
     };
   }

@@ -1,4 +1,4 @@
-import type { HelpScoutProvider, ConversationQuery, CustomerQuery, Page, HsUser, HsTeam, HsMailbox, HsFolder, HsTag, HsField, HsSavedReply, HsWorkflow, HsWebhookConfig, HsCustomer, HsOrganization, HsPropertyDef, HsConversation, HsThread, HsRating, HsUserStatus, CreateReplyInput, CreateNoteInput, ConversationPatch, HsReportRow } from './provider.js';
+import type { HelpScoutProvider, ConversationQuery, CustomerQuery, Page, HsUser, HsTeam, HsMailbox, HsFolder, HsTag, HsField, HsSavedReply, HsWorkflow, HsWebhookConfig, HsCustomer, HsOrganization, HsPropertyDef, HsConversation, HsThread, HsRating, HsUserStatus, CreateReplyInput, CreateNoteInput, ConversationPatch, HsReportRow, ChatSessionQuery, HsDocCollection, HsDocCategory, HsDocArticle } from './provider.js';
 import { buildFakeWorld, type FakeWorld } from './fakeData.js';
 import { HelpScoutApiError, friendlyError } from './client.js';
 
@@ -164,6 +164,36 @@ export class FakeHelpScoutProvider implements HelpScoutProvider {
   async listThreads(conversationId: number): Promise<HsThread[]> {
     this.log(`/v3/conversations/${conversationId}/threads`);
     return this.world.threads.filter((t) => t.conversationId === conversationId).sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime());
+  }
+
+  // ---------------- Chat (Beacon) sessions ----------------
+
+  async listChatSessions(query?: ChatSessionQuery): Promise<HsConversation[]> {
+    this.log('/v3/conversations?type=chat');
+    let items = this.world.conversations.filter((c) => c.type === 'chat' && !((c as HsConversation & { mergedInto?: number }).mergedInto));
+    if (query?.mailboxId) items = items.filter((c) => c.mailboxId === query.mailboxId);
+    if (query?.modifiedSince) {
+      const since = new Date(query.modifiedSince).getTime();
+      items = items.filter((c) => new Date(c.userUpdatedAt ?? c.createdAt ?? 0).getTime() >= since);
+    }
+    return items;
+  }
+
+  // ---------------- Docs API (docsapi.helpscout.net) ----------------
+
+  async listDocCollections(): Promise<HsDocCollection[]> {
+    this.log('/v2/collections');
+    return this.world.docCollections;
+  }
+
+  async listDocCategories(collectionId: number): Promise<HsDocCategory[]> {
+    this.log(`/v2/collections/${collectionId}/categories`);
+    return this.world.docCategories.filter((c) => c.collectionId === collectionId);
+  }
+
+  async listDocArticles(collectionId: number): Promise<HsDocArticle[]> {
+    this.log(`/v2/collections/${collectionId}/articles`);
+    return this.world.docArticles.filter((a) => a.collectionId === collectionId);
   }
 
   async getRating(ratingId: number): Promise<HsRating | null> {
@@ -411,6 +441,26 @@ export class FakeHelpScoutProvider implements HelpScoutProvider {
     if (conv.status === 'pending' || conv.status === 'closed') conv.status = 'active';
   }
 
+  /** Simulate a customer submitting a CSAT rating (demo real-time ratings + webhook tests). */
+  submitRating(opts: { conversationRemoteId: number; rating: 'great' | 'okay' | 'not-good'; comments?: string }): HsRating | null {
+    const conv = this.world.conversations.find((c) => c.remoteId === opts.conversationRemoteId);
+    if (!conv) return null;
+    const nextId = Math.max(0, ...this.world.ratings.map((r) => r.remoteId)) + 1;
+    const rating: HsRating = {
+      remoteId: nextId,
+      conversationId: conv.remoteId,
+      threadId: null,
+      rating: opts.rating,
+      comments: opts.comments ?? null,
+      customerId: conv.primaryCustomerId,
+      customerName: conv.primaryCustomerName,
+      userId: conv.assigneeId,
+      createdAt: new Date().toISOString()
+    };
+    this.world.ratings.push(rating);
+    return rating;
+  }
+
   /** Simulate a brand new conversation arriving (demo + webhook tests). */
   createConversationOnRemote(opts: { subject: string; preview: string; mailboxId: number; customerRemoteId: number; body: string; tags?: string[] }): HsConversation {
     const cust = this.world.customers.find((c) => c.remoteId === opts.customerRemoteId)!;
@@ -420,6 +470,8 @@ export class FakeHelpScoutProvider implements HelpScoutProvider {
       remoteId: nextConvId,
       number: nextNumber,
       type: 'email',
+      sourceType: 'email',
+      sourceVia: 'customer',
       folderId: null,
       status: 'active',
       state: 'published',

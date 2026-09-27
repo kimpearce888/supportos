@@ -131,8 +131,12 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     });
   });
 
-  // Static client (production build) - SPA fallback
-  const clientDir = path.resolve(process.cwd(), 'dist', 'client');
+  // Static client (production build) - SPA fallback.
+  // SUPPORTOS_CLIENT_DIST lets packaged builds (Tauri) point at the bundled client
+  // copy instead of a path relative to the (arbitrary) process working directory.
+  const clientDir = process.env.SUPPORTOS_CLIENT_DIST
+    ? path.resolve(process.env.SUPPORTOS_CLIENT_DIST)
+    : path.resolve(process.cwd(), 'dist', 'client');
   if (fs.existsSync(clientDir)) {
     await app.register((await import('@fastify/static')).default, {
       root: clientDir,

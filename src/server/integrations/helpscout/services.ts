@@ -12,6 +12,9 @@ import type {
   CustomerQuery,
   HsConversation,
   HsCustomer,
+  HsDocArticle,
+  HsDocCategory,
+  HsDocCollection,
   HsField,
   HsFolder,
   HsMailbox,
@@ -38,6 +41,7 @@ interface RawConversationV3 {
   id: number;
   number?: number;
   threads?: number;
+  source?: { type?: string | null; via?: string | null } | null;
   type?: string | null;
   folderId?: number | null;
   status?: string | null;
@@ -447,6 +451,8 @@ export class HelpScoutConversationService {
       remoteId: c.id,
       number: c.number ?? c.id,
       type: c.type ?? null,
+      sourceType: c.source?.type ?? null,
+      sourceVia: c.source?.via ?? null,
       folderId: c.folderId ?? null,
       status: mapStatus(c.status),
       state: c.state ?? null,
@@ -542,3 +548,98 @@ export class HelpScoutAttachmentService {
     return { data: Buffer.from(raw.data, 'base64'), mimeType: null, filename: null };
   }
 }
+
+/**
+ * HelpScoutDocsService (v1.3.0): the Docs API lives on a separate host
+ * (docsapi.helpscout.net) and authenticates with a Docs API key via HTTP
+ * Basic auth (key as username, "X" as password) - NOT with the OAuth token.
+ * The provider therefore gets its own HelpScoutHttpClient in 'header' auth
+ * mode. Without a Docs API key every method returns [] (honest capability:
+ * the docs mirror simply stays empty instead of erroring).
+ *
+ * Wire shapes are HAL pages: `GET /v2/collections`, `GET /v2/categories?collectionId=`,
+ * `GET /v2/articles?collectionId=` (article `text` is included when present).
+ */
+export class HelpScoutDocsService {
+  constructor(private http: HelpScoutHttpClient, private apiKey: string | null) {}
+
+  private get enabled(): boolean {
+    return Boolean(this.apiKey);
+  }
+
+  async listCollections(): Promise<HsDocCollection[]> {
+    if (!this.enabled) return [];
+    const out: HsDocCollection[] = [];
+    let page = 1;
+    for (;;) {
+      const raw = await this.http.request<HalPage<Record<string, unknown>>>(`/v2/collections?page=${page}`, { priority: PRIORITY.SYNC });
+      const items = raw._embedded?.collections ?? [];
+      for (const c of items) {
+        out.push({
+          remoteId: Number(c.id),
+          name: String(c.name ?? ''),
+          slug: (c.slug as string | null) ?? null,
+          description: (c.description as string | null) ?? null,
+          visibility: (c.visibility as string | null) ?? null,
+          articleCount: (c.articleCount as number | null) ?? null
+        });
+      }
+      if (page >= (raw.page?.totalPages ?? 1) || items.length === 0) break;
+      page++;
+    }
+    return out;
+  }
+
+  async listCategories(collectionId: number): Promise<HsDocCategory[]> {
+    if (!this.enabled) return [];
+    const out: HsDocCategory[] = [];
+    let page = 1;
+    for (;;) {
+      const raw = await this.http.request<HalPage<Record<string, unknown>>>(`/v2/categories?collectionId=${collectionId}&page=${page}`, { priority: PRIORITY.SYNC });
+      const items = raw._embedded?.categories ?? [];
+      for (const c of items) {
+        out.push({
+          remoteId: Number(c.id),
+          collectionId,
+          name: String(c.name ?? ''),
+          slug: (c.slug as string | null) ?? null,
+          order: (c.order as number | null) ?? null
+        });
+      }
+      if (page >= (raw.page?.totalPages ?? 1) || items.length === 0) break;
+      page++;
+    }
+    return out;
+  }
+
+  async listArticles(collectionId: number): Promise<HsDocArticle[]> {
+    if (!this.enabled) return [];
+    const out: HsDocArticle[] = [];
+    let page = 1;
+    for (;;) {
+      const raw = await this.http.request<HalPage<Record<string, unknown>>>(`/v2/articles?collectionId=${collectionId}&page=${page}`, { priority: PRIORITY.SYNC });
+      const items = raw._embedded?.articles ?? [];
+      for (const a of items) {
+        const text = (a.text as string | null) ?? null;
+        out.push({
+          remoteId: Number(a.id),
+          collectionId,
+          categoryId: (a.categoryId as number | null) ?? null,
+          number: (a.number as number | null) ?? null,
+          slug: (a.slug as string | null) ?? null,
+          name: String(a.name ?? ''),
+          status: ((a.status as string | null) ?? null) as HsDocArticle['status'],
+          text,
+          preview: text ? text.replace(/\s+/g, ' ').slice(0, 220) : null,
+          views: (a.views as number | null) ?? null,
+          createdAt: (a.createdAt as string | null) ?? null,
+          updatedAt: (a.updatedAt as string | null) ?? null
+        });
+      }
+      if (page >= (raw.page?.totalPages ?? 1) || items.length === 0) break;
+      page++;
+    }
+    return out;
+  }
+}
+

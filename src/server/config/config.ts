@@ -43,6 +43,9 @@ export interface AppConfig {
     redirectUri: string;
     apiBase: string;
     webhookSecret: string;
+    /** Docs API key (separate from OAuth: docsapi.helpscout.net uses HTTP Basic auth). */
+    docsApiKey: string;
+    docsApiBase: string;
   };
   lmstudio: {
     baseUrl: string;
@@ -73,7 +76,7 @@ export function loadConfig(): AppConfig {
     localAppUrl: envStr('LOCAL_APP_URL', 'http://localhost:3000'),
     databasePath: dbAbs,
     attachmentsPath: ensureDir(envStr('ATTACHMENTS_PATH', './data/attachments')),
-    backupsPath: ensureDir('./backups'),
+    backupsPath: ensureDir(envStr('BACKUPS_PATH', './backups')),
     demoMode: envBool('LOCAL_DEMO_MODE', false),
     logLevel: envStr('LOG_LEVEL', 'info') as AppConfig['logLevel'],
     helpscout: {
@@ -81,7 +84,9 @@ export function loadConfig(): AppConfig {
       clientSecret: envStr('HELPSCOUT_CLIENT_SECRET', ''),
       redirectUri: envStr('HELPSCOUT_REDIRECT_URI', 'http://localhost:3000/oauth/callback'),
       apiBase: envStr('HELPSCOUT_API_BASE', 'https://api.helpscout.net'),
-      webhookSecret: envStr('HELPSCOUT_WEBHOOK_SECRET', '')
+      webhookSecret: envStr('HELPSCOUT_WEBHOOK_SECRET', ''),
+      docsApiKey: envStr('HELPSCOUT_DOCS_API_KEY', ''),
+      docsApiBase: envStr('HELPSCOUT_DOCS_API_BASE', 'https://docsapi.helpscout.net')
     },
     lmstudio: {
       baseUrl: envStr('LMSTUDIO_BASE_URL', 'http://127.0.0.1:1234'),

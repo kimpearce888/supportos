@@ -6,10 +6,30 @@ function isoDaysAgo(days: number): string {
 }
 
 export async function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
-  app.get('/api/analytics/dashboard', async (request) => {
+  app.get('/api/analytics/dashboard', async (request, reply) => {
     const q = request.query as Record<string, string>;
     const days = q.days ? Number(q.days) : 30;
-    return ctx.analytics.dashboard(q.from ?? isoDaysAgo(days), q.to ?? new Date().toISOString());
+    // Multi-mailbox scope: comma-separated LOCAL mailbox ids ("mailboxIds=1,2").
+    // Invalid tokens are a client error -> 422 (consistent with body validation).
+    let mailboxIds: number[] | null = null;
+    if (q.mailboxIds != null && q.mailboxIds !== '') {
+      const tokens = q.mailboxIds.split(',').map((t) => t.trim()).filter(Boolean);
+      mailboxIds = tokens.map((t) => Number(t));
+      if (mailboxIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'mailboxIds must be a comma-separated list of positive integers.' });
+        return;
+      }
+    }
+    // Channel scope: 'email' or 'chat' (Beacon); anything else is rejected.
+    let channel: 'email' | 'chat' | null = null;
+    if (q.channel != null && q.channel !== '') {
+      if (q.channel !== 'email' && q.channel !== 'chat') {
+        reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: "channel must be 'email' or 'chat'." });
+        return;
+      }
+      channel = q.channel;
+    }
+    return ctx.analytics.dashboard(q.from ?? isoDaysAgo(days), q.to ?? new Date().toISOString(), { mailboxLocalIds: mailboxIds, channel });
   });
 
   app.get('/api/analytics/ai', async () => ctx.analytics.aiAnalytics());

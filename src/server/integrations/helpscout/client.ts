@@ -77,6 +77,14 @@ export class HelpScoutHttpClient {
   public queue: ApiQueue;
   private getToken: () => Promise<string | null>;
   private onAuthFailure: () => Promise<void>;
+  /**
+   * authMode 'bearer' (default): getToken returns an OAuth token, requests send
+   * `Authorization: Bearer <token>` and a 401 triggers the refresh flow.
+   * authMode 'header': getToken returns the COMPLETE Authorization header value
+   * (e.g. `Basic <base64>`); used for the Docs API, which authenticates with a
+   * separate Docs API key via HTTP Basic and has no refresh flow.
+   */
+  private authMode: 'bearer' | 'header';
 
   constructor(opts: {
     apiBase: string;
@@ -84,12 +92,14 @@ export class HelpScoutHttpClient {
     concurrency?: number;
     getToken: () => Promise<string | null>;
     onAuthFailure: () => Promise<void>;
+    authMode?: 'bearer' | 'header';
   }) {
     this.apiBase = opts.apiBase.replace(/\/$/, '');
     this.limiter = new RateLimiter(opts.db ?? null);
     this.queue = new ApiQueue(this.limiter, opts.concurrency ?? 2);
     this.getToken = opts.getToken;
     this.onAuthFailure = opts.onAuthFailure;
+    this.authMode = opts.authMode ?? 'bearer';
   }
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -102,11 +112,17 @@ export class HelpScoutHttpClient {
   private async attempt<T>(path: string, method: NonNullable<RequestOptions['method']>, options: RequestOptions, retriesLeft: number): Promise<T> {
     const url = path.startsWith('http') ? path : `${this.apiBase}${path}`;
     const isWrite = method !== 'GET';
-    let token = await this.getToken();
-    if (!token) {
-      throw new HelpScoutApiError(401, 'No Help Scout token available', friendlyError(401, '', method), null, false);
+    let authorization: string | null;
+    if (this.authMode === 'header') {
+      authorization = await this.getToken(); // complete header value (Docs API Basic auth)
+    } else {
+      const token = await this.getToken();
+      if (!token) {
+        throw new HelpScoutApiError(401, 'No Help Scout token available', friendlyError(401, '', method), null, false);
+      }
+      authorization = `Bearer ${token}`;
     }
-    const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+    const headers: Record<string, string> = { Authorization: authorization ?? '', Accept: 'application/json' };
     let bodyStr: string | undefined;
     if (options.formBody) {
       headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -138,9 +154,9 @@ export class HelpScoutHttpClient {
       throw new HelpScoutApiError(301, `Conversation merged into ${newId ?? 'another conversation'}`, 'This conversation was merged into another conversation in Help Scout. Open the target conversation instead.', correlationId, false);
     }
 
-    if (res.status === 401 && retriesLeft > 0) {
+    if (res.status === 401 && retriesLeft > 0 && this.authMode === 'bearer') {
       await this.onAuthFailure();
-      token = await this.getToken();
+      const token = await this.getToken();
       if (token) {
         return this.attempt<T>(path, method, options, retriesLeft - 1);
       }

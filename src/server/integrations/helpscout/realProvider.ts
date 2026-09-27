@@ -1,6 +1,7 @@
 import type { DB } from '../../database/connection.js';
 import { HelpScoutHttpClient, HelpScoutApiError } from './client.js';
 import { HelpScoutAuthService } from './authService.js';
+import { HS_DOCS_API_BASE } from '../../../shared/constants.js';
 import {
   HelpScoutUserService,
   HelpScoutTeamService,
@@ -15,12 +16,14 @@ import {
   HelpScoutConversationService,
   HelpScoutThreadService,
   HelpScoutReportService,
-  HelpScoutAttachmentService
+  HelpScoutAttachmentService,
+  HelpScoutDocsService
 } from './services.js';
 import type {
   HelpScoutProvider,
   ConversationQuery,
   CustomerQuery,
+  ChatSessionQuery,
   Page,
   HsUser,
   HsTeam,
@@ -41,7 +44,10 @@ import type {
   CreateReplyInput,
   CreateNoteInput,
   ConversationPatch,
-  HsReportRow
+  HsReportRow,
+  HsDocCollection,
+  HsDocCategory,
+  HsDocArticle
 } from './provider.js';
 import { PRIORITY } from '../../../shared/constants.js';
 
@@ -66,10 +72,12 @@ export class RealHelpScoutProvider implements HelpScoutProvider {
   public threads: HelpScoutThreadService;
   public reports: HelpScoutReportService;
   public attachments: HelpScoutAttachmentService;
+  public docs: HelpScoutDocsService;
+  public docsHttp: HelpScoutHttpClient;
   public auth: HelpScoutAuthService;
   public http: HelpScoutHttpClient;
 
-  constructor(opts: { apiBase: string; db: DB; clientId: string; clientSecret: string; redirectUri: string; concurrency?: number }) {
+  constructor(opts: { apiBase: string; db: DB; clientId: string; clientSecret: string; redirectUri: string; concurrency?: number; docsApiKey?: string | null; docsApiBase?: string }) {
     this.http = new HelpScoutHttpClient({
       apiBase: opts.apiBase,
       db: opts.db,
@@ -99,6 +107,18 @@ export class RealHelpScoutProvider implements HelpScoutProvider {
     this.threads = new HelpScoutThreadService(this.http);
     this.reports = new HelpScoutReportService(this.http);
     this.attachments = new HelpScoutAttachmentService(this.http);
+    // Docs API: separate host + HTTP Basic auth with the Docs API key.
+    // getToken returns the COMPLETE Authorization header in 'header' mode.
+    const docsApiKey = opts.docsApiKey ?? null;
+    this.docsHttp = new HelpScoutHttpClient({
+      apiBase: opts.docsApiBase ?? HS_DOCS_API_BASE,
+      db: opts.db,
+      concurrency: 1,
+      getToken: async () => (docsApiKey ? `Basic ${Buffer.from(`${docsApiKey}:X`).toString('base64')}` : null),
+      onAuthFailure: async () => {},
+      authMode: 'header'
+    });
+    this.docs = new HelpScoutDocsService(this.docsHttp, docsApiKey);
   }
 
   async getMe(): Promise<HsUser> {
@@ -175,6 +195,40 @@ export class RealHelpScoutProvider implements HelpScoutProvider {
   }
   async listThreads(conversationId: number): Promise<HsThread[]> {
     return this.threads.list(conversationId);
+  }
+
+  async listChatSessions(query?: ChatSessionQuery): Promise<HsConversation[]> {
+    // Beacon chats arrive as conversations with type='chat'. The conversations
+    // endpoint has no documented type filter, so we page and filter locally -
+    // honest limitation, noted in the capability matrix. Run during initial
+    // sync only (the conversation pass covers chats incrementally).
+    const chats: HsConversation[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await this.conversations.list({
+        status: 'all',
+        mailboxId: query?.mailboxId,
+        modifiedSince: query?.modifiedSince,
+        cursor
+      });
+      for (const c of page.items) {
+        if (c.type === 'chat') chats.push(c);
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+    return chats;
+  }
+
+  async listDocCollections(): Promise<HsDocCollection[]> {
+    return this.docs.listCollections();
+  }
+
+  async listDocCategories(collectionId: number): Promise<HsDocCategory[]> {
+    return this.docs.listCategories(collectionId);
+  }
+
+  async listDocArticles(collectionId: number): Promise<HsDocArticle[]> {
+    return this.docs.listArticles(collectionId);
   }
   async getRating(ratingId: number): Promise<HsRating | null> {
     const raw = await this.http

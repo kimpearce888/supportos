@@ -15,3 +15,7 @@ coverage/
 .DS_Store
 Thumbs.db
 src-tauri/target/
+# Desktop packaging: resources are ASSEMBLED (client + server bundle + Node runtime),
+# never committed - CI regenerates them per platform before `tauri build`.
+src-tauri/resources/
+src-tauri/gen/

@@ -73,7 +73,7 @@ describe('conversation list + view (spec #53, #56)', () => {
   it('lists conversations for inbox views', async () => {
     const res = await fetch(`${baseUrl}/api/conversations?view=active`);
     const body = (await res.json()) as { conversations: { id: number; number: number; subject: string; customer_name: string | null; tags: string[]; mailbox_name: string | null }[]; total: number };
-    expect(body.total).toBe(5);
+    expect(body.total).toBe(6); // v1.3.0: 5 email + 1 active Beacon chat
     expect(body.conversations[0]?.customer_name).toBeTruthy();
   });
 
@@ -253,9 +253,14 @@ describe('reports, audit, capability matrix (spec #46, #63, #117)', () => {
 
   it('capability matrix is exposed and honest about unsupported features', async () => {
     const res = await fetch(`${baseUrl}/api/system/capabilities`);
-    const body = (await res.json()) as { matrix: { implemented: boolean; endpoint: string }[]; summary: { implemented: number; total: number } };
-    expect(body.summary.implemented).toBe(body.summary.total - 3); // chat api, docs api, beacon = future extensions
-    expect(body.matrix.some((c) => !c.implemented && c.endpoint === 'n/a')).toBe(true);
+    const body = (await res.json()) as { matrix: { implemented: boolean; endpoint: string; resource: string }[]; summary: { implemented: number; total: number } };
+    // v1.3.0: Chat / Docs / Beacon coverage landed - the full documented surface we target is implemented
+    expect(body.summary.implemented).toBe(body.summary.total);
+    expect(body.matrix.some((c) => c.resource === 'chat-api' && c.implemented)).toBe(true);
+    expect(body.matrix.some((c) => c.resource === 'docs-api' && c.implemented)).toBe(true);
+    expect(body.matrix.some((c) => c.resource === 'beacon' && c.implemented)).toBe(true);
+    // Remaining honesty: the ratings row still documents that there is no list-ratings endpoint
+    expect(body.matrix.some((c) => c.resource === 'ratings' && c.notes.includes('KNOWN LIMITATION'))).toBe(true);
   });
 });
 

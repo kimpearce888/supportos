@@ -4,7 +4,7 @@ import { useMutation } from '@tanstack/react-query';
 import {
   RefreshCw, Reply, StickyNote, Send, Bookmark, ExternalLink, Paperclip, Download,
   ChevronLeft, ChevronRight, Bot, User, Clock, Trash2, CheckCircle2, XCircle,   ShieldCheck, Sparkles, Wand2, ChevronDown, ChevronUp, Tag, Mail, Building2,
-  AlertTriangle, Workflow
+  AlertTriangle, Workflow, MessageCircle
 } from 'lucide-react';
 import { api } from '../api/client.js';
 import { useConversations, useConversationDetail, useReference } from '../api/hooks.js';
@@ -24,14 +24,22 @@ const VIEWS = [
   { key: 'all', label: 'All' }
 ];
 
+const CHANNEL_FILTERS = [
+  { value: null, label: 'All' },
+  { value: 'email', label: 'Email' },
+  { value: 'chat', label: 'Chat' }
+] as const;
+
 export function InboxPage(): ReactNode {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const { id } = useParams();
   const view = params.get('view') ?? 'active';
   const page = Math.max(1, Number.parseInt(params.get('page') ?? '1', 10) || 1);
+  const channelParam = params.get('channel');
+  const channel = channelParam === 'email' || channelParam === 'chat' ? channelParam : null;
   const selectedId = id != null && Number.isFinite(Number(id)) ? Number(id) : null;
-  const { data, isLoading } = useConversations(view, page, params.get('tag'));
+  const { data, isLoading } = useConversations(view, page, params.get('tag'), channel);
   const pushToast = useUiStore((s) => s.pushToast);
 
   const [selection, setSelection] = useState<number[]>([]);
@@ -44,6 +52,16 @@ export function InboxPage(): ReactNode {
     next.set('view', v);
     next.set('page', '1');
     setParams(next);
+    setSelection([]);
+  };
+
+  const setChannel = (c: string | null): void => {
+    // Channel filter (v1.3.0): email vs Beacon chat sessions. Preserves view/tag.
+    const next = new URLSearchParams(params);
+    next.set('page', '1');
+    if (c == null) next.delete('channel');
+    else next.set('channel', c);
+    setParams(next, { replace: true });
     setSelection([]);
   };
 
@@ -67,10 +85,18 @@ export function InboxPage(): ReactNode {
   return (
     <div className="inbox-layout">
       <div className="conversation-list-pane" role="region" aria-label="Conversation list">
-        <div className="view-tabs" role="tablist">
+        <div className="view-tabs" role="tablist" aria-label="Views">
           {VIEWS.map((v) => (
             <button key={v.key} role="tab" aria-selected={view === v.key} className={`view-tab ${view === v.key ? 'active' : ''}`} onClick={() => setView(v.key)}>
               {v.label}
+            </button>
+          ))}
+        </div>
+        <div className="view-tabs secondary" role="group" aria-label="Channel filter">
+          {CHANNEL_FILTERS.map((f) => (
+            <button key={f.label} role="tab" aria-selected={channel === f.value} className={`view-tab small ${channel === f.value ? 'active' : ''}`} onClick={() => setChannel(f.value)}>
+              {f.value === 'chat' ? <MessageCircle size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> : f.value === 'email' ? <Mail size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> : null}
+              {f.label}
             </button>
           ))}
         </div>
@@ -110,6 +136,7 @@ export function InboxPage(): ReactNode {
                   <div className="conv-preview">{c.customer_name ?? 'Unknown'} · {c.preview}</div>
                   <div className="conv-meta">
                     <StatusBadge status={c.status} />
+                    {c.type === 'chat' ? <span className="badge ok"><MessageCircle size={10} /> {c.source_via === 'beacon' ? 'Beacon' : 'chat'}</span> : null}
                     <span className="text-xs muted">#{c.number}</span>
                     {c.mailbox_name ? <span className="badge">{c.mailbox_name}</span> : null}
                     {c.ai_analysis_status === 'analyzed' ? <span className="badge ai"><Bot size={10} /> AI</span> : null}

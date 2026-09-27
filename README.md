@@ -7,11 +7,12 @@
 **Fast support tooling with a privacy guarantee: your customer data never leaves your machine.**
 
 [![CI](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml/badge.svg)](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-150%2F150-brightgreen)](docs/TESTING.md)
+[![Tests](https://img.shields.io/badge/tests-172%2F172-brightgreen)](docs/TESTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-green)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](tsconfig.base.json)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](docs/LOCAL-RUN.md)
+[![Releases](https://img.shields.io/badge/installers-MSI%20%7C%20DMG%20%7C%20AppImage-blue)](https://github.com/kimpearce888/supportos/releases/latest)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4)](CONTRIBUTING.md)
 
 [What is SupportOS?](#-what-is-supportos) · [The Story](#-the-story-why-it-exists-and-why-its-built-this-way) · [Screenshots](#-see-it-in-action) · [2-Minute Demo](#-try-it-in-2-minutes-no-credentials-needed) · [Features](#-features) · [Safety Model](#-safety--trust-by-design) · [Docs](#-documentation)
@@ -25,12 +26,16 @@
 SupportOS is a **self-hosted help desk companion and support intelligence platform**. It mirrors your Help Scout inbox into a local SQLite database on your own machine and layers a professional support workspace on top:
 
 - **⚡ Instant everything** — search your entire local archive in milliseconds with local full-text search; no API round-trips, no rate limits, no spinners
+- **🎧 Every channel, one inbox** — email and Beacon chat sessions live side by side, filterable by channel, with honest chat-vs-email speed analytics
+- **📚 Your Docs, mirrored** — Help Scout Docs collections and articles synced locally and searchable offline, next to your tickets
+- **📡 Real-time by default** — new CSAT ratings arrive over Server-Sent Events the moment they land; dashboards update without polling or refresh
 - **🤖 Local AI assistance** — ticket analysis, evidence-backed reply drafts, issue clustering and report narratives via [LM Studio](https://lmstudio.ai) on your own hardware. **No OpenAI. No cloud. No data leakage.**
 - **🧠 Client Interaction Intelligence** — knows how each client *normally* communicates and flags when today's ticket is different (urgency ↑, detail ↓), with an evidence-backed support approach and per-client playbook. Behavior, never psychology.
+- **📦 Desktop installers** — MSI, DMG and AppImage with the Node runtime and SQLite bundled in: install and run, no prerequisites
 - **🛡️ Privacy by architecture** — support tickets contain payment details, personal data and secrets. SupportOS keeps them local-first, GDPR-friendly and audit-logged
 - **🔬 Support intelligence** — Issue Radar surfaces emerging problems before they become incidents; answer-reuse shows which tickets could have been deflected by docs
 - **✍️ Human in command** — AI never sends a customer reply. Every remote write is validated, merged, confirmed and audited
-- **🔬 Audited, not assumed** — v1.2.0 ships after a full independent audit (static analysis, black-box runtime testing, line-by-line write-path review): 40+ findings found, fixed, and each locked down by a regression test that names it
+- **🔬 Audited, not assumed** — v1.2.0 shipped after a full independent audit; v1.3.0 extends the same evidence-first discipline to channels, docs and real-time updates
 
 > **Help Scout stays the source of truth.** SupportOS is a local mirror + intelligence layer — it reads your mailbox and writes back through Help Scout's official API with full write protection. Your team can keep using Help Scout (and its mobile app) exactly as before.
 
@@ -52,6 +57,8 @@ Client Interaction Intelligence (v1.1.0) came from a second observation: experie
 
 v1.2.0 is the unglamorous, essential chapter: an independent audit of every write path, every route, every signal. Not the project's own test suite — a from-scratch review with black-box testing against a fresh database. It found real bugs (an evaluation-mode bypass, a broken attachment endpoint, duplicated behavioral data inflating baselines). Every one is fixed, and every fix ships with a regression test that names its finding, so the audit can never silently rot.
 
+v1.3.0 closes the original public roadmap — and each item earned its place the same way. **Chat/Docs/Beacon coverage** started with an honest question: what does a *mirror* actually need from those APIs? Beacon chats already arrive as conversations (type=`chat`, source via=`beacon`) — so instead of bolting on a second sync system, SupportOS unified them into the existing mirror and built the channel filter and chat-speed analytics on top. Docs *did* need a real second surface (a separate API key on a separate host), so it got one: a read-only mirror with offline FTS search. **Real-time ratings** chose Server-Sent Events over WebSockets because server→client notifications don't need bidirectional complexity — and the new event bus deliberately pushes *facts* (a rating landed), leaving every computation local. **Multi-mailbox dashboards** reuse the same deterministic SQL with a scope parameter rather than a parallel "multi-mailbox mode", so metric definitions can never drift between single- and multi-mailbox views. And **packaged installers** came from a simple constraint: the app is a Node process, so the package must ship a Node runtime — an esbuild bundle, one native module, and a stock official Node binary, assembled per-platform in CI.
+
 ### The decision log — the logic behind every major choice
 
 | # | Decision | The reasoning |
@@ -65,16 +72,50 @@ v1.2.0 is the unglamorous, essential chapter: an independent audit of every writ
 | 7 | **The evidence mandate** | A behavioral signal without a quoted excerpt is an opinion. Every signal carries evidence linked to the thread it came from; significant signals without evidence are dropped by the safety layer. |
 | 8 | **Behavior, never psychology** | The vocabulary is fixed and observable (urgency, directness, detail level…). Personality labels, diagnoses and protected-attribute claims are structurally impossible — enforced at the schema, the sanitizer, the prompts and the UI labels, in depth. |
 | 9 | **Human overrides beat AI, everywhere** | When a rep corrects an inferred preference, that correction wins — in storage, in the recommendation engine and in the draft prompts. The override is audited, revertible, and the revert fully restores AI semantics. |
-| 10 | **A fake Help Scout provider as the test backbone** | The entire 150-test suite runs against a deterministic simulated mailbox. It is architecturally impossible for a test to email a real customer — the provider interface simply has no path to production credentials. |
+| 10 | **A fake Help Scout provider as the test backbone** | The entire 172-test suite runs against a deterministic simulated mailbox. It is architecturally impossible for a test to email a real customer — the provider interface simply has no path to production credentials. |
 | 11 | **Demo mode runs the REAL sync engine** | The 2-minute demo is not a mockup; it is the production sync pipeline pointed at the fake provider. What you evaluate is what you run. |
 | 12 | **Local-first AI via LM Studio (OpenAI-compatible)** | Same ergonomics as the cloud APIs, zero data egress. And because the AI layer is optional (see #6), the product's value does not depend on anyone's model — including ours. |
 | 13 | **Audit your own release** | v1.2.0's audit did not trust the project's own green test suite — it re-derived the findings from scratch (static analysis plus black-box runtime testing) and turned each fix into a named regression test. Trust, but verify; then lock it in. |
+| 14 | **Chats are conversations (v1.3.0)** | Help Scout already models Beacon chats as conversations with `type=chat` — so the mirror treats them as first-class conversations with a channel filter, instead of duplicating them into a parallel "chat object" that could drift out of sync. One table, one truth, per-channel analytics on top. |
+| 15 | **Docs get their own mirror, not a bolt-on (v1.3.0)** | The Docs API lives on a different host with a different key and different auth (HTTP Basic) — so it gets its own service class and its own tables, synced by the same coordinator. Read-only forever: SupportOS never writes back to Docs. |
+| 16 | **SSE, not WebSockets (v1.3.0)** | Real-time updates are one-way notifications. Server-Sent Events give auto-reconnect over plain HTTP with zero new dependencies; the client needs only `EventSource`. The bus pushes *events* ("a rating landed"), and every number the UI shows is still computed locally — the push layer can never fabricate a metric. |
+| 17 | **Scope parameters, not a parallel dashboard (v1.3.0)** | Multi-mailbox dashboards reuse the exact same deterministic SQL with a `scope` argument (mailboxes + channel). One code path means the single-mailbox numbers and the comparison rows can never disagree, and metric definitions stay honest. |
+| 18 | **Ship a boring runtime (v1.3.0)** | The desktop package bundles a stock official Node binary matched to the CI runner's ABI, an esbuild bundle of the server, and exactly one native module (`better-sqlite3`). Node SEA/pkg were rejected: unmaintained or hostile to native addons. Boring is a feature — it's the runtime you can debug with `node --inspect`. |
+| 19 | **Cross-platform builds belong in CI (v1.3.0)** | A Windows MSI cannot be built on Linux. The desktop workflow runs the same assembly script on all three GitHub runners, so every installer is built and booted on its native OS — and the resources are *assembled*, never committed. |
 
 ---
 
 ## 📸 See it in action
 
 All screenshots are the **real application** running in demo mode (simulated mailbox) — clone the repo and you'll see exactly this, in under two minutes.
+
+### 🎬 The 30-second tour
+
+**A full walk through v1.3.0: multi-mailbox + channel-scoped dashboard, the unified inbox filtering to Beacon chats, Client Intelligence on a chat conversation, the Docs mirror with offline search, and a CSAT rating landing live over Server-Sent Events**
+
+[![SupportOS v1.3.0 demo: channels, docs mirror, multi-mailbox dashboards and real-time ratings](docs/demo.gif)](docs/demo.gif)
+
+### 🆕 v1.3.0 — channels, docs, real-time, multi-mailbox
+
+**Dashboard — pick mailboxes (multi-select) and a channel; per-mailbox comparison rows and chat-vs-email speed are computed from the same local SQL**
+
+[![SupportOS multi-mailbox dashboard with channel scope](docs/screenshots/v130-dashboard.png)](docs/screenshots/v130-dashboard.png)
+
+**Chat scope — the same dashboard focused on Beacon chats: 6 sessions, minutes-not-hours response times**
+
+[![SupportOS dashboard scoped to Beacon chat channel](docs/screenshots/v130-dashboard-chat-scope.png)](docs/screenshots/v130-dashboard-chat-scope.png)
+
+**Unified inbox — channel filter switches between email and Beacon chat sessions in one workspace**
+
+[![SupportOS inbox filtered to Beacon chats](docs/screenshots/v130-inbox-chat.png)](docs/screenshots/v130-inbox-chat.png)
+
+**A Beacon chat conversation — quick thread, and the Client Intelligence card works on chats exactly like on email**
+
+[![SupportOS Beacon chat conversation with client intelligence](docs/screenshots/v130-chat-conversation.png)](docs/screenshots/v130-chat-conversation.png)
+
+**Docs mirror — your Help Scout Docs, synced locally, searchable offline with FTS5**
+
+[![SupportOS Docs mirror with offline full-text search](docs/screenshots/v130-docs-search.png)](docs/screenshots/v130-docs-search.png)
 
 ### 📥 Support workspace
 
@@ -135,7 +176,13 @@ npm run build
 npm run start               # → http://127.0.0.1:3000
 ```
 
-Demo mode spins up a simulated Help Scout mailbox (12 conversations, customers, tags, known issues, knowledge and sample AI analyses) and runs the **real sync engine** against it — nothing is mocked at the UI level, so you're evaluating the actual product.
+Demo mode spins up a simulated Help Scout mailbox (20 conversations across email and Beacon chat, 9 Docs articles, customers, tags, known issues, knowledge and sample AI analyses) and runs the **real sync engine** against it — nothing is mocked at the UI level, so you're evaluating the actual product. While you're there, open a second terminal and fire a rating to watch it arrive live:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/demo/simulate-rating \
+  -H 'Content-Type: application/json' \
+  -d '{"conversationRemoteId": 105015, "rating": "great", "comments": "Shipped in the demo!"}'
+```
 
 <details>
 <summary><b>🔌 Connect your real Help Scout mailbox</b></summary>
@@ -150,17 +197,18 @@ See [docs/API-INTEGRATION.md](docs/API-INTEGRATION.md) for the verified Help Sco
 </details>
 
 <details>
-<summary><b>🖥️ Optional: native desktop app (Windows/macOS/Linux)</b></summary>
+<summary><b>🖥️ Optional: native desktop app (MSI / DMG / AppImage)</b></summary>
 
-SupportOS ships with a [Tauri 2](https://tauri.app) wrapper for a native desktop build:
+**The easy way:** download a ready-made installer from the [releases page](https://github.com/kimpearce888/supportos/releases) — Windows (MSI + NSIS `.exe`), macOS (universal DMG for Intel + Apple Silicon) and Linux (AppImage). Each package bundles the Node runtime and SQLite, so there is **nothing to install first** — no Node, no npm. Data lives in your user profile (`%APPDATA%` / `~/Library/Application Support` / `~/.local/share`).
+
+**Build it yourself** (requires Rust via [rustup.rs](https://rustup.rs)):
 
 ```bash
-# requires Rust: https://rustup.rs
-npm i -g @tauri-apps/cli
-tauri build
+npm ci
+npm run desktop:build        # assembles resources + tauri build → installers in src-tauri/target/release/bundle/
 ```
 
-See [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md) for the full walkthrough.
+The packaging pipeline (`scripts/build-desktop.mjs`) bundles the server with esbuild, copies the one native module, downloads the official Node runtime and hands everything to Tauri — see [docs/DESKTOP.md](docs/DESKTOP.md). The same pipeline runs in CI on all three operating systems for every release.
 </details>
 
 ---
@@ -170,6 +218,11 @@ See [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md) for the full walkthrough.
 | Area | What you get |
 |---|---|
 | **📥 Local mirror** | Account, users, teams, inboxes, folders, tags, custom fields, customers, organizations, conversations, threads, attachments, ratings, saved replies, workflows, routing — synced via polling with checkpoints, resumable after restart, with drift reconciliation |
+| **🎧 Channels (v1.3.0)** | Beacon chat sessions sync as first-class conversations (`type=chat`, source `via=beacon`) — unified inbox channel filter, chat badges, and honest chat-vs-email speed analytics. The conversations endpoint has no documented type filter, so filtering happens locally (stated openly in the capability matrix) |
+| **📚 Docs mirror (v1.3.0)** | Help Scout Docs collections, categories and articles mirrored read-only from docsapi.helpscout.net (separate Docs API key) — offline FTS search, status/view stats, channel-mix overview; without a key the mirror stays empty and says so |
+| **📡 Real-time events (v1.3.0)** | Server-Sent Events (`/api/events`) push new CSAT ratings and sync completions the moment they land; a lightweight ratings watcher decoupled from full sync feeds it; dashboards and toasts react without polling |
+| **📊 Multi-mailbox dashboards (v1.3.0)** | Scope every dashboard metric by any combination of mailboxes and channel; per-mailbox comparison rows (new/active/closed/backlog/first-response/resolution/ratings) — same deterministic SQL as single-mailbox views |
+| **📦 Desktop installers (v1.3.0)** | MSI, NSIS, universal DMG and AppImage built in CI with the Node runtime + SQLite bundled — no prerequisites; or build your own with `npm run desktop:build` |
 | **🎧 Support inbox** | 3-pane workspace: views, filters, bulk actions, sanitized HTML threads, customer + AI context panes, rich composer (reply / note / draft / cc / bcc / status-after-send / saved replies / AI draft insertion) |
 | ✅ **Ticket operations** | Reply, drafts, internal notes, status, assignment, inbox moves, subject edits, merge-safe tags, custom fields (system-field-safe), snooze, scheduled replies, attachments, workflow runs, "Open in Help Scout" links — every write audited and duplicate-protected |
 | **🔍 Universal search** | SQLite FTS5 across tickets, thread text, customers, knowledge, known issues, saved replies and AI analyses — filters (status/inbox/tag/date), exact ticket-number lookup, optional semantic search via local Qdrant |
@@ -258,7 +311,7 @@ No — by design and by enforcement. It reports **observable support-communicati
 <details>
 <summary><b>How is this tested?</b></summary>
 
-108 automated tests (unit / integration / e2e) — grown to **130** with Client Interaction Intelligence — run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
+172 automated tests (unit / integration / e2e) run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The v1.3.0 additions ship with their own integration + e2e coverage: channel filters, docs mirror sync and FTS, multi-mailbox scoping, and a real SSE stream test that asserts a rating event arrives over the wire. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
 </details>
 
 <details>
@@ -274,10 +327,10 @@ Yes for everything local: the mirror, search, analytics, knowledge base and prev
 - [x] v1.0.0 — local mirror, inbox workspace, FTS5 search, local AI pipeline, Issue Radar, reports, automation, backups, 108-test CI ([changelog](CHANGELOG.md))
 - [x] v1.1.0 — Client Interaction Intelligence: current-vs-normal change detection, evidence-linked signals, support approaches, human overrides, playbooks, effort/friction metrics
 - [x] v1.2.0 — the hardening release: full independent audit, 40+ fixes (security, data integrity, correctness), 150-test CI with named regression tests ([changelog](CHANGELOG.md))
-- [ ] Help Scout **Chat / Docs / Beacon** API coverage (currently conversations/mailbox APIs)
-- [ ] Real-time ratings refresh (currently polled during sync)
-- [ ] Multi-mailbox dashboards
-- [ ] Packaged desktop installers (MSI / DMG / AppImage)
+- [x] v1.3.0 — Help Scout **Chat / Docs / Beacon** API coverage, **real-time ratings refresh (SSE)**, **multi-mailbox dashboards**, **packaged desktop installers (MSI / DMG / AppImage)** — the complete original roadmap, closed ([changelog](CHANGELOG.md))
+- [ ] Incoming webhook push for conversations (currently polling; the ratings webhook path already exists)
+- [ ] Semantic docs search via local Qdrant (FTS5 today)
+- [ ] More granular SLA / business-hours reporting per mailbox
 
 Ideas and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -288,9 +341,10 @@ Ideas and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | Doc | Contents |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, data flow, provenance model |
-| [docs/API-INTEGRATION.md](docs/API-INTEGRATION.md) | Verified Help Scout v2/v3 API usage, capability matrix, known limitations |
+| [docs/API-INTEGRATION.md](docs/API-INTEGRATION.md) | Verified Help Scout v2/v3 API usage (incl. Chat/Docs/Beacon coverage), capability matrix, known limitations |
 | [docs/AI-SETUP.md](docs/AI-SETUP.md) | LM Studio + Qdrant setup and the AI pipeline |
 | [docs/CLIENT-INTELLIGENCE.md](docs/CLIENT-INTELLIGENCE.md) | Client Interaction Intelligence: design, safety model, API |
+| [docs/DESKTOP.md](docs/DESKTOP.md) | Desktop packaging: installers, the bundled-runtime design, building your own |
 | [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md) | Windows installation incl. Tauri desktop build |
 | [docs/LOCAL-RUN.md](docs/LOCAL-RUN.md) | Everyday running (dev, production, demo) |
 | [docs/BACKUP-RESTORE.md](docs/BACKUP-RESTORE.md) | Backups, restore, CSV/JSON export |

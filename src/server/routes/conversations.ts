@@ -14,7 +14,7 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
   const ops = ctx.operations;
 
   // List conversations for inbox views
-  app.get('/api/conversations', async (request) => {
+  app.get('/api/conversations', async (request, reply) => {
     const q = request.query as Record<string, string>;
     const me = ctx.db.prepare('SELECT id FROM users WHERE remote_id = (SELECT json_extract(value, \'$\') FROM application_settings WHERE key=\'me_remote_id\')').get() as { id: number } | undefined;
     const view = q.view ?? 'active';
@@ -25,9 +25,19 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
     const page = clampListParam(q.page, 1, 1, 100000);
     const pageSize = clampListParam(q.pageSize, 50, 1, 200);
     const mailboxId = q.mailboxId != null && q.mailboxId !== '' ? Number(q.mailboxId) : null;
+    // Channel filter (v1.3.0): 'email' or 'chat' (Beacon sessions); other values -> 422.
+    let channel: 'email' | 'chat' | null = null;
+    if (q.channel != null && q.channel !== '') {
+      if (q.channel !== 'email' && q.channel !== 'chat') {
+        reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: "channel must be 'email' or 'chat'." });
+        return;
+      }
+      channel = q.channel;
+    }
     const result = repo.listConversations({
       view,
       mailboxId: Number.isFinite(mailboxId) ? mailboxId : null,
+      channel,
       page,
       pageSize,
       assigneeLocalId,

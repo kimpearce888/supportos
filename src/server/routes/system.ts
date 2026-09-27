@@ -4,6 +4,7 @@ import type { AppContext } from '../services/context.js';
 import { tableStats } from '../database/connection.js';
 import { migrationsApplied } from '../database/migrator.js';
 import { CAPABILITY_MATRIX } from './capabilities.js';
+import { serverEventBus } from '../services/eventBus.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -126,6 +127,53 @@ export async function registerSystemRoutes(app: FastifyInstance, ctx: AppContext
     const conv = ctx.fakeProvider!.createConversationOnRemote({ subject, preview: text.slice(0, 120), mailboxId, customerRemoteId, body: text, tags: [] });
     ctx.jobsRepo.enqueue('sync', 'sync_conversation', { remoteId: conv.remoteId }, 2, 2);
     return { ok: true, message: `Simulated incoming conversation #${conv.number}. It will appear after the next sync tick (a few seconds).` };
+  });
+
+  // Simulate a CSAT rating arriving RIGHT NOW: upserted locally immediately and
+  // broadcast over SSE (/api/events) so connected dashboards update in real time.
+  app.post('/api/demo/simulate-rating', async (request, reply) => {
+    if (ctx.provider.kind !== 'fake') return { ok: false, message: 'Not in demo mode.' };
+    const body = (request.body ?? {}) as { conversationRemoteId?: number; rating?: 'great' | 'okay' | 'not-good'; comments?: string };
+    if (!body.conversationRemoteId || !Number.isInteger(Number(body.conversationRemoteId))) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'conversationRemoteId (remote Help Scout id) is required.' });
+      return;
+    }
+    if (body.rating && !['great', 'okay', 'not-good'].includes(body.rating)) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: "rating must be 'great', 'okay' or 'not-good'." });
+      return;
+    }
+    const hs = ctx.fakeProvider!.submitRating({
+      conversationRemoteId: Number(body.conversationRemoteId),
+      rating: body.rating ?? 'great',
+      comments: body.comments
+    });
+    if (!hs) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Conversation not found in the simulated account.' });
+      return;
+    }
+    const convRow = ctx.conversationRepo.getConversationByRemoteId(hs.conversationId ?? 0);
+    const customerLocal = hs.customerId ? ctx.referenceRepo.getLocalId('customers', hs.customerId) : null;
+    ctx.peopleRepo.upsertRating({
+      remote_id: hs.remoteId,
+      conversation_local_id: convRow?.id ?? null,
+      rating: hs.rating,
+      comments: hs.comments,
+      customer_local_id: customerLocal,
+      user_local_id: hs.userId ? ctx.referenceRepo.getLocalId('users', hs.userId) : null,
+      createdAt: hs.createdAt,
+      raw: hs
+    });
+    serverEventBus.emit('rating-received', {
+      rating: hs.rating,
+      conversationId: convRow?.id ?? null,
+      conversationNumber: convRow?.number ?? null,
+      customerId: customerLocal,
+      customerName: hs.customerName ?? null,
+      comments: hs.comments,
+      at: new Date().toISOString()
+    });
+    serverEventBus.emit('ratings-refreshed', { processed: 1, fresh: 1, at: new Date().toISOString() });
+    return { ok: true, message: `Simulated a ${hs.rating ?? '(no)'} rating on conversation #${convRow?.number ?? hs.conversationId}. Connected dashboards update instantly via /api/events.` };
   });
 
   // ---------------- Attachment file serving (safe: no execution, path constrained) ----------------

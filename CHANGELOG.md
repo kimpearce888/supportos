@@ -3,6 +3,49 @@
 All notable changes to SupportOS are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-09-27
+
+The roadmap-closing release: **Help Scout Chat / Docs / Beacon API coverage, real-time ratings refresh, multi-mailbox dashboards and packaged desktop installers** — the entire original public roadmap, delivered. 172/172 tests green (22 new).
+
+### Added — Chat / Docs / Beacon API coverage
+- **Beacon chat sessions are first-class mirror citizens**: Help Scout surfaces Beacon chats as conversations with `type=chat` and `source {type=chat, via=beacon}` — SupportOS now stores that attribution (`source_type` / `source_via` columns, migration 007), adds a `chats` catch-up sync resource with its own checkpoint, and gives the inbox a **channel filter (All / Email / Chat)** with Beacon badges on chat rows
+- **Channel analytics**: dashboards now compute a channel mix and **per-channel first-response / resolution speeds** (chat in minutes, email in hours — finally measurable side by side)
+- **Docs mirror (read-only)**: Help Scout Docs collections, categories and articles sync from `docsapi.helpscout.net` (separate Docs API key via `HELPSCOUT_DOCS_API_KEY`, HTTP Basic auth — implemented as a second `HelpScoutHttpClient` in `header` auth mode). New tables + `docs_fts` FTS5 index, new **Docs page** with offline full-text search, status filters, collection chips, view counts and article reader (`/docs`); `GET /api/docs/collections|articles|stats|articles/:id`
+- **Capability matrix flipped**: chat-api, docs-api and beacon rows are now `implemented: true` with honest notes (the conversations endpoint has no documented type filter → local filtering; no Docs key → empty mirror, never an error)
+- Provider interface grows `listChatSessions`, `listDocCollections`, `listDocCategories`, `listDocArticles`; implemented by both the real and the fake provider (demo data gains 6 Beacon chats + 9 Docs articles whose content deliberately matches the demo tickets, so search demos are meaningful)
+
+### Added — Real-time ratings refresh
+- **Server-Sent Events endpoint `GET /api/events`**: a typed in-process event bus (`serverEventBus`) broadcasts `rating-received`, `ratings-refreshed` and `sync-completed`; every subscription cleans up on disconnect; keep-alive pings; GET-exempt from rate limiting
+- **Lightweight ratings watcher** in the worker manager (default every 30s, `ratings_refresh_seconds` setting, 0 disables, clamped 10s–1h): upserts ratings and emits events only for NEW ratings — decoupled from the full sync pass
+- **`upsertRating` now reports whether the rating was newly inserted** — the dedup signal the real-time layer needs to avoid spamming on every re-sync
+- **Client `ServerEventsBridge`**: one shared `EventSource` for the whole SPA; ratings events invalidate dashboard/customer caches and raise a toast; sync events refresh conversation lists — the UI updates in seconds without polling
+- **Demo hook `POST /api/demo/simulate-rating`**: simulates a CSAT rating landing right now (upsert + instant SSE broadcast) so the real-time path is demonstrable and e2e-tested over the wire
+
+### Added — Multi-mailbox dashboards
+- **`GET /api/analytics/dashboard` accepts `mailboxIds` (comma list) and `channel` (email|chat)**; every KPI respects the scope; invalid values are 422s
+- **`mailbox_comparison` rows**: full KPI set per mailbox (new/active/closed/backlog/first-response/resolution/great-ratings) — computed by the same deterministic SQL as the headline numbers, so single- and multi-mailbox views can never disagree
+- **Dashboard UI**: multi-select mailbox chips + channel chips, state in the URL (`/?days=90&mailboxes=1,2&channel=chat` — shareable and back-button safe), plus Channel mix & speed and Mailbox comparison cards
+
+### Added — Packaged desktop installers (MSI / DMG / AppImage)
+- **`scripts/build-desktop.mjs`** assembles everything the Tauri shell needs: esbuild single-file server bundle (14MB, `better-sqlite3` external), the native module + its runtime deps (`bindings`, `file-uri-to-path`), the built client, and a **stock official Node runtime downloaded per platform** (version-matched to the assembling Node so the native ABI always matches; `--universal` lipo for macOS)
+- **Tauri 2 shell completed**: rewritten `tauri.conf.json` (targets msi/nsis/dmg/appimage, resources bundling), `Cargo.toml` + `build.rs`, and a new `src-tauri/src/lib.rs` that spawns the bundled backend on a free port, waits for `/health`, opens the window, honors `SUPPORTOS_CLIENT_DIST` / data-dir env overrides, kills the child on exit, and single-instance focuses the existing window
+- **`.github/workflows/desktop-release.yml`**: matrix build on windows-latest / macos-latest (universal) / ubuntu-22.04 — assembles resources natively, runs `tauri-apps/tauri-action`, and attaches MSI/NSIS/DMG/AppImage to the release. Resources are assembled in CI, never committed
+- App icon designed + generated (`scripts/make_icon.py` + `tauri icon`): indigo→blue rounded square, white S, insight spark
+- New npm scripts: `desktop:prepare`, `desktop:dev`, `desktop:build`, `desktop:icon`; `esbuild` + `@tauri-apps/cli` added as devDependencies
+- Local verification: the packaged bundle boots on the bundled Node runtime (health, SPA, docs API, channel filter and SSE all verified against the exact artifacts CI ships)
+
+### Changed
+- `conversations` table gains `source_type` / `source_via` (+ indexes); `ConversationSummary` API responses now include `type` and `source_via`
+- Initial sync order gains `chats`, `docs_collections`, `docs_articles`; incremental sync refreshes the docs mirror alongside reference data
+- `RealHelpScoutProvider` constructor accepts `docsApiKey` / `docsApiBase`; `HelpScoutHttpClient` supports a `header` auth mode (complete Authorization header, no 401-refresh) for the Docs API
+- Config: `HELPSCOUT_DOCS_API_KEY`, `HELPSCOUT_DOCS_API_BASE`, `BACKUPS_PATH`, `SUPPORTOS_CLIENT_DIST` env support (the last two make packaged builds possible without code changes)
+- Demo data: 6 Beacon chat sessions (5 closed in minutes, 1 active), 3 new ratings incl. chat ratings, `beacon` tag, 2 Docs collections / 9 articles
+
+### Tests (150 → 172)
+- New integration suite `tests/integration/channels_docs.test.ts`: chat sync + source attribution, channel filter, docs mirror + FTS + stats + idempotency, multi-mailbox + channel dashboard scoping, `upsertRating` new-insert semantics, event bus delivery + failing-subscriber isolation
+- New e2e suite `tests/e2e/realtime_docs.e2e.test.ts`: channel filter 200/422 paths, docs endpoints incl. 404, mailboxIds/channel dashboard scoping + validation, and a **real SSE stream test** (opens `/api/events`, triggers `simulate-rating`, asserts the rating event arrives on the same stream)
+- Updated count-based expectations for the richer demo dataset; capability-matrix e2e now asserts full implementation coverage (previously `total - 3` for the future-extension rows)
+
 ## [1.2.0] — 2026-09-27
 
 The hardening release: a full independent audit (static analysis, black-box runtime testing against a fresh database, and line-by-line review of every write path) produced **40+ findings; every confirmed issue is fixed and locked down by a regression test that names it**. 150/150 tests green.

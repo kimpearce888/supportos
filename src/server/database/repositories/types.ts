@@ -47,6 +47,8 @@ export interface ConversationRow {
   status: string;
   state: string | null;
   type: string | null;
+  source_type: string | null;
+  source_via: string | null;
   mailbox_local_id: number | null;
   folder_local_id: number | null;
   customer_local_id: number | null;

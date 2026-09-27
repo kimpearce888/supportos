@@ -1,12 +1,15 @@
 /** Shared constants */
 
 export const APP_NAME = 'SupportOS';
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 
 /** Help Scout API bases (documented, current) */
 export const HS_API_BASE = 'https://api.helpscout.net';
 export const HS_AUTHORIZE_URL = 'https://secure.helpscout.net/authentication/authorizeClientApplication';
 export const HS_TOKEN_PATH = '/v2/oauth2/token';
+
+/** Docs API base (documented; separate Docs API key, HTTP Basic auth) */
+export const HS_DOCS_API_BASE = 'https://docsapi.helpscout.net';
 
 /** Rate limit defaults (per current docs: plan-dependent; conservative default) */
 export const HS_DEFAULT_RATE_LIMIT_PER_MIN = 150;
@@ -42,8 +45,11 @@ export const INITIAL_SYNC_ORDER = [
   'workflows',
   'conversations',
   'threads',
+  'chats', // Beacon chat sessions (type=chat conversations) - channel catch-up after conversation sync
   'attachments',
   'ratings',
+  'docs_collections', // Docs API mirror (docsapi.helpscout.net, separate API key)
+  'docs_articles',
   'user_statuses'
 ] as const;
 
@@ -107,6 +113,9 @@ export const SYNC_OVERLAP_MINUTES = 10;
 
 /** Default page sizes */
 export const CONVERSATIONS_PAGE_SIZE = 50;
+
+/** Real-time ratings refresh: default poll interval for the lightweight ratings watcher (seconds; 0 disables). */
+export const RATINGS_REFRESH_DEFAULT_SECONDS = 30;
 
 /** Names for FTS + vector collections */
 export const QDRANT_COLLECTION = 'supportos_vectors';

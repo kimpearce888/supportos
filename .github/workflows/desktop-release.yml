@@ -1,0 +1,80 @@
+name: desktop-release
+
+# v1.3.0: packaged desktop installers (roadmap item).
+# Builds MSI + NSIS (Windows), universal DMG (macOS, arm64+x64 via lipo'd Node
+# runtime) and AppImage (Linux) with the bundled Node runtime + better-sqlite3,
+# then attaches them to the GitHub release for the tag (or a draft when
+# dispatched manually for testing).
+#
+# The Rust shell cannot be cross-compiled here, so each OS runs its own runner;
+# that is also why the native module + Node runtime are assembled PER PLATFORM
+# by scripts/build-desktop.mjs on that runner (ABI must match the runner's Node).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Create/update the release as a draft'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ''
+            rust-targets: ''
+          - os: macos-latest
+            args: '--target universal-apple-darwin'
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          - os: ubuntu-22.04
+            args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Install Linux webkit dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Cache cargo build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies (installs the better-sqlite3 prebuilt for this runner)
+        run: npm ci
+
+      - name: Assemble desktop resources (client + server bundle + Node runtime)
+        run: node scripts/build-desktop.mjs ${{ runner.os == 'macOS' && '--universal' || '' }}
+
+      - name: Build installers and attach to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'SupportOS v__VERSION__'
+          releaseBody: 'Desktop installers for SupportOS v__VERSION__ (bundled Node runtime + SQLite; no system dependencies). See the release notes below for the full changelog.'
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          prerelease: false
+          args: ${{ matrix.args }}

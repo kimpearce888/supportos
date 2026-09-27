@@ -259,7 +259,13 @@ export class PeopleRepository {
   }
 
   // ---------------- Ratings ----------------
-  upsertRating(r: { remote_id: number; conversation_local_id?: number | null; thread_local_id?: number | null; rating?: string | null; comments?: string | null; customer_local_id?: number | null; user_local_id?: number | null; createdAt?: string | null; raw?: unknown }): void {
+  /**
+   * Upsert one rating. Returns true when the rating was NEWLY inserted
+   * (never seen before) - the signal the real-time event layer uses to push
+   * `rating-received` events without spamming on every re-sync.
+   */
+  upsertRating(r: { remote_id: number; conversation_local_id?: number | null; thread_local_id?: number | null; rating?: string | null; comments?: string | null; customer_local_id?: number | null; user_local_id?: number | null; createdAt?: string | null; raw?: unknown }): boolean {
+    const existed = (this.db.prepare('SELECT 1 AS x FROM ratings WHERE remote_id = ?').get(r.remote_id) as { x: number } | undefined) != null;
     this.db
       .prepare(
         `INSERT INTO ratings (remote_id, conversation_id, thread_local_id, rating, comments, customer_local_id, user_local_id, remote_created_at, raw_json, last_synced_at)
@@ -280,6 +286,7 @@ export class PeopleRepository {
         raw: JSON.stringify(r.raw ?? r),
         synced: nowIso()
       });
+    return !existed;
   }
 
   getRatingsForCustomer(customerLocalId: number): { rating: string; comments: string | null; created_at: string | null; conversation_id: number | null }[] {

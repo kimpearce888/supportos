@@ -4,7 +4,7 @@
  * (timezone/scheduling, registration, viewer, integrations, billing topics)
  * so dashboards, search, issue radar and AI flows are demonstrable.
  */
-import type { HsConversation, HsCustomer, HsThread, HsUser, HsMailbox, HsTag, HsField, HsSavedReply, HsWorkflow, HsTeam, HsOrganization, HsRating, HsFolder, HsWebhookConfig, HsPropertyDef, HsUserStatus } from './provider.js';
+import type { HsConversation, HsCustomer, HsThread, HsUser, HsMailbox, HsTag, HsField, HsSavedReply, HsWorkflow, HsTeam, HsOrganization, HsRating, HsFolder, HsWebhookConfig, HsPropertyDef, HsUserStatus, HsDocCollection, HsDocCategory, HsDocArticle } from './provider.js';
 
 export function daysAgo(n: number, hour = 10, minute = 30): string {
   const d = new Date();
@@ -33,6 +33,9 @@ export interface FakeWorld {
   threads: HsThread[];
   ratings: HsRating[];
   userStatuses: HsUserStatus[];
+  docCollections: HsDocCollection[];
+  docCategories: HsDocCategory[];
+  docArticles: HsDocArticle[];
 }
 
 export function buildFakeWorld(): FakeWorld {
@@ -136,7 +139,8 @@ export function buildFakeWorld(): FakeWorld {
     { remoteId: 710, name: 'docs-gap', slug: 'docs-gap', color: '#929499', ticketCount: 1, createdAt: daysAgo(30), updatedAt: daysAgo(30) },
     { remoteId: 711, name: 'api', slug: 'api', color: '#37A4FF', ticketCount: 1, createdAt: daysAgo(60), updatedAt: daysAgo(36) },
     { remoteId: 712, name: 'sso', slug: 'sso', color: '#517EDB', ticketCount: 1, createdAt: daysAgo(40), updatedAt: daysAgo(15) },
-    { remoteId: 713, name: 'account', slug: 'account', color: '#929499', ticketCount: 1, createdAt: daysAgo(100), updatedAt: daysAgo(15) }
+    { remoteId: 713, name: 'account', slug: 'account', color: '#929499', ticketCount: 1, createdAt: daysAgo(100), updatedAt: daysAgo(15) },
+    { remoteId: 714, name: 'beacon', slug: 'beacon', color: '#37A4FF', ticketCount: 6, createdAt: daysAgo(60), updatedAt: daysAgo(1) }
   ];
   const fields: HsField[] = [
     {
@@ -324,8 +328,8 @@ export function buildFakeWorld(): FakeWorld {
       actionType: opts.actionType ?? null,
       actionText: opts.actionText ?? null,
       body: opts.body,
-      sourceType: 'email',
-      sourceVia: opts.type === 'customer' ? 'customer' : 'user',
+      sourceType: opts.sourceType ?? 'email',
+      sourceVia: opts.sourceVia ?? (opts.type === 'customer' ? 'customer' : 'user'),
       customer: opts.customer ?? null,
       createdBy: opts.createdBy ?? null,
       assignedTo: null,
@@ -812,11 +816,154 @@ export function buildFakeWorld(): FakeWorld {
   });
   (c12 as HsConversation & { mergedInto?: number }).mergedInto = c2.remoteId;
 
+  // --- Beacon chat sessions (v1.3.0): type='chat', source={type:'chat', via:'beacon'} ---
+  const minutesAfter = (iso: string, minutes: number): string => new Date(new Date(iso).getTime() + minutes * 60_000).toISOString();
+  /** Always in the PAST (unlike daysAgo(0, h, m), which can land later today when run early UTC). */
+  const hoursAgoNow = (hours: number): string => new Date(Date.now() - hours * 3600_000).toISOString();
+
+  function chatSession(opts: {
+    subject: string;
+    preview: string;
+    mailboxId: number;
+    customer: HsCustomer;
+    status: 'active' | 'closed';
+    tags: string[];
+    assigneeId?: number | null;
+    createdDaysAgo: number;
+    startHour: number;
+    closedAfterMin?: number;
+  }): HsConversation {
+    const start = daysAgo(opts.createdDaysAgo, opts.startHour, 0);
+    const end = opts.closedAfterMin != null ? minutesAfter(start, opts.closedAfterMin) : null;
+    const c: HsConversation = {
+      remoteId: convNum + 100000,
+      number: ++convNum,
+      type: 'chat',
+      sourceType: 'chat',
+      sourceVia: 'beacon',
+      folderId: null,
+      status: opts.status,
+      state: 'published',
+      subject: opts.subject,
+      preview: opts.preview,
+      mailboxId: opts.mailboxId,
+      assigneeId: opts.assigneeId ?? null,
+      assigneeType: opts.assigneeId ? 'user' : null,
+      assignedTeamId: null,
+      closedAt: end,
+      createdAt: start,
+      userUpdatedAt: end ?? start,
+      tags: opts.tags.map((name) => ({ remoteId: tags.find((t) => t.name === name)?.remoteId ?? null, name, color: null })),
+      primaryCustomerId: opts.customer.remoteId,
+      primaryCustomerName: `${opts.customer.firstName} ${opts.customer.lastName}`,
+      primaryCustomerEmail: opts.customer.emails[0]?.value ?? null,
+      cc: [],
+      bcc: [],
+      snoozedUntil: null,
+      customFields: [],
+      threadCount: 0
+    };
+    conversations.push(c);
+    return c;
+  }
+
+  // Beacon chat 1 (Daniel, viewer seats, closed in 14 min, great rating)
+  const ch1 = chatSession({ subject: 'Quick question about viewer seats', preview: 'Do viewers count against our seat limit?', mailboxId: 201, customer: cust(3004), status: 'closed', tags: ['beacon', 'viewer'], assigneeId: 1002, createdDaysAgo: 2, startHour: 15, closedAfterMin: 14 });
+  thread(ch1, { body: 'Hi! Quick question — do viewer seats count against our plan limit?', createdAt: daysAgo(2, 15, 0), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3004, first: 'Daniel', last: 'Kim', email: 'daniel.kim@acmecorp.com' }, createdBy: { id: 3004, type: 'customer', first: 'Daniel', last: 'Kim', email: 'daniel.kim@acmecorp.com' }, to: [] });
+  thread(ch1, { type: 'reply', body: 'Hi Daniel! Viewers are unlimited on the Growth plan — only editor seats count. You are currently at 7 of 10 editor seats, so you can invite as many viewers as you like.', createdAt: minutesAfter(daysAgo(2, 15, 0), 6), sourceType: 'chat', sourceVia: 'beacon', createdBy: { id: 1002, type: 'user', first: 'Priya', last: 'Nair', email: 'priya@zylker.io' }, to: [] });
+  thread(ch1, { body: 'Perfect, exactly what I needed. Thanks Priya!', createdAt: minutesAfter(daysAgo(2, 15, 0), 11), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3004, first: 'Daniel', last: 'Kim', email: 'daniel.kim@acmecorp.com' }, createdBy: { id: 3004, type: 'customer', first: 'Daniel', last: 'Kim', email: 'daniel.kim@acmecorp.com' }, to: [] });
+
+  // Beacon chat 2 (Hiro, SSO loop, closed in 9 min, great rating)
+  const ch2 = chatSession({ subject: 'SSO login loop', preview: 'SSO keeps redirecting me back to the login page.', mailboxId: 201, customer: cust(3008), status: 'closed', tags: ['beacon', 'sso'], assigneeId: 1002, createdDaysAgo: 4, startHour: 9, closedAfterMin: 9 });
+  thread(ch2, { body: 'Hi — SSO keeps redirecting me back to the login page. Chrome on macOS, started this morning.', createdAt: daysAgo(4, 9, 0), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3008, first: 'Hiro', last: 'Tanaka', email: 'hiro.tanaka@sakuradata.jp' }, createdBy: { id: 3008, type: 'customer', first: 'Hiro', last: 'Tanaka', email: 'hiro.tanaka@sakuradata.jp' }, to: [] });
+  thread(ch2, { type: 'reply', body: 'Hi Hiro! Please try an incognito window first. If that works, clear cookies for app.zylker.io — a stale session cookie is the usual cause of this loop. There is also a checklist in our internal SSO article I can walk you through.', createdAt: minutesAfter(daysAgo(4, 9, 0), 4), sourceType: 'chat', sourceVia: 'beacon', createdBy: { id: 1002, type: 'user', first: 'Priya', last: 'Nair', email: 'priya@zylker.io' }, to: [] });
+  thread(ch2, { body: 'Incognito worked. Cleared the cookies and I am in. Arigatō!', createdAt: minutesAfter(daysAgo(4, 9, 0), 8), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3008, first: 'Hiro', last: 'Tanaka', email: 'hiro.tanaka@sakuradata.jp' }, createdBy: { id: 3008, type: 'customer', first: 'Hiro', last: 'Tanaka', email: 'hiro.tanaka@sakuradata.jp' }, to: [] });
+
+  // Beacon chat 3 (Chloe, receipt resend, Billing mailbox, closed in 5 min, okay rating)
+  const ch3 = chatSession({ subject: 'Receipt for last month', preview: 'Can you resend the receipt for last month?', mailboxId: 202, customer: cust(3007), status: 'closed', tags: ['beacon', 'billing'], assigneeId: 1001, createdDaysAgo: 6, startHour: 11, closedAfterMin: 5 });
+  thread(ch3, { body: 'Bonjour — can you resend the receipt for last month? My accountant lost the original email.', createdAt: daysAgo(6, 11, 0), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3007, first: 'Chloe', last: 'Dubois', email: 'chloe@atelierfrance.fr' }, createdBy: { id: 3007, type: 'customer', first: 'Chloe', last: 'Dubois', email: 'chloe@atelierfrance.fr' }, to: [] });
+  thread(ch3, { type: 'reply', body: 'Of course, Chloe — I have just re-sent the November receipt to chloe@atelierfrance.fr. It should arrive within a minute. You can also download receipts any time under Billing → Invoices.', createdAt: minutesAfter(daysAgo(6, 11, 0), 3), sourceType: 'chat', sourceVia: 'beacon', createdBy: { id: 1001, type: 'user', first: 'Alex', last: 'Rivera', email: 'alex@zylker.io' }, to: [] });
+  thread(ch3, { body: 'Received, merci.', createdAt: minutesAfter(daysAgo(6, 11, 0), 4), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3007, first: 'Chloe', last: 'Dubois', email: 'chloe@atelierfrance.fr' }, createdBy: { id: 3007, type: 'customer', first: 'Chloe', last: 'Dubois', email: 'chloe@atelierfrance.fr' }, to: [] });
+
+  // Beacon chat 4 (Sarah, invite teammate, closed in 4 min, great rating)
+  const ch4 = chatSession({ subject: 'How do I invite a teammate?', preview: 'How do I invite a teammate as a viewer?', mailboxId: 201, customer: cust(3003), status: 'closed', tags: ['beacon'], assigneeId: 1001, createdDaysAgo: 9, startHour: 14, closedAfterMin: 4 });
+  thread(ch4, { body: 'How do I invite a teammate as a viewer? I do not want them to edit reports.', createdAt: daysAgo(9, 14, 0), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3003, first: 'Sarah', last: 'Okafor', email: 'sarah@brightpathedu.org' }, createdBy: { id: 3003, type: 'customer', first: 'Sarah', last: 'Okafor', email: 'sarah@brightpathedu.org' }, to: [] });
+  thread(ch4, { type: 'reply', body: 'Hi Sarah! Go to Settings → Team → Invite and pick "Viewer" in the role dropdown before sending. Viewers can see every shared report but cannot edit or schedule anything.', createdAt: minutesAfter(daysAgo(9, 14, 0), 2), sourceType: 'chat', sourceVia: 'beacon', createdBy: { id: 1001, type: 'user', first: 'Alex', last: 'Rivera', email: 'alex@zylker.io' }, to: [] });
+  thread(ch4, { body: 'Done — invitation sent. Thanks!', createdAt: minutesAfter(daysAgo(9, 14, 0), 3), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3003, first: 'Sarah', last: 'Okafor', email: 'sarah@brightpathedu.org' }, createdBy: { id: 3003, type: 'customer', first: 'Sarah', last: 'Okafor', email: 'sarah@brightpathedu.org' }, to: [] });
+
+  // Beacon chat 5 (Mateo, manual export while schedule broken, closed in 12 min)
+  const ch5 = chatSession({ subject: 'Manual export while the schedule is broken', preview: 'Can I trigger the dispatch report manually today?', mailboxId: 201, customer: cust(3002), status: 'closed', tags: ['beacon', 'timezone'], assigneeId: 1002, createdDaysAgo: 1, startHour: 16, closedAfterMin: 12 });
+  thread(ch5, { body: 'Since the DST issue our dispatch report is late — can I trigger it manually for today?', createdAt: daysAgo(1, 16, 0), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3002, first: 'Mateo', last: 'Morales', email: 'mateo@andeslogistics.cl' }, createdBy: { id: 3002, type: 'customer', first: 'Mateo', last: 'Morales', email: 'mateo@andeslogistics.cl' }, to: [] });
+  thread(ch5, { type: 'reply', body: 'Yes! Reports → Dispatch → "Run now" runs immediately and does not touch the schedule. I have also re-anchored your schedule to the current Santiago offset, so tomorrow\'s run should fire at 8 AM local again.', createdAt: minutesAfter(daysAgo(1, 16, 0), 8), sourceType: 'chat', sourceVia: 'beacon', createdBy: { id: 1002, type: 'user', first: 'Priya', last: 'Nair', email: 'priya@zylker.io' }, to: [] });
+  thread(ch5, { body: 'Perfect — running now. Gracias!', createdAt: minutesAfter(daysAgo(1, 16, 0), 10), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3002, first: 'Mateo', last: 'Morales', email: 'mateo@andeslogistics.cl' }, createdBy: { id: 3002, type: 'customer', first: 'Mateo', last: 'Morales', email: 'mateo@andeslogistics.cl' }, to: [] });
+
+  // Beacon chat 6 (Emma, shared view 404, ACTIVE - waiting for an agent)
+  const ch6 = chatSession({ subject: 'Shared view link returns 404', preview: 'The shared view link I sent a colleague returns a 404.', mailboxId: 201, customer: cust(3005), status: 'active', tags: ['beacon', 'viewer'], assigneeId: 1002, createdDaysAgo: 0, startHour: 10 });
+  // Recompute the start into the past (2h ago): daysAgo(0, h, m) can land LATER TODAY
+  // when the world is built early in the UTC day, which would exclude the chat
+  // from "created <= now" windows and date it in the future.
+  ch6.createdAt = hoursAgoNow(2);
+  ch6.userUpdatedAt = hoursAgoNow(2);
+  thread(ch6, { body: 'Hi — the shared view link I sent a colleague returns a 404 page. It worked last week.', createdAt: hoursAgoNow(2), sourceType: 'chat', sourceVia: 'beacon', customer: { id: 3005, first: 'Emma', last: 'Lindqvist', email: 'emma.lindqvist@nordicmail.se' }, createdBy: { id: 3005, type: 'customer', first: 'Emma', last: 'Lindqvist', email: 'emma.lindqvist@nordicmail.se' }, to: [] });
+
+  // --- Docs API mirror (v1.3.0): collections, categories, articles ---
+  const docCollections: HsDocCollection[] = [
+    { remoteId: 801, name: 'Getting Started', slug: 'getting-started', description: 'First steps with Zylker: workspace setup, team invites and your first report.', visibility: 'public', articleCount: 5 },
+    { remoteId: 802, name: 'Billing & Account', slug: 'billing-account', description: 'Plans, seats, invoices, VAT and receipts.', visibility: 'public', articleCount: 4 }
+  ];
+  const docCategories: HsDocCategory[] = [
+    { remoteId: 851, collectionId: 801, name: 'Setup', slug: 'setup', order: 1 },
+    { remoteId: 852, collectionId: 801, name: 'Team', slug: 'team', order: 2 },
+    { remoteId: 853, collectionId: 802, name: 'Invoices', slug: 'invoices', order: 1 },
+    { remoteId: 854, collectionId: 802, name: 'Plans & Seats', slug: 'plans-seats', order: 2 }
+  ];
+  const docArticles: HsDocArticle[] = [
+    {
+      remoteId: 8011, collectionId: 801, categoryId: 851, number: 101, slug: 'first-report', name: 'Creating your first report', status: 'published', views: 320, createdAt: daysAgo(180), updatedAt: daysAgo(12),
+      text: 'To create your first report, open the Reports section and click "New report". Pick a data source (dispatch, conversations or exports), then drag the fields you want onto the canvas. Schedules are optional: without one the report only runs on demand via the "Run now" button. When you add a schedule, the times shown follow your workspace timezone, which you can change under Settings → Workspace.'
+    },
+    {
+      remoteId: 8012, collectionId: 801, categoryId: 851, number: 102, slug: 'schedule-timezones', name: 'Understanding schedule timezones', status: 'published', views: 540, createdAt: daysAgo(150), updatedAt: daysAgo(3),
+      text: 'Schedules store the UTC offset that was active when you last saved them. When daylight-saving time changes in your region, existing schedules keep the old offset and can fire an hour early or late. To fix this, open the schedule and re-save it once after the clock change — the new offset is stamped automatically. Recurring exports, dispatch reports and reminders all follow the same rule. If two reports behave differently after a clock change, check which one was re-saved most recently.'
+    },
+    {
+      remoteId: 8013, collectionId: 801, categoryId: 852, number: 103, slug: 'inviting-teammates', name: 'Inviting teammates and roles', status: 'published', views: 610, createdAt: daysAgo(140), updatedAt: daysAgo(20),
+      text: 'Invite teammates from Settings → Team → Invite. The role dropdown decides what they can do: Editors can build, edit and schedule reports; Viewers can open any shared report but cannot edit anything. Viewer seats are unlimited on every plan — only editors count against your seat limit. Invitations expire after 7 days; simply resend to renew.'
+    },
+    {
+      remoteId: 8014, collectionId: 801, categoryId: 852, number: 104, slug: 'sharing-views', name: 'Sharing views with a link', status: 'draft', views: 45, createdAt: daysAgo(10), updatedAt: daysAgo(2),
+      text: 'DRAFT — not yet published. Share any saved view via the "Share" menu → "Copy link". Links inherit the visibility of the view: public links work for anyone with the URL, while restricted links require signing in. If a shared link returns 404, the view was most likely deleted or its visibility changed after the link was created.'
+    },
+    {
+      remoteId: 8021, collectionId: 802, categoryId: 853, number: 201, slug: 'receipts-and-invoices', name: 'Downloading receipts and invoices', status: 'published', views: 480, createdAt: daysAgo(200), updatedAt: daysAgo(30),
+      text: 'Every charge generates a receipt. Download receipts any time under Billing → Invoices, using the download icon on each row. Invoices include your billing profile address and, when set, your VAT number. If you need a receipt re-sent by email, contact billing and include the month — re-sending is instant. Accounting exports (CSV) are also available from the same screen for annual filing.'
+    },
+    {
+      remoteId: 8022, collectionId: 802, categoryId: 853, number: 202, slug: 'vat-numbers', name: 'Adding a VAT number to invoices', status: 'published', views: 260, createdAt: daysAgo(120), updatedAt: daysAgo(24),
+      text: 'Add your VAT number under Billing → Billing profile. New invoices include it automatically. We can also re-issue past invoices with the VAT number for your annual filing — contact billing with the range of months you need. The number must include your country prefix (for example FR40303265045 for France).' 
+    },
+    {
+      remoteId: 8023, collectionId: 802, categoryId: 854, number: 203, slug: 'plan-limits', name: 'Plan limits: editors vs viewers', status: 'published', views: 720, createdAt: daysAgo(210), updatedAt: daysAgo(15),
+      text: 'Seat limits count editors only. Viewers are unlimited on every plan. On the Growth plan you have 10 editor seats; Studio has 25. You can check current usage under Billing → Plan. Downgrading does not delete extra editors — they become read-only until seats free up again.'
+    },
+    {
+      remoteId: 8024, collectionId: 802, categoryId: 854, number: 204, slug: 'changing-plans', name: 'Upgrading or downgrading your plan', status: 'published', views: 190, createdAt: daysAgo(110), updatedAt: daysAgo(18),
+      text: 'Plan changes take effect immediately and are prorated. Upgrading unlocks the extra editor seats right away. Downgrading keeps your data intact; features outside the new plan become read-only. Failed charges put the account in a "past due" state for 14 days before any restriction — update the card under Billing → Payment method and we retry automatically within an hour.'
+    },
+    {
+      remoteId: 8025, collectionId: 801, categoryId: 851, number: 105, slug: 'sso-troubleshooting', name: 'SSO troubleshooting checklist (internal)', status: 'internal', views: 95, createdAt: daysAgo(90), updatedAt: daysAgo(4),
+      text: 'INTERNAL — for support agents only. SSO redirect loops are almost always a stale session cookie: 1) Ask the customer to try an incognito window. 2) If incognito works, clear cookies for app.zylker.io. 3) If it persists, check the identity provider logs for a failed assertion and verify the ACS URL has no trailing slash. 4) Escalate to platform engineering only after steps 1-3 with the SAML trace attached. Never share this checklist with customers directly.'
+    }
+  ];
+
   const ratings: HsRating[] = [
     { remoteId: 601, conversationId: c3.remoteId, threadId: null, rating: 'great', comments: 'Quick and clear, thank you!', customerId: 3005, customerName: 'Emma Lindqvist', userId: 1002, createdAt: daysAgo(39, 9, 0) },
     { remoteId: 602, conversationId: c5.remoteId, threadId: null, rating: 'great', comments: null, customerId: 3004, customerName: 'Daniel Kim', userId: 1001, createdAt: daysAgo(11, 12, 0) },
     { remoteId: 603, conversationId: c8.remoteId, threadId: null, rating: 'okay', comments: 'Fine, but would like this self-service.', customerId: 3007, customerName: 'Chloe Dubois', userId: 1001, createdAt: daysAgo(24, 15, 0) },
-    { remoteId: 604, conversationId: c10.remoteId, threadId: null, rating: 'great', comments: null, customerId: 3005, customerName: 'Emma Lindqvist', userId: 1001, createdAt: daysAgo(54, 11, 0) }
+    { remoteId: 604, conversationId: c10.remoteId, threadId: null, rating: 'great', comments: null, customerId: 3005, customerName: 'Emma Lindqvist', userId: 1001, createdAt: daysAgo(54, 11, 0) },
+    { remoteId: 605, conversationId: ch1.remoteId, threadId: null, rating: 'great', comments: 'Answered in six minutes over chat!', customerId: 3004, customerName: 'Daniel Kim', userId: 1002, createdAt: daysAgo(2, 15, 14) },
+    { remoteId: 606, conversationId: ch3.remoteId, threadId: null, rating: 'okay', comments: 'Fast, but I would love a self-service receipts page.', customerId: 3007, customerName: 'Chloe Dubois', userId: 1001, createdAt: daysAgo(6, 11, 6) },
+    { remoteId: 607, conversationId: ch2.remoteId, threadId: null, rating: 'great', comments: null, customerId: 3008, customerName: 'Hiro Tanaka', userId: 1002, createdAt: daysAgo(4, 9, 10) }
   ];
 
   const userStatuses: HsUserStatus[] = [
@@ -825,5 +972,5 @@ export function buildFakeWorld(): FakeWorld {
     { userId: 1003, emailStatus: 'away', emailUpdatedAt: daysAgo(2, 9, 0), chatStatus: 'unavailable', mailboxStatuses: {} }
   ];
 
-  return { me, users, systemUsers, teams, mailboxes, folders, tags, fields, savedReplies, workflows, webhooks, customerProps, orgProps, customers, organizations, conversations, threads, ratings, userStatuses };
+  return { me, users, systemUsers, teams, mailboxes, folders, tags, fields, savedReplies, workflows, webhooks, customerProps, orgProps, customers, organizations, conversations, threads, ratings, userStatuses, docCollections, docCategories, docArticles };
 }

@@ -29,8 +29,14 @@ Documented honestly rather than claimed: connecting a real Help Scout account, r
 - `tests/integration/interaction.test.ts` — full engine over the real sync engine: returning vs first-time clients, change directions vs baseline, preference overfit guard (3+ observations), human override precedence + revert, outcome metrics, repeat-issue detection, profile/playbook assembly
 - e2e — all six `/api/interaction/*` endpoints over the real Fastify app, including the 422 validation path, safety labeling and 404s
 
-Total: 130 tests (`npm run test:all`).
+Total: 172 tests (`npm run test:all`).
 
 ## v1.2.0 audit regression tests
 
 `tests/integration/audit-fixes.test.ts` and `tests/e2e/audit-fixes.e2e.test.ts` lock down every confirmed finding from the independent audit — observation idempotency, closed-only resolution, nominal-dimension change semantics, the CSS scrubber, NaN-param clamping, 422 validation semantics, settings whitelist, demo-mode import containment, evaluation-mode write blocking, draft-then-send idempotency, mutation-only rate limiting and the CORS port allowlist. Each test names the finding it protects, so a regression fails with an explanation.
+
+## v1.3.0 — channels, docs mirror, real-time, multi-mailbox
+
+- `tests/integration/channels_docs.test.ts` — Beacon chat sync with source attribution (`type=chat`, `via=beacon`), the inbox channel filter, the docs mirror (collections/categories/articles, offline FTS search, stats, idempotent re-sync), multi-mailbox + channel dashboard scoping (comparison rows, chat speed in minutes), `upsertRating` new-insert semantics, and event-bus delivery including failing-subscriber isolation
+- `tests/e2e/realtime_docs.e2e.test.ts` — channel filter happy + 422 paths, docs endpoints incl. 404 and status filters, `mailboxIds`/`channel` dashboard scoping + validation, and a **real SSE stream test**: opens `GET /api/events`, triggers `POST /api/demo/simulate-rating`, and asserts the rating event arrives on the same open stream — the real-time path is verified over the wire, not inferred
+- The packaged desktop bundle is verified by booting the exact artifacts CI ships (bundled Node runtime + esbuild server bundle) and probing `/health`, the SPA, the docs API and the SSE endpoint — see [docs/DESKTOP.md](DESKTOP.md)

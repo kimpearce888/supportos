@@ -3,11 +3,13 @@ import type { HelpScoutProvider } from '../integrations/helpscout/provider.js';
 import { ReferenceRepository } from '../database/repositories/referenceRepo.js';
 import { PeopleRepository } from '../database/repositories/peopleRepo.js';
 import { ConversationRepository } from '../database/repositories/conversationRepo.js';
+import { DocsRepository } from '../database/repositories/docsRepo.js';
 import { SyncRepository } from '../database/repositories/syncRepo.js';
 import { JobRepository } from '../database/repositories/jobRepo.js';
 import type { HsConversation, HsThread } from '../integrations/helpscout/provider.js';
 import { HelpScoutApiError } from '../integrations/helpscout/client.js';
 import { INITIAL_SYNC_ORDER, SYNC_OVERLAP_MINUTES } from '../../shared/constants.js';
+import { serverEventBus } from '../services/eventBus.js';
 import type { SyncState } from '../../shared/types.js';
 
 export interface ResourceSyncResult {
@@ -37,6 +39,7 @@ export class SyncCoordinator {
   private ref: ReferenceRepository;
   private people: PeopleRepository;
   private conv: ConversationRepository;
+  private docs: DocsRepository;
   private sync: SyncRepository;
   private jobs: JobRepository;
   running = false;
@@ -49,6 +52,7 @@ export class SyncCoordinator {
     this.ref = new ReferenceRepository(db);
     this.people = new PeopleRepository(db);
     this.conv = new ConversationRepository(db);
+    this.docs = new DocsRepository(db);
     this.sync = new SyncRepository(db);
     this.jobs = new JobRepository(db);
   }
@@ -88,6 +92,12 @@ export class SyncCoordinator {
       const failed = results.filter((r) => r.error).length;
       this.sync.setState(failed === 0 ? 'LIVE' : failed < results.length / 2 ? 'CATCHING_UP' : 'ERROR');
       this.sync.updateRun(runId, { finished: true, state: failed === 0 ? 'LIVE' : 'ERROR' });
+      serverEventBus.emit('sync-completed', {
+        kind: 'initial',
+        processed: results.reduce((a, b) => a + b.processed, 0),
+        errors: failed,
+        at: new Date().toISOString()
+      });
       return results;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -111,8 +121,8 @@ export class SyncCoordinator {
     if (this.sync.getState() !== 'LIVE') this.sync.setState('CATCHING_UP');
     const results: ResourceSyncResult[] = [];
     try {
-      // 1. Reference data refresh (cheap)
-      for (const resource of ['mailboxes', 'folders', 'tags', 'users', 'workflows', 'saved_replies', 'inbox_fields']) {
+      // 1. Reference data refresh (cheap) + docs mirror (separate Docs API key)
+      for (const resource of ['mailboxes', 'folders', 'tags', 'users', 'workflows', 'saved_replies', 'inbox_fields', 'docs_collections', 'docs_articles']) {
         if (this.cancellationRequested) break;
         const r = await this.syncResource(resource, false);
         results.push(r);
@@ -138,6 +148,12 @@ export class SyncCoordinator {
       const failed = results.filter((r) => r.error).length;
       this.sync.setState(failed === 0 ? 'LIVE' : 'CATCHING_UP');
       this.sync.updateRun(runId, { finished: true, state: failed === 0 ? 'LIVE' : 'CATCHING_UP', records_processed: results.reduce((a, b) => a + b.processed, 0), errors: failed });
+      serverEventBus.emit('sync-completed', {
+        kind: 'incremental',
+        processed: results.reduce((a, b) => a + b.processed, 0),
+        errors: failed,
+        at: new Date().toISOString()
+      });
       return results;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -398,6 +414,44 @@ export class SyncCoordinator {
         case 'threads': {
           return this.syncConversations(null, initial);
         }
+        case 'chats': {
+          // Beacon chat catch-up: chat sessions are type='chat' conversations, so the
+          // main conversation pass already mirrors them. This pass heals gaps (chats that
+          // fell outside the listing window) and gives chat sessions their own checkpoint.
+          const chats = await this.provider.listChatSessions();
+          let processed = 0;
+          for (const c of chats) {
+            const existing = this.conv.getConversationByRemoteId(c.remoteId);
+            if (!existing) {
+              await this.ingestConversation(c, [], true);
+              processed++;
+            }
+          }
+          return { resource, processed, failed: 0 };
+        }
+        case 'docs_collections': {
+          const collections = await this.provider.listDocCollections();
+          let processed = 0;
+          for (const col of collections) {
+            const localId = this.docs.upsertCollection(col);
+            const categories = await this.provider.listDocCategories(col.remoteId);
+            this.docs.upsertCategories(localId, categories);
+            processed++;
+          }
+          return { resource, processed, failed: 0 };
+        }
+        case 'docs_articles': {
+          let processed = 0;
+          const collections = this.db.prepare('SELECT id, remote_id FROM docs_collections').all() as { id: number; remote_id: number }[];
+          for (const col of collections) {
+            const articles = await this.provider.listDocArticles(col.remote_id);
+            for (const a of articles) {
+              this.docs.upsertArticle(a, col.id);
+              processed++;
+            }
+          }
+          return { resource, processed, failed: 0 };
+        }
         case 'attachments': {
           // Metadata already stored with threads; enqueue downloads for enabled auto-download
           const pending = this.conv.listAttachmentsWithoutFile(50);
@@ -405,9 +459,10 @@ export class SyncCoordinator {
         }
         case 'ratings': {
           const ratings = await this.provider.listAllRatings();
+          let fresh = 0;
           for (const r of ratings) {
             const convRow = r.conversationId ? this.conv.getConversationByRemoteId(r.conversationId) : undefined;
-            this.people.upsertRating({
+            const inserted = this.people.upsertRating({
               remote_id: r.remoteId,
               conversation_local_id: convRow?.id ?? null,
               rating: r.rating,
@@ -417,7 +472,20 @@ export class SyncCoordinator {
               createdAt: r.createdAt,
               raw: r
             });
+            if (inserted) {
+              fresh++;
+              serverEventBus.emit('rating-received', {
+                rating: r.rating,
+                conversationId: convRow?.id ?? null,
+                conversationNumber: convRow?.number ?? null,
+                customerId: r.customerId ? this.ref.getLocalId('customers', r.customerId) : null,
+                customerName: r.customerName ?? null,
+                comments: r.comments,
+                at: new Date().toISOString()
+              });
+            }
           }
+          if (fresh > 0) serverEventBus.emit('ratings-refreshed', { processed: ratings.length, fresh, at: new Date().toISOString() });
           return { resource, processed: ratings.length, failed: 0 };
         }
         case 'user_statuses': {
@@ -541,6 +609,7 @@ export class SyncCoordinator {
       number: c.number,
       threads: c.threadCount,
       type: c.type,
+      source: c.sourceType ? { type: c.sourceType, via: c.sourceVia ?? null } : null,
       folderId: c.folderId,
       status: c.status,
       state: c.state,

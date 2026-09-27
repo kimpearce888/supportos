@@ -52,6 +52,10 @@ export interface ConversationSummary {
   subject: string;
   preview: string;
   status: ConversationStatus;
+  /** Channel: 'email' or 'chat' (Beacon chat sessions arrive as type='chat'). */
+  type: string | null;
+  /** Beacon attribution when present (source.via='beacon'). */
+  source_via: string | null;
   mailbox_id: number;
   mailbox_name: string | null;
   customer_id: number | null;
@@ -451,7 +455,73 @@ export interface DashboardStats {
   by_agent: { name: string; count: number }[];
   by_team: { name: string; count: number }[];
   daily_new: MetricPoint[];
+  /** Volume split by channel (email vs chat/Beacon) for the selected mailbox scope. */
+  by_channel: { channel: string; count: number }[];
+  /** Per-channel first-response / resolution medians: chat is expected to be much faster than email. */
+  channel_metrics: { channel: string; count: number; first_response_avg_min: number | null; resolution_avg_min: number | null }[];
+  /** Multi-mailbox comparison rows (one per mailbox in scope, full KPIs each). */
+  mailbox_comparison: MailboxComparisonRow[];
   source: ('helpscout' | 'local' | 'ai')[];
+}
+
+export interface MailboxComparisonRow {
+  mailbox_id: number;
+  name: string;
+  new_conversations: number;
+  active_conversations: number;
+  closed_conversations: number;
+  backlog: number;
+  first_response_avg_min: number | null;
+  resolution_avg_min: number | null;
+  great_ratings: number;
+  total_ratings: number;
+}
+
+// ---------------------------------------------------------------- Docs mirror (v1.3.0)
+
+export interface DocsCollectionInfo {
+  id: number;
+  remote_id: number;
+  name: string;
+  slug: string | null;
+  description: string | null;
+  visibility: string | null;
+  article_count: number | null;
+  last_synced_at: string | null;
+}
+
+export interface DocsArticleSummary {
+  id: number;
+  remote_id: number;
+  collection_id: number;
+  collection_name: string | null;
+  category_id: number | null;
+  category_name: string | null;
+  number: number | null;
+  slug: string | null;
+  name: string;
+  status: string | null;
+  preview: string | null;
+  words: number | null;
+  views: number | null;
+  remote_created_at: string | null;
+  remote_updated_at: string | null;
+}
+
+export interface DocsArticleDetail extends DocsArticleSummary {
+  text: string | null;
+}
+
+export interface DocsStats {
+  collections: number;
+  articles: number;
+  published: number;
+  drafts: number;
+  internal: number;
+  total_views: number;
+  chat_sessions: number;
+  email_conversations: number;
+  last_synced_at: string | null;
 }
 
 export interface AiAnalytics {

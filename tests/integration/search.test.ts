@@ -49,8 +49,10 @@ describe('local search engine (spec #25)', () => {
   it('combines filters: status + tag (spec #25 example)', async () => {
     const { search } = await setup();
     const hits = search.searchConversations('', { status: 'closed', tag: 'timezone' });
-    expect(hits.length).toBe(1);
-    expect(hits[0]?.title).toContain('Timezone for scheduled exports');
+    // v1.3.0: the closed Beacon chat about the DST schedule (tagged timezone) joins the closed email ticket
+    expect(hits.length).toBe(2);
+    expect(hits.some((h) => h.title?.includes('Timezone for scheduled exports'))).toBe(true);
+    expect(hits.some((h) => h.title?.includes('Manual export'))).toBe(true);
   });
 
   it('searches across scopes in one call', async () => {

@@ -29,6 +29,7 @@ import { AiRepository } from '../database/repositories/aiRepo.js';
 import { IssueRepository } from '../database/repositories/issueRepo.js';
 import { KnowledgeRepository } from '../database/repositories/knowledgeRepo.js';
 import { ConversationRepository } from '../database/repositories/conversationRepo.js';
+import { DocsRepository } from '../database/repositories/docsRepo.js';
 import { ReferenceRepository } from '../database/repositories/referenceRepo.js';
 import { PeopleRepository } from '../database/repositories/peopleRepo.js';
 import { AnalyticsRepository } from '../database/repositories/analyticsRepo.js';
@@ -64,6 +65,7 @@ export class AppContext {
   issueRepo: IssueRepository;
   knowledgeRepo: KnowledgeRepository;
   conversationRepo: ConversationRepository;
+  docsRepo: DocsRepository;
   referenceRepo: ReferenceRepository;
   peopleRepo: PeopleRepository;
   analyticsRepo: AnalyticsRepository;
@@ -91,7 +93,9 @@ export class AppContext {
         clientId: this.config.helpscout.clientId,
         clientSecret: this.config.helpscout.clientSecret,
         redirectUri: this.config.helpscout.redirectUri,
-        concurrency: this.config.sync.apiConcurrency
+        concurrency: this.config.sync.apiConcurrency,
+        docsApiKey: this.config.helpscout.docsApiKey || null,
+        docsApiBase: this.config.helpscout.docsApiBase
       });
       this.provider = this.realProvider;
     }
@@ -104,6 +108,7 @@ export class AppContext {
     this.issueRepo = new IssueRepository(this.db);
     this.knowledgeRepo = new KnowledgeRepository(this.db);
     this.conversationRepo = new ConversationRepository(this.db);
+    this.docsRepo = new DocsRepository(this.db);
     this.referenceRepo = new ReferenceRepository(this.db);
     this.peopleRepo = new PeopleRepository(this.db);
     this.analyticsRepo = new AnalyticsRepository(this.db);
@@ -158,7 +163,9 @@ export class AppContext {
       clientId: this.config.helpscout.clientId,
       clientSecret: this.config.helpscout.clientSecret,
       redirectUri: this.config.helpscout.redirectUri,
-      concurrency: this.config.sync.apiConcurrency
+      concurrency: this.config.sync.apiConcurrency,
+      docsApiKey: this.config.helpscout.docsApiKey || null,
+      docsApiBase: this.config.helpscout.docsApiBase
     });
     this.provider = this.realProvider;
     this.rebindProvider();
