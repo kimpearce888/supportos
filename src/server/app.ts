@@ -91,8 +91,14 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     (req as unknown as { rawBody: string }).rawBody = String(body);
     try {
       done(null, JSON.parse(String(body)));
-    } catch (err) {
-      done(err as Error, undefined);
+    } catch {
+      // v1.5.0 audit fix: a malformed JSON body is a CLIENT error (400), not a
+      // server error. Fastify's default parser maps this to 400; the custom
+      // raw-body parser used to forward the raw SyntaxError, which has no
+      // statusCode and therefore surfaced as a 500 + error-level log entry.
+      const bad = new Error('Request body is not valid JSON.');
+      (bad as Error & { statusCode?: number }).statusCode = 400;
+      done(bad, undefined);
     }
   });
   app.post('/api/webhooks/helpscout', async (request, reply) => webhook.handle(request, reply));

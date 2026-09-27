@@ -216,6 +216,10 @@ export const hsCustomerV3Schema = z
     photoUrl: z.string().nullish(),
     jobTitle: z.string().nullish(),
     phone: z.string().nullish(),
+    background: z.string().nullish(),
+    age: z.union([z.string(), z.number()]).nullish(),
+    gender: z.string().nullish(),
+    location: z.string().nullish(),
     address: z.record(z.unknown()).nullish(),
     emails: z.array(z.object({ value: z.string().nullish(), type: z.string().nullish() }).passthrough()).nullish(),
     chatHandles: z.array(z.object({ value: z.string().nullish(), type: z.string().nullish() }).passthrough()).nullish(),
@@ -223,6 +227,8 @@ export const hsCustomerV3Schema = z
     websites: z.array(z.object({ value: z.string().nullish() }).passthrough()).nullish(),
     socialProfiles: z.array(z.object({ value: z.string().nullish(), type: z.string().nullish() }).passthrough()).nullish(),
     organization: z.object({ id: z.number(), name: z.string().nullish() }).nullish(),
+    /** Property values (shape varies by endpoint vintage; normalized downstream). */
+    properties: z.array(z.record(z.unknown())).nullish(),
     createdAt: z.string().nullish(),
     updatedAt: z.string().nullish(),
     _embedded: z.record(z.unknown()).optional()

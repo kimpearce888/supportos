@@ -53,7 +53,7 @@ AI Center → **Evaluation** lists the golden scenarios (simple question, multi-
 The Docs mirror is searchable two ways, fused automatically:
 
 1. **FTS5 keywords** — always available, zero configuration.
-2. **Semantic vectors** — requires an embedding model in LM Studio (Settings → LM Studio → embedding model). After a sync, a background job chunks every mirrored Docs article and embeds the chunks. Vectors are stored **locally in SQLite** (`docs_chunks`), so semantic search works even without Qdrant; when Qdrant is running it serves the same vectors with ANN speed.
+2. **Semantic vectors** — requires an embedding model in LM Studio (Settings → LM Studio → embedding model). After a sync, background jobs chunk every mirrored Docs article (`docs_chunks`) **and every conversation's subject + thread text (`conversation_chunks`, v1.5.0)** and embed the chunks. Vectors are stored **locally in SQLite**, so semantic search works even without Qdrant; when Qdrant is running it serves the same vectors with ANN speed. Ticket search (`POST /api/search`) fuses keyword and semantic results with Reciprocal Rank Fusion and labels which retriever found each hit.
 
 The Docs page's search box runs hybrid retrieval: both result lists are fused with Reciprocal Rank Fusion, each hit shows whether keyword search, semantic search, or both found it, and a mode note explains exactly which retrievers ran. If no embedding model is configured the note says so and keyword search answers alone — nothing silently pretends to be semantic.
 

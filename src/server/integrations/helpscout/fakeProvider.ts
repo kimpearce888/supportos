@@ -1,4 +1,4 @@
-import type { HelpScoutProvider, ConversationQuery, CustomerQuery, Page, HsUser, HsTeam, HsMailbox, HsFolder, HsTag, HsField, HsSavedReply, HsWorkflow, HsWebhookConfig, HsCustomer, HsOrganization, HsPropertyDef, HsConversation, HsThread, HsRating, HsUserStatus, CreateReplyInput, CreateNoteInput, ConversationPatch, HsReportRow, ChatSessionQuery, HsDocCollection, HsDocCategory, HsDocArticle } from './provider.js';
+import type { HelpScoutProvider, ConversationQuery, CustomerQuery, Page, HsUser, HsTeam, HsMailbox, HsFolder, HsTag, HsField, HsSavedReply, HsWorkflow, HsWebhookConfig, HsCustomer, HsOrganization, HsPropertyDef, HsConversation, HsThread, HsRating, HsUserStatus, CreateReplyInput, CreateNoteInput, CreateConversationInput, CreateConversationResult, ConversationPatch, HsReportRow, ChatSessionQuery, HsDocCollection, HsDocCategory, HsDocArticle } from './provider.js';
 import { buildFakeWorld, type FakeWorld } from './fakeData.js';
 import { HelpScoutApiError, friendlyError } from './client.js';
 
@@ -146,6 +146,7 @@ export class FakeHelpScoutProvider implements HelpScoutProvider {
       else items = items.filter((c) => c.status === query.status);
     }
     if (query.mailboxId) items = items.filter((c) => c.mailboxId === query.mailboxId);
+    if (query.contactId) items = items.filter((c) => c.primaryCustomerId === query.contactId);
     if (query.number) items = items.filter((c) => c.number === query.number);
     if (query.modifiedSince) {
       const since = new Date(query.modifiedSince).getTime();
@@ -248,6 +249,108 @@ export class FakeHelpScoutProvider implements HelpScoutProvider {
   }
 
   // ---------------- Writes ----------------
+
+  /**
+   * v1.5.0 outreach (demo mode): creates a real-shaped conversation + outbound
+   * 'reply' thread in the fake world so the ENTIRE downstream (sync mirror,
+   * reply detection, campaign reports) works identically in demo mode. The
+   * thread type is 'reply' - the local mirror's convention for agent-sent
+   * messages (matching how the rest of the fake world models agent replies).
+   */
+  async createConversation(input: CreateConversationInput): Promise<CreateConversationResult> {
+    this.log('/v2/conversations');
+    if (input.customerRemoteId == null && !input.customerEmail) {
+      throw new HelpScoutApiError(400, 'createConversation requires a customer id or email', 'This recipient has no Help Scout customer id and no email - they cannot be contacted.', null, false);
+    }
+    let customer = input.customerRemoteId != null ? this.world.customers.find((c) => c.remoteId === input.customerRemoteId) : undefined;
+    let createdCustomer = false;
+    if (!customer && input.customerEmail) {
+      // Spec #23: email fallback may create a new customer (mirrors Help Scout)
+      const nextCustId = Math.max(0, ...this.world.customers.map((c) => c.remoteId)) + 1;
+      customer = {
+        remoteId: nextCustId,
+        firstName: null,
+        lastName: null,
+        photoUrl: null,
+        jobTitle: null,
+        background: null,
+        age: null,
+        gender: null,
+        location: null,
+        emails: [{ value: input.customerEmail, type: 'work' }],
+        phones: [],
+        websites: [],
+        socialProfiles: [],
+        address: null,
+        organization: null,
+        properties: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      this.world.customers.push(customer);
+      createdCustomer = true;
+    }
+    if (!customer) {
+      throw new HelpScoutApiError(404, 'Customer not found', 'The selected customer no longer exists in Help Scout. They were skipped, not contacted twice.', null, false);
+    }
+    const mailbox = this.world.mailboxes.find((m) => m.remoteId === input.mailboxRemoteId);
+    if (!mailbox) throw new HelpScoutApiError(404, 'Mailbox not found', 'The chosen mailbox no longer exists in Help Scout.', null, false);
+    const now = new Date().toISOString();
+    const nextConvId = Math.max(...this.world.conversations.map((c) => c.remoteId)) + 1;
+    const nextNumber = Math.max(...this.world.conversations.map((c) => c.number)) + 1;
+    const nextThreadId = Math.max(...this.world.threads.map((t) => t.remoteId)) + 1;
+    const tagNames = input.tags ?? [];
+    const conv: HsConversation = {
+      remoteId: nextConvId,
+      number: nextNumber,
+      type: 'email',
+      folderId: null,
+      status: input.status ?? 'active',
+      state: 'published',
+      subject: input.subject,
+      preview: input.text.replace(/\s+/g, ' ').slice(0, 160),
+      mailboxId: mailbox.remoteId,
+      assigneeId: null,
+      assigneeType: null,
+      assignedTeamId: null,
+      closedAt: null,
+      createdAt: now,
+      userUpdatedAt: now,
+      tags: tagNames.map((name) => ({ remoteId: this.world.tags.find((t) => t.name === name)?.remoteId ?? null, name, color: null })),
+      primaryCustomerId: customer.remoteId,
+      primaryCustomerName: `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim() || customer.emails[0]?.value || `customer ${customer.remoteId}`,
+      primaryCustomerEmail: customer.emails[0]?.value ?? input.customerEmail ?? null,
+      cc: [],
+      bcc: [],
+      snoozedUntil: null,
+      customFields: [],
+      threadCount: 1
+    };
+    const thread: HsThread = {
+      remoteId: nextThreadId,
+      conversationId: conv.remoteId,
+      type: 'reply',
+      state: 'published',
+      status: null,
+      actionType: null,
+      actionText: null,
+      body: input.text,
+      sourceType: 'email',
+      sourceVia: 'user',
+      customer: { id: customer.remoteId, first: customer.firstName, last: customer.lastName, email: customer.emails[0]?.value ?? input.customerEmail ?? null },
+      createdBy: { id: this.world.me.remoteId, type: 'user', first: this.world.me.firstName, last: this.world.me.lastName, email: this.world.me.email },
+      assignedTo: null,
+      savedReplyId: null,
+      to: [customer.emails[0]?.value ?? input.customerEmail ?? ''],
+      cc: input.cc ?? [],
+      bcc: input.bcc ?? [],
+      createdAt: now,
+      attachments: []
+    };
+    this.world.conversations.push(conv);
+    this.world.threads.push(thread);
+    return { conversationRemoteId: conv.remoteId, number: conv.number, createdCustomer };
+  }
 
   async createReplyThread(input: CreateReplyInput): Promise<{ threadId: number; conversationId: number }> {
     const conv = this.world.conversations.find((c) => c.remoteId === input.conversationId);

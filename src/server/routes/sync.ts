@@ -165,6 +165,66 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
     return { ok: true, message: 'Search index rebuild queued.' };
   });
 
+  // ---------------- Encrypted multi-device sync (v1.5.0) ----------------
+
+  app.get('/api/sync/encrypted', async () => ({
+    bundles: ctx.encryptedSync.listBundles(),
+    log: ctx.encryptedSync.syncLog(),
+    bundle_dir: ctx.encryptedSync.bundleDir(),
+    design: 'File-based end-to-end encrypted bundles. No relay server: SupportOS never sees your data in transit - move the .sosync file yourself (cloud drive, USB, company share). Only the passphrase holder can decrypt it.'
+  }));
+
+  app.post('/api/sync/encrypted/export', async (request) => {
+    const body = request.body as { passphrase?: string };
+    const result = ctx.encryptedSync.exportBundle(String(body?.passphrase ?? ''));
+    if (result.ok) ctx.jobsRepo.audit({ actor: 'user', action: 'encrypted_sync_export', after_state: { path: result.path, size: result.size_bytes } });
+    return result;
+  });
+
+  app.post('/api/sync/encrypted/verify', async (request) => {
+    const body = request.body as { path?: string; passphrase?: string };
+    if (!body?.path) return { ok: false, message: 'A bundle path is required.' };
+    return ctx.encryptedSync.verifyBundle(String(body.path), String(body.passphrase ?? ''));
+  });
+
+  app.post('/api/sync/encrypted/import', async (request) => {
+    const body = request.body as { path?: string; passphrase?: string };
+    if (!body?.path) return { ok: false, message: 'A bundle path is required.' };
+    const result = ctx.encryptedSync.importBundle(String(body.path), String(body.passphrase ?? ''));
+    if (result.ok) ctx.jobsRepo.audit({ actor: 'user', action: 'encrypted_sync_import', after_state: { path: body.path } });
+    return result;
+  });
+
+  // Raw upload of a .sosync bundle (octet-stream body). Saved into the local
+  // bundles dir; decrypt+import happens in a second, explicit step so the
+  // passphrase never appears in a URL. Per-route body limit: bundles are whole
+  // encrypted databases and can be far larger than the JSON API limit.
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+  app.post(
+    '/api/sync/encrypted/upload',
+    { bodyLimit: 512 * 1024 * 1024 },
+    async (request, reply) => {
+      const body = request.body as Buffer | undefined;
+      if (!body || !Buffer.isBuffer(body) || body.length < 32) {
+        reply.code(422);
+        return { ok: false, message: 'Upload a .sosync bundle as the raw request body (application/octet-stream).' };
+      }
+      const magic = Buffer.from('SOSYNC', 'utf8');
+      if (!body.subarray(0, magic.length).equals(magic)) {
+        reply.code(422);
+        return { ok: false, message: 'This is not a SupportOS encrypted sync bundle (.sosync files start with SOSYNC).' };
+      }
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const dir = ctx.encryptedSync.bundleDir();
+      fs.mkdirSync(dir, { recursive: true });
+      const name = `uploaded-${Date.now()}.sosync`;
+      const target = path.join(dir, name);
+      fs.writeFileSync(target, body);
+      return { ok: true, path: target, message: 'Bundle uploaded. Now import it with your passphrase.' };
+    }
+  );
+
   app.post('/api/sync/rebuild-embeddings', async () => {
     ctx.jobsRepo.enqueue('maintenance', 'rebuild_embeddings', {}, 4, 1);
     return { ok: true, message: 'Embedding rebuild queued (requires LM Studio embedding model).' };

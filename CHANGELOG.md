@@ -3,6 +3,55 @@
 All notable changes to SupportOS are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-09-27
+
+The contact-first release: **Client Segmentation & Outreach** (the full spec — audience builder, explainable segments, individual campaign conversations with a complete audit trail), **vector search over tickets/threads**, **business-hours-aware SLA alerts on the Issue Radar**, and **optional end-to-end encrypted sync for multi-device use**. Built under a fresh independent audit: 7 real bugs found by the audit and fixed (each with regression coverage). 259/259 tests green (+35).
+
+### Added — Client Segmentation & Outreach
+- **Contact-first segment engine**: a deterministic condition-tree engine (`SegmentEngine`) evaluates audience rules against the local SQLite mirror and always resolves to UNIQUE CUSTOMERS — properties answer "which customers?", tags answer "which tickets?", the resolver answers "which customers own those tickets". AI never decides campaign membership; the engine's output is the only recipient source
+- **Exact tag semantics, conversation-level before contact resolution**: Ticket has ANY / ALL / NONE of tags, with ALL meaning one single conversation carries every tag (a customer with `timezone` on one ticket and `bug` on another does NOT match "ALL of timezone,bug") — the spec's critical test cases are locked by automated tests
+- **Explainable selections**: every matched customer carries a "why selected" evidence trail — property values that matched, matching conversations with their tags/status/dates — re-checked per customer at preview time; the recipient review table shows it inline and a matching-tickets drawer links straight into the inbox
+- **Property targeting driven by synced definitions**: customer property definitions (text/number/date/dropdown/url) are discovered from Help Scout; the operator matrix changes per type; **customer property VALUES are now synced** (pass-through on the v3/v2 customer payloads, stored in `customer_properties`) with a raw_json backfill that heals pre-1.5 databases without a re-sync
+- **Contact-field conditions**: name, email, email domain, organization, job title, location, background, has-email/phone/multiple-emails — Help Scout's background/age/gender/location fields are now mirrored on customers
+- **Support-history conditions**: total/open/closed ticket counts (computed over ALL customers, so "open = 0" works), last-contact/first-contact windows, ever-had-tag (optionally time-boxed)
+- **Saved segments**: reusable, versioned rules stored as structured JSON condition trees (never SQL); a saved segment is dynamic, a campaign's recipients are a STATIC snapshot taken at creation
+- **Individual campaign conversations**: one Help Scout conversation per selected customer via `POST /v2/conversations` (provider gains `createConversation`, real + fake implementations) — never a shared BCC send; customer identified by id (email fallback only when unresolvable, and it is recorded in the audit trail)
+- **Campaign lifecycle with full audit**: draft → queued → sending → paused/completed/cancelled; per-recipient states (selected/queued/sending/sent/failed/skipped/cancelled/unknown) with attempt log and event trail — "why did this customer receive this email?" is answerable with evidence long after the segment changed
+- **Safe sending**: sends go through the SAME priority API queue and rate limiter as manual replies in small batches; validation before queueing (emails, DNC, already-sent, unresolved personalization variables); Do-Not-Contact list enforced at send time; duplicate-send protection refuses re-queueing completed campaigns; timeouts land in `unknown` and are reconciled by customer+subject+time before any retry (never blindly resent); pause/resume/cancel-remaining/retry-failed; crash recovery reclaims recipients stranded mid-batch
+- **Personalization with preview**: `{{first_name}} {{last_name}} {{company}} {{organization}} {{last_ticket_number}} {{last_ticket_subject}}` render from each recipient's own snapshot (the compose step previews the exact rendered message via the same code path as the send; unknown/empty variables are flagged, never silently shipped)
+- **Reply intelligence**: campaign report tracks replies from the local mirror (a customer thread after the send) with honest labeling as conversation outcomes, not email-delivery analytics
+- **UI**: an Outreach page with the four-stage wizard (audience → recipient review → compose → explicit final review), campaign monitor with per-recipient states + audit events + report, saved segments manager and DNC manager; real-time progress over the existing SSE stream (`campaign-updated`)
+
+### Added — Vector search over tickets/threads
+- **Ticket chunking**: every conversation (subject + customer + tags header, then thread bodies in order) is chunked into `conversation_chunks` (migration 009) on sync; re-syncs are idempotent, content changes reset embedding state
+- **Embedding pipeline**: a background `embed_conversation_chunks` job (enqueued after the conversations pass and by the v1.5 boot backfill) embeds chunks with the configured LM Studio model; vectors are ALWAYS stored locally and upserted to Qdrant when connected
+- **Hybrid ticket search**: `POST /api/search` fuses FTS5 and semantic retrievers with Reciprocal Rank Fusion; Qdrant serves ANN when reachable, otherwise a local cosine scan over stored embeddings — semantic ticket search works with zero external services; every hit records why it surfaced (keyword / semantic / both) and a `mode_note` says which mode ran
+
+### Added — Business-hours-aware SLA alerts (Issue Radar)
+- `GET /api/issues/sla-alerts`: for every business-hours-configured mailbox, active/pending conversations are aged in BUSINESS minutes since their last CUSTOMER message (snoozed conversations excluded; conversations awaiting nobody never alert) against the first-response target (no reply yet) or resolution target (replied, unresolved) — states: breached, at-risk (≥80% of target), with per-mailbox rollups
+- The Issue Radar renders the alert table at the top with links into the inbox; unconfigured mailboxes are listed honestly — nothing is guessed
+
+### Added — Optional end-to-end encrypted sync (multi-device)
+- **File-based `.sosync` bundles by design** — no relay server exists on purpose: SupportOS never sees your data in transit; move the bundle yourself (cloud drive, USB, company share) and only the passphrase holder can decrypt it
+- **Crypto**: AES-256-GCM with a scrypt-derived key (N=2^15, per-export salt + IV, params in an unencrypted JSON header after a `SOSYNC` magic); authentication failure = wrong passphrase or tampering, nothing changes; all primitives from Node's built-in crypto
+- **Content**: the complete SQLite mirror (customers, conversations, AI analysis, segments, campaigns) via `VACUUM INTO` consistent snapshots; attachments are deliberately NOT bundled — they re-download from Help Scout automatically on the other device
+- **Import is safe-by-default**: decrypt to a temp file → PRAGMA integrity_check → schema-version guard (never import newer schemas into older apps) → automatic safety backup of the current data → atomic swap → restart prompt; verify-first dry run available; a sync ledger records every export/import
+- **Settings → Encrypted sync**: export (passphrase + confirmation + strength hint), upload or path-based import, two-step verify-then-import so the passphrase never rides a URL
+
+### Fixed — found by the fresh independent audit (not by the existing test suite)
+- **Deeply nested condition trees crashed the whole server**: a hostile segment tree recursed without bound in the engine (stack overflow → process death → DoS). Trees are now depth- (10) and node-count-capped at the route boundary with a clean 422, plus a defensive depth guard inside the engine; locked by an audit-phase regression test
+- **Malformed JSON bodies returned 500** (and logged as server errors): the custom raw-body JSON parser forwarded raw SyntaxErrors without a status code; malformed bodies are now a clean 400 client error
+- **`POST /api/outreach/dnc` with a negative id returned 500**: the FK violation surfaced as a server error; ids are validated as positive integers first
+- **A crash mid-batch stranded recipients in `sending` forever**: countRemaining() counted them but claimPendingRecipients() never picked them — an infinite re-enqueue loop. sendBatch now reclaims stale `sending` rows at start (the worker is strictly sequential, so this can never race a live batch); proven by a crash-recovery test that also asserts no double-sends
+- **Campaign validation and reports truncated at 1000 recipients**: counts were computed over the capped recipients list — a >1000-recipient campaign was under-validated (and could be refused despite being fully sendable); counts now come from SQL aggregates over ALL recipients
+- **The property backfill could never heal the common case**: it expected the wire shape (`{id,key,value}`) while raw_json stores the normalized shape (`{definitionRemoteId,...}`); both shapes are now accepted
+- **Campaign monitor inbox links used the conversation NUMBER where the route expects the local id**: recipient rows now carry the resolved local conversation id
+
+### Changed
+- `HsCustomer` (provider DTO) gains `background/age/gender/location` and normalized `properties`; the v3/v2 mappers pass them through defensively (unknown property shapes are skipped honestly, not guessed)
+- `searchEngine` responses carry a `mode_note` explaining the retrieval mode that actually ran
+- Help Scout customer-property VALUES: synced when the API returns them (shape varies by endpoint vintage — normalized defensively); the capability matrix documents the honest limitation
+
 ## [1.4.0] — 2026-09-27
 
 The real-time release: **incoming webhook push for conversations, semantic docs search via local Qdrant (with a no-Qdrant fallback), and per-mailbox SLA/business-hours reporting** — plus two serious latent bugs found and fixed in the job pipeline underneath the webhook path. 224/224 tests green (+52).

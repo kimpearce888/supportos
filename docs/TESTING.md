@@ -29,7 +29,7 @@ Documented honestly rather than claimed: connecting a real Help Scout account, r
 - `tests/integration/interaction.test.ts` — full engine over the real sync engine: returning vs first-time clients, change directions vs baseline, preference overfit guard (3+ observations), human override precedence + revert, outcome metrics, repeat-issue detection, profile/playbook assembly
 - e2e — all six `/api/interaction/*` endpoints over the real Fastify app, including the 422 validation path, safety labeling and 404s
 
-Total: 172 tests (`npm run test:all`).
+Total: 259 tests (`npm run test:all`).
 
 ## v1.2.0 audit regression tests
 

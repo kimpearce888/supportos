@@ -46,11 +46,15 @@ export function IssuesPage(): ReactNode {
 
 function IssueRadar(): ReactNode {
   const { data, error } = useQuery({ queryKey: ['issue-radar-full'], queryFn: () => api.get<{ alerts: IssueRadarAlert[] }>('/api/reports/issue-radar') });
+  const { data: sla } = useQuery({ queryKey: ['sla-alerts'], queryFn: () => api.get<SlaAlertsData>('/api/issues/sla-alerts'), refetchInterval: 60_000 });
   if (error) return <ErrorState message="Could not load issue radar" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} />;
   if (!data) return <Spinner />;
-  if (data.alerts.length === 0) return <EmptyState icon="sparkles" title="No alerts right now" hint="Alerts appear when clusters rise, new issues appear, volume spikes, or ratings correlate with topics." />;
   return (
     <>
+      <SlaAlertsPanel data={sla} />
+      {data.alerts.length === 0 && (sla == null || (sla.total_breached === 0 && sla.total_at_risk === 0)) ? (
+        <EmptyState icon="sparkles" title="No alerts right now" hint="Alerts appear when clusters rise, new issues appear, volume spikes, SLA targets slip, or ratings correlate with topics." />
+      ) : null}
       {data.alerts.map((a, i) => (
         <div key={i} className={`alert ${a.severity === 'critical' ? 'error' : a.severity === 'warning' ? 'warn' : 'info'}`}>
           <div className="flex-between">
@@ -67,6 +71,87 @@ function IssueRadar(): ReactNode {
       ))}
       <p className="text-xs muted">Every alert carries supporting ticket links. Timing correlations are worded as "associated"/"potentially related", never as proven causation.</p>
     </>
+  );
+}
+
+interface SlaAlertsData {
+  generated_at: string;
+  total_breached: number;
+  total_at_risk: number;
+  alerts: { conversation_id: number; number: number; subject: string | null; status: string; mailbox_name: string; state: 'breached' | 'at_risk'; waited_business_min: number; target_min: number; target_kind: 'first_response' | 'resolution'; overdue_business_min: number; since: string }[];
+  per_mailbox: { mailbox_id: number; mailbox_name: string; breached: number; at_risk: number; monitored: number }[];
+  unconfigured_mailboxes: string[];
+  note: string;
+}
+
+/** v1.5.0: business-hours-aware SLA alerts at the top of the Issue Radar. */
+function SlaAlertsPanel({ data }: { data: SlaAlertsData | undefined }): ReactNode {
+  if (!data) return null;
+  if (data.total_breached === 0 && data.total_at_risk === 0) {
+    if (data.unconfigured_mailboxes.length > 0) {
+      return (
+        <div className="alert info">
+          <strong>SLA alerts not active for every mailbox</strong>
+          <div className="text-sm" style={{ marginTop: 4 }}>
+            Configure business hours and SLA targets in Settings → Business hours for: {data.unconfigured_mailboxes.join(', ')}. Until then those mailboxes are reported as unconfigured - nothing is guessed.
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
+  return (
+    <div className="card" style={{ padding: 0, marginBottom: 14 }}>
+      <div className="flex-between" style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+        <div>
+          <h3 className="card-title" style={{ marginBottom: 0 }}>
+            SLA alerts — business-hours aware
+          </h3>
+          <p className="text-xs muted" style={{ margin: '2px 0 0' }}>{data.note}</p>
+        </div>
+        <div className="flex" style={{ gap: 8 }}>
+          <span className="badge err">{data.total_breached} breached</span>
+          <span className="badge warn">{data.total_at_risk} at risk</span>
+        </div>
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Conversation</th>
+            <th>Mailbox</th>
+            <th>State</th>
+            <th>Waiting</th>
+            <th>Target</th>
+            <th>Overdue</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.alerts.map((a) => (
+            <tr key={a.conversation_id}>
+              <td>
+                <Link to={`/inbox/conversation/${a.conversation_id}`} className="text-sm">
+                  <span className="mono">#{a.number}</span> {a.subject ?? '(no subject)'}
+                </Link>
+              </td>
+              <td className="text-sm">{a.mailbox_name}</td>
+              <td>
+                <span className={`badge ${a.state === 'breached' ? 'err' : 'warn'}`}>{a.state === 'breached' ? 'breached' : 'at risk'}</span>
+              </td>
+              <td className="text-sm">{a.waited_business_min} business min</td>
+              <td className="text-xs">
+                {a.target_min} min ({a.target_kind.replace('_', ' ')})
+              </td>
+              <td className="text-sm">{a.overdue_business_min > 0 ? <span className="badge err">+{a.overdue_business_min} min</span> : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.unconfigured_mailboxes.length > 0 ? (
+        <p className="text-xs muted" style={{ padding: '6px 12px', margin: 0 }}>
+          Not yet configured (no alerts computed): {data.unconfigured_mailboxes.join(', ')} — Settings → Business hours.
+        </p>
+      ) : null}
+    </div>
   );
 }
 

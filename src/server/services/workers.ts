@@ -53,6 +53,8 @@ export class WorkerManager {
     // Recover stale jobs from a previous run (spec: survive restart)
     const recovered = this.ctx.jobsRepo.recoverStaleJobs();
     if (recovered > 0) this.logger.info('Recovered stale jobs after restart', { operation: 'recover', count: recovered });
+    // v1.5.0: one-time backfills for pre-1.5 databases (ticket chunks + property values)
+    this.backfillV150();
     // Recover webhook events that were persisted but never processed (v1.4.0):
     // the endpoint persists FIRST and acknowledges, so a crash in between used
     // to leave events pending forever.
@@ -360,6 +362,20 @@ export class WorkerManager {
           await this.embedPendingDocs();
           break;
         }
+        case 'embed_conversation_chunks': {
+          // v1.5.0: semantic ticket/thread search - same pattern as docs chunks
+          await this.embedPendingConversationChunks();
+          break;
+        }
+        // ---------- outreach queue (v1.5.0) ----------
+        case 'outreach_send_batch': {
+          await this.ctx.campaigns.sendBatch(Number(payload.campaignId));
+          break;
+        }
+        case 'outreach_reconcile': {
+          await this.ctx.campaigns.reconcile(Number(payload.campaignId));
+          break;
+        }
         // ---------- reports queue ----------
         case 'refresh_report': {
           await this.ctx.analytics.dashboard(String(payload.from ?? new Date(Date.now() - 30 * 86400000).toISOString()), String(payload.to ?? new Date().toISOString()));
@@ -413,6 +429,8 @@ export class WorkerManager {
       this.ctx.jobsRepo.enqueue('attachments', 'download_recent_attachments', {}, PRIORITY.INDEXING, 2);
     }
     this.ctx.jobsRepo.enqueue('embeddings', 'embed_knowledge_chunks', {}, PRIORITY.INDEXING, 2);
+    // v1.5.0: semantic ticket search over the fresh mirror
+    this.ctx.jobsRepo.enqueue('embeddings', 'embed_conversation_chunks', {}, PRIORITY.INDEXING, 2);
     // Client Interaction Intelligence: build behavioral baselines from all history
     // (deterministic — no AI needed) so profiles are populated immediately (spec #59).
     try {
@@ -434,6 +452,32 @@ export class WorkerManager {
       for (const c of newConversations) {
         this.ctx.jobsRepo.enqueue('ai', 'analyze_ticket', { conversationId: c.id }, PRIORITY.ANALYTICS, 2);
       }
+    }
+  }
+
+  /**
+   * v1.5.0 one-time backfills for databases created before this version:
+   * - ticket vector chunks (semantic search) for every mirrored conversation;
+   * - customer property values harvested from stored raw_json snapshots.
+   * Both are idempotent and cheap; they run once per boot, not per tick.
+   */
+  private backfillV150(): void {
+    try {
+      const conversations = (this.ctx.db.prepare('SELECT COUNT(*) AS n FROM conversations WHERE deleted_at IS NULL').get() as { n: number }).n;
+      const chunked = (this.ctx.db.prepare('SELECT COUNT(DISTINCT conversation_id) AS n FROM conversation_chunks').get() as { n: number }).n;
+      if (conversations > 0 && chunked === 0) {
+        const ids = this.ctx.db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL').all() as { id: number }[];
+        for (const c of ids) this.ctx.conversationRepo.rechunkConversation(c.id);
+        this.ctx.jobsRepo.enqueue('embeddings', 'embed_conversation_chunks', {}, PRIORITY.INDEXING, 2);
+        this.logger.info('v1.5.0 backfill: conversation chunks created', { operation: 'backfill', conversations: ids.length });
+      }
+      const propRows = (this.ctx.db.prepare('SELECT COUNT(*) AS n FROM customer_properties').get() as { n: number }).n;
+      if (propRows === 0) {
+        const healed = this.ctx.peopleRepo.backfillPropertiesFromRawJson();
+        if (healed > 0) this.logger.info('v1.5.0 backfill: customer property values harvested from raw_json', { operation: 'backfill', values: healed });
+      }
+    } catch (e) {
+      this.logger.warn('v1.5.0 backfill failed (non-fatal)', { operation: 'backfill', error: String(e) });
     }
   }
 
@@ -513,6 +557,65 @@ export class WorkerManager {
     } catch (e) {
       for (const c of chunks) this.ctx.docsRepo.setDocChunkEmbeddingState(c.id, 'failed', null);
       this.logger.warn('Docs embedding pass failed', { operation: 'embed_docs', error: String(e) });
+    }
+  }
+
+  /**
+   * v1.5.0: embed ticket/thread chunks. Same design as embedPendingDocs:
+   * vectors ALWAYS stored locally (conversation_chunks.embedding) so semantic
+   * search works without Qdrant; Qdrant upsert adds ANN speed when connected.
+   * Without an embedding model this is a documented no-op (FTS remains).
+   */
+  private async embedPendingConversationChunks(): Promise<void> {
+    const chunks = this.ctx.conversationRepo.listConversationChunksNeedingEmbedding(60);
+    if (chunks.length === 0) return;
+    const settings = this.ctx.settingsRepo.getLmStudio();
+    if (!settings.embedding_model) return;
+    const qdrantHealth = await this.ctx.qdrant.health();
+    try {
+      const vectors = await this.ctx.aiProvider.embed(chunks.map((c) => c.content.slice(0, 4000)));
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i]!;
+        const v = vectors[i];
+        if (!v || v.length === 0) {
+          this.ctx.conversationRepo.setConversationChunkEmbeddingState(c.id, 'failed', null);
+          continue;
+        }
+        this.ctx.conversationRepo.updateConversationChunkEmbedding(c.id, settings.embedding_model, new Float32Array(v), 'indexed');
+      }
+      if (qdrantHealth.connected) {
+        const points = chunks
+          .map((c, i) => ({ c, v: vectors[i] }))
+          .filter((x) => x.v && x.v.length > 0)
+          .map((x) => {
+            const conv = this.ctx.db
+              .prepare('SELECT c.id, c.number, c.subject, c.customer_local_id FROM conversations c WHERE c.id = ?')
+              .get(x.c.conversation_id) as { id: number; number: number; subject: string | null; customer_local_id: number | null } | undefined;
+            return {
+              id: x.c.id,
+              vector: x.v!,
+              payload: {
+                entity_type: 'conversation_chunk' as const,
+                entity_id: x.c.conversation_id,
+                chunk_id: x.c.id,
+                title: conv?.subject?.slice(0, 300) ?? `#${conv?.number ?? x.c.conversation_id}`,
+                number: conv?.number ?? null,
+                text: x.c.content.slice(0, 2000),
+                visibility: 'internal_only' as const,
+                embedding_model: settings.embedding_model ?? 'unknown',
+                index_version: 1
+              }
+            };
+          });
+        if (points.length > 0) {
+          await this.ctx.qdrant.ensureCollection(points[0]!.vector.length);
+          await this.ctx.qdrant.upsert(points as Parameters<typeof this.ctx.qdrant.upsert>[0]);
+        }
+      }
+      this.logger.info('Conversation chunk embedding pass completed', { operation: 'embed_conversations', chunks: chunks.length, qdrant: qdrantHealth.connected });
+    } catch (e) {
+      for (const c of chunks) this.ctx.conversationRepo.setConversationChunkEmbeddingState(c.id, 'failed', null);
+      this.logger.warn('Conversation embedding pass failed', { operation: 'embed_conversations', error: String(e) });
     }
   }
 

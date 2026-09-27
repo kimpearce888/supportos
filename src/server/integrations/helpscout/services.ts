@@ -87,6 +87,10 @@ interface RawCustomerV3 {
   lastName?: string | null;
   photoUrl?: string | null;
   jobTitle?: string | null;
+  background?: string | null;
+  age?: string | number | null;
+  gender?: string | null;
+  location?: string | null;
   emails?: { value?: string | null; type?: string | null }[] | null;
   phones?: { value?: string | null; type?: string | null }[] | null;
   websites?: { value?: string | null }[] | null;
@@ -95,6 +99,8 @@ interface RawCustomerV3 {
   organization?: { id: number; name?: string | null } | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  /** v3/v2 return property values in different shapes; normalize defensively. */
+  properties?: unknown;
 }
 
 function validateOrThrow<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
@@ -113,6 +119,28 @@ function cursorFromLink(href: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * v1.5.0: customer property VALUES arrive in several shapes depending on the
+ * endpoint/vintage: [{id, key, value}], [{id, name, value}], [{links:{...}}],
+ * or a map {key: value}. Normalize to one internal shape; unknown shapes
+ * yield [] (honest absence rather than dropped-on-the-floor guessing).
+ */
+function normalizeCustomerProperties(raw: unknown): { definitionRemoteId: number | null; key: string | null; name: string | null; value: string | null }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { definitionRemoteId: number | null; key: string | null; name: string | null; value: string | null }[] = [];
+  for (const item of raw) {
+    if (item == null || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const id = typeof o.id === 'number' ? o.id : null;
+    const key = typeof o.key === 'string' ? o.key : null;
+    const name = typeof o.name === 'string' ? o.name : key;
+    const value = o.value == null ? null : String(o.value);
+    if (id == null && !key && !name) continue;
+    out.push({ definitionRemoteId: id, key, name, value });
+  }
+  return out;
 }
 
 function mapStatus(s: string | null | undefined): 'active' | 'pending' | 'closed' | 'spam' {
@@ -365,19 +393,24 @@ export class HelpScoutCustomerService {
     if (!raw) return null;
     return this.mapCustomer(raw);
   }
-  mapCustomer(c: { id: number; firstName?: string | null; lastName?: string | null; photoUrl?: string | null; jobTitle?: string | null; emails?: { value?: string | null; type?: string | null }[] | null; phones?: { value?: string | null; type?: string | null }[] | null; websites?: { value?: string | null }[] | null; socialProfiles?: { value?: string | null; type?: string | null }[] | null; address?: Record<string, unknown> | null; organization?: { id: number; name?: string | null } | null; createdAt?: string | null; updatedAt?: string | null }): HsCustomer {
+  mapCustomer(c: { id: number; firstName?: string | null; lastName?: string | null; photoUrl?: string | null; jobTitle?: string | null; background?: string | null; age?: string | number | null; gender?: string | null; location?: string | null; emails?: { value?: string | null; type?: string | null }[] | null; phones?: { value?: string | null; type?: string | null }[] | null; websites?: { value?: string | null }[] | null; socialProfiles?: { value?: string | null; type?: string | null }[] | null; address?: Record<string, unknown> | null; organization?: { id: number; name?: string | null } | null; properties?: unknown; createdAt?: string | null; updatedAt?: string | null }): HsCustomer {
     return {
       remoteId: c.id,
       firstName: c.firstName ?? null,
       lastName: c.lastName ?? null,
       photoUrl: c.photoUrl ?? null,
       jobTitle: c.jobTitle ?? null,
+      background: c.background ?? null,
+      age: c.age == null ? null : String(c.age),
+      gender: c.gender ?? null,
+      location: c.location ?? null,
       emails: (c.emails ?? []).map((e) => ({ value: e.value ?? null, type: e.type ?? null })),
       phones: (c.phones ?? []).map((p) => ({ value: p.value ?? null, type: p.type ?? null })),
       websites: (c.websites ?? []).map((w) => ({ value: w.value ?? null })),
       socialProfiles: (c.socialProfiles ?? []).map((s) => ({ value: s.value ?? null, type: s.type ?? null })),
       address: (c.address as Record<string, string | null> | null) ?? null,
       organization: c.organization ? { id: c.organization.id, name: c.organization.name ?? null } : null,
+      properties: normalizeCustomerProperties(c.properties),
       createdAt: c.createdAt ?? null,
       updatedAt: c.updatedAt ?? null
     };

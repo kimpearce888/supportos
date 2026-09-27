@@ -43,6 +43,8 @@ import type {
   HsUserStatus,
   CreateReplyInput,
   CreateNoteInput,
+  CreateConversationInput,
+  CreateConversationResult,
   ConversationPatch,
   HsReportRow,
   HsDocCollection,
@@ -274,6 +276,50 @@ export class RealHelpScoutProvider implements HelpScoutProvider {
   }
 
   // ---------------- Writes (documented v2 operations) ----------------
+  /**
+   * v1.5.0 outreach: POST /v2/conversations creates ONE independent conversation
+   * per customer (never a shared BCC send). Shape follows the documented v2
+   * create-conversation contract the app already uses for every other write:
+   * customer identified by id when known (prevents accidental duplicate
+   * contacts - spec #23), the message is a 'message' thread sent by the
+   * authenticated user, status 'active' publishes+sends it. Response body
+   * carries the created conversation; if Help Scout ever answers 201 with an
+   * empty body + Location header, we surface an honest error rather than
+   * silently guessing (the recipient then lands in 'unknown' and reconciles).
+   */
+  async createConversation(input: CreateConversationInput): Promise<CreateConversationResult> {
+    if (input.customerRemoteId == null && !input.customerEmail) {
+      throw new HelpScoutApiError(0, 'createConversation requires a customer id or email', 'This recipient has no Help Scout customer id and no email - they cannot be contacted.', null, false);
+    }
+    const customer = input.customerRemoteId != null ? { id: input.customerRemoteId } : { email: input.customerEmail! };
+    const body: Record<string, unknown> = {
+      subject: input.subject,
+      mailboxId: input.mailboxRemoteId,
+      type: 'email',
+      status: input.status ?? 'active',
+      customer,
+      threads: [
+        {
+          type: 'message',
+          customer,
+          text: input.text,
+          status: 'active'
+        }
+      ]
+    };
+    if (input.tags?.length) body.tags = input.tags;
+    if (input.cc?.length) body.cc = input.cc;
+    if (input.bcc?.length) body.bcc = input.bcc;
+    const res = await this.http.request<{ id?: number; number?: number }>(`/v2/conversations`, {
+      method: 'POST',
+      body,
+      priority: PRIORITY.USER_SEND
+    });
+    if (!res || typeof res.id !== 'number' || !Number.isFinite(res.id)) {
+      throw new HelpScoutApiError(0, 'Help Scout created the conversation but returned no id', 'Help Scout accepted the create request but the response could not be read. The recipient was marked unknown and will be reconciled - it will NOT be resent blindly.', null, true);
+    }
+    return { conversationRemoteId: res.id, number: typeof res.number === 'number' ? res.number : null };
+  }
   async createReplyThread(input: CreateReplyInput): Promise<{ threadId: number; conversationId: number }> {
     const body: Record<string, unknown> = {
       text: input.text,

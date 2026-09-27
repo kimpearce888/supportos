@@ -100,12 +100,18 @@ export interface HsCustomer {
   lastName: string | null;
   photoUrl: string | null;
   jobTitle: string | null;
+  background: string | null;
+  age: string | null;
+  gender: string | null;
+  location: string | null;
   emails: { value: string | null; type: string | null }[];
   phones: { value: string | null; type: string | null }[];
   websites: { value: string | null }[];
   socialProfiles: { value: string | null; type: string | null }[];
   address: Record<string, string | null> | null;
   organization: { id: number; name: string | null } | null;
+  /** Customer property VALUES as returned by the API (may be absent on some endpoints). */
+  properties: { definitionRemoteId: number | null; key: string | null; name: string | null; value: string | null }[];
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -268,6 +274,29 @@ export interface Page<T> {
 
 // ------- Write payloads -------
 
+/** v1.5.0: create a NEW conversation (outreach). One call = one independent Help Scout conversation. */
+export interface CreateConversationInput {
+  subject: string;
+  /** Local mailbox id (resolved to the remote id by the caller). */
+  mailboxRemoteId: number;
+  text: string;
+  /** Prefer the KNOWN customer id to avoid accidental duplicate contacts (spec #23). */
+  customerRemoteId: number | null;
+  /** Fallback recipient email - only used when no customer id resolves AND the caller allows creation (spec #23). */
+  customerEmail: string | null;
+  tags?: string[];
+  status?: 'active' | 'pending' | 'closed';
+  cc?: string[];
+  bcc?: string[];
+}
+
+export interface CreateConversationResult {
+  conversationRemoteId: number;
+  number: number | null;
+  /** True when the email fallback CREATED a new Help Scout contact (audit signal, spec #23). */
+  createdCustomer?: boolean;
+}
+
 export interface CreateReplyInput {
   conversationId: number;
   text: string;
@@ -375,6 +404,7 @@ export interface HelpScoutProvider {
   getProductivityOverallReport(start: string, end: string): Promise<HsReportRow | null>;
 
   // Writes (v2 documented operations)
+  createConversation(input: CreateConversationInput): Promise<CreateConversationResult>;
   createReplyThread(input: CreateReplyInput): Promise<{ threadId: number; conversationId: number }>;
   createNoteThread(input: CreateNoteInput): Promise<{ threadId: number; conversationId: number }>;
   updateConversation(conversationId: number, patch: ConversationPatch): Promise<boolean>;

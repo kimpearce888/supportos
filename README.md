@@ -7,7 +7,7 @@
 **Fast support tooling with a privacy guarantee: your customer data never leaves your machine.**
 
 [![CI](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml/badge.svg)](https://github.com/kimpearce888/supportos/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-224%2F224-brightgreen)](docs/TESTING.md)
+[![Tests](https://img.shields.io/badge/tests-259%2F259-brightgreen)](docs/TESTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-green)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](tsconfig.base.json)
@@ -62,6 +62,8 @@ v1.3.0 closes the original public roadmap — and each item earned its place the
 
 v1.4.0 is the real-time release, and its most important fix is one nobody planned. Wiring the webhook-push e2e test exposed that the background job queue had been **silently dead at runtime since v1.0.0** — two bugs (an ISO-vs-SQLite timestamp format mismatch that made every job permanently unclaimable, and job payloads reaching the worker as unparsed JSON strings) meant webhook-triggered syncs, attachment downloads and embedding passes all "completed" without doing anything. The green test suite never caught it because tests called the components directly instead of through the claim loop; the new regression tests now do exactly that. On top of that honest foundation: conversation webhooks push through the real HMAC pipeline and land as SSE events within seconds; Docs search became hybrid (FTS + semantic vectors fused with Reciprocal Rank Fusion — vectors stored locally so Qdrant is an accelerator, not a dependency); and SLA reporting grew business-hours math built on the platform's timezone database, because "responded in 3 hours" means something different on a Friday night.
 
+v1.5.0 is the contact-first release. The segmentation spec's sharpest insight became the architecture: **properties answer "which customers?", tags answer "which tickets?", and a resolver answers "which customers own those tickets?"** — so the segment engine is deterministic SQL over the local mirror (an AI may *suggest* a segment, but it can never decide who gets emailed), every result row is a unique contact with a "why selected" evidence trail, and tag ALL/ANY/NONE semantics happen at the conversation level *before* resolving to people. Campaigns send one individual Help Scout conversation per customer — never a BCC blast — through the same rate-limited queue as manual replies, with per-recipient states, duplicate-send protection, timeout reconciliation (a send that *might* have landed is investigated, never blindly resent) and an audit trail that answers "why did this customer get this?" with ticket-level evidence years later. On top of that: ticket/thread vector search (same local-vectors-first design as docs search), business-hours-aware SLA alerts on the Issue Radar, and encrypted multi-device sync as a **file you carry yourself** — because a privacy-first product with no relay server is end-to-end encrypted by construction: there is no third party to trust. The release was built under a fresh independent audit that didn't touch the project's own test suite: 320 black-box probes plus a white-box review found **7 real bugs** (a recursion DoS that could crash the whole server with one hostile request, a mid-batch crash that stranded recipients forever, a truncation bug that mis-validated >1000-recipient campaigns, and four more) — all fixed with regression tests before shipping.
+
 ### The decision log — the logic behind every major choice
 
 | # | Decision | The reasoning |
@@ -75,7 +77,7 @@ v1.4.0 is the real-time release, and its most important fix is one nobody planne
 | 7 | **The evidence mandate** | A behavioral signal without a quoted excerpt is an opinion. Every signal carries evidence linked to the thread it came from; significant signals without evidence are dropped by the safety layer. |
 | 8 | **Behavior, never psychology** | The vocabulary is fixed and observable (urgency, directness, detail level…). Personality labels, diagnoses and protected-attribute claims are structurally impossible — enforced at the schema, the sanitizer, the prompts and the UI labels, in depth. |
 | 9 | **Human overrides beat AI, everywhere** | When a rep corrects an inferred preference, that correction wins — in storage, in the recommendation engine and in the draft prompts. The override is audited, revertible, and the revert fully restores AI semantics. |
-| 10 | **A fake Help Scout provider as the test backbone** | The entire 172-test suite runs against a deterministic simulated mailbox. It is architecturally impossible for a test to email a real customer — the provider interface simply has no path to production credentials. |
+| 10 | **A fake Help Scout provider as the test backbone** | The entire 259-test suite runs against a deterministic simulated mailbox. It is architecturally impossible for a test to email a real customer — the provider interface simply has no path to production credentials. |
 | 11 | **Demo mode runs the REAL sync engine** | The 2-minute demo is not a mockup; it is the production sync pipeline pointed at the fake provider. What you evaluate is what you run. |
 | 12 | **Local-first AI via LM Studio (OpenAI-compatible)** | Same ergonomics as the cloud APIs, zero data egress. And because the AI layer is optional (see #6), the product's value does not depend on anyone's model — including ours. |
 | 13 | **Audit your own release** | v1.2.0's audit did not trust the project's own green test suite — it re-derived the findings from scratch (static analysis plus black-box runtime testing) and turned each fix into a named regression test. Trust, but verify; then lock it in. |
@@ -89,6 +91,10 @@ v1.4.0 is the real-time release, and its most important fix is one nobody planne
 | 21 | **Local vectors beat a vector dependency (v1.4.0)** | Semantic docs search stores embeddings in SQLite and treats Qdrant as an accelerator, not a requirement: Qdrant up when available (ANN speed), local cosine scan when not. Fusing with Reciprocal Rank Fusion (rank-based) means keyword ranks and cosine scores never need to be normalized against each other, and every hit records which retriever found it. |
 | 22 | **Business minutes via the platform tz database (v1.4.0)** | Hand-rolled DST arithmetic is how SLA reports lie. The business-hours engine converts wall-clock times through Intl's timezone data (guess-and-correct, DST-safe), returns null instead of a guess on invalid input, and the report always shows wall minutes *next to* business minutes so nothing pretends to be adjusted that isn't. |
 | 23 | **Test the seam, not just the parts (v1.4.0)** | The job pipeline was green in tests and dead in production for four versions because tests called components directly, skipping the claim loop where two format bugs lived. The new regression tests enqueue → claim → execute exactly as the worker does. Every integration point deserves a test that travels the real path. |
+| 24 | **Deterministic segments, AI-assisted humans (v1.5.0)** | Who receives a customer-visible email is too consequential for a language model. The segment engine is pure SQL over the local mirror; the LLM may explain or suggest rules, but the recipient set is always the engine's output. The same separation as the AI pipeline's "drafts, never sends" — scaled up to audiences. |
+| 25 | **Contact-first resolution (v1.5.0)** | Help Scout's search is ticket-first; outreach needs people. The engine's pipeline is conversations → conversation-level tag semantics → customer ids → dedupe — so "ALL of timezone,bug" means one ticket carrying both (a customer with each tag on separate tickets does not match), and one customer with five matching tickets is still exactly one recipient. |
+| 26 | **Snapshots over references for campaigns (v1.5.0)** | A saved segment is a living rule; a campaign's recipients are a frozen snapshot with the evidence that selected them (matching tickets, property values at selection time). The segment changing later can never silently alter who a campaign already targeted — auditability requires that time travel. |
+| 27 | **Encrypted sync is a file, not a server (v1.5.0)** | A relay would be a third party that sees ciphertext and decides availability. SupportOS ships `.sosync` bundles (AES-256-GCM, scrypt-derived key, integrity-checked, verified before import): move them by any channel you already trust. The attachments re-download from Help Scout on the other device, so bundles stay small. |
 
 ---
 
@@ -137,6 +143,28 @@ All screenshots are the **real application** running in demo mode (simulated mai
 **Docs search with the semantic layer — hybrid keyword + vector retrieval, per-hit provenance, honest mode notes**
 
 [![SupportOS semantic docs search](docs/screenshots/v140-docs-semantic.png)](docs/screenshots/v140-docs-semantic.png)
+
+### 🆕 v1.5.0 — outreach, ticket vector search, SLA alerts, encrypted sync
+
+**The audience builder — property, contact, ticket and support-history conditions with a live why-selected preview**
+
+[![SupportOS outreach audience builder with live preview](docs/screenshots/v150-audience-builder.png)](docs/screenshots/v150-audience-builder.png)
+
+**Recipient review — every customer explains why they matched, with the matching tickets one click away**
+
+[![SupportOS outreach recipient review with why-selected evidence](docs/screenshots/v150-recipient-review.png)](docs/screenshots/v150-recipient-review.png)
+
+**Campaign monitor — per-recipient states, audit events and outcome reports for every campaign**
+
+[![SupportOS outreach campaign monitor](docs/screenshots/v150-campaign-monitor.png)](docs/screenshots/v150-campaign-monitor.png)
+
+**SLA alerts on the Issue Radar — business-minutes aging against per-mailbox targets, breaches first**
+
+[![SupportOS business-hours SLA alerts on the Issue Radar](docs/screenshots/v150-sla-alerts.png)](docs/screenshots/v150-sla-alerts.png)
+
+**Encrypted sync — passphrase-protected .sosync bundles, no relay server by design**
+
+[![SupportOS encrypted multi-device sync settings](docs/screenshots/v150-encrypted-sync.png)](docs/screenshots/v150-encrypted-sync.png)
 
 **Webhook push — register conversation webhooks and watch events land in real time (with demo buttons that exercise the exact production pipeline)**
 
@@ -255,6 +283,10 @@ The packaging pipeline (`scripts/build-desktop.mjs`) bundles the server with esb
 | **🪝 Webhook push (v1.4.0)** | Register/unregister conversation webhooks from Sync Health; events arrive HMAC-verified, deduped, persisted-first and pushed through the job pipeline within seconds — with real-time `conversation-updated` SSE events, restart draining of unprocessed events, and a demo simulator that exercises the exact production path |
 | **🔎 Semantic docs search (v1.4.0)** | Hybrid retrieval over the Docs mirror: FTS5 + vector similarity fused with Reciprocal Rank Fusion; embeddings stored locally (works without Qdrant, faster with it); per-hit provenance and honest mode notes; graceful degradation at every layer |
 | **⏱️ SLA & business hours (v1.4.0)** | Per-mailbox schedules (IANA timezone, weekdays, window) + first-response/resolution targets; reports measure wall AND business minutes (DST-safe via the platform tz database), met/missed classification, and live waiting-age risk |
+| **🚨 SLA alerts (v1.5.0)** | Business-hours-aware breach detection on the Issue Radar: conversations aged in business minutes since their last customer message against first-response/resolution targets, breached and at-risk (≥80%) states, per-mailbox rollups, honest unconfigured labels |
+| **📣 Client Segmentation & Outreach (v1.5.0)** | Contact-first segment engine (properties / contact fields / conversation-level tag ALL-ANY-NONE / support history) with why-selected evidence per customer, saved versioned segments, recipient review, personalization preview, individual Help Scout conversations per customer through the rate-limited queue, per-recipient lifecycle with timeout reconciliation and duplicate-send protection, Do-Not-Contact list, full audit trail and reply intelligence |
+| **🧮 Ticket vector search (v1.5.0)** | Hybrid FTS5 + semantic search over tickets and thread text (Reciprocal Rank Fusion): chunked conversations embedded locally, Qdrant as optional accelerator, per-hit provenance (keyword / semantic / both) and honest mode notes |
+| **🔐 Encrypted sync (v1.5.0)** | Optional multi-device sync via end-to-end encrypted `.sosync` bundles (AES-256-GCM + scrypt): export with a passphrase, import with integrity + schema checks and an automatic safety backup — no relay server exists by design |
 | **📊 Multi-mailbox dashboards (v1.3.0)** | Scope every dashboard metric by any combination of mailboxes and channel; per-mailbox comparison rows (new/active/closed/backlog/first-response/resolution/ratings) — same deterministic SQL as single-mailbox views |
 | **📦 Desktop installers (v1.3.0)** | MSI, NSIS, universal DMG and AppImage built in CI with the Node runtime + SQLite bundled — no prerequisites; or build your own with `npm run desktop:build` |
 | **🎧 Support inbox** | 3-pane workspace: views, filters, bulk actions, sanitized HTML threads, customer + AI context panes, rich composer (reply / note / draft / cc / bcc / status-after-send / saved replies / AI draft insertion) |
@@ -345,7 +377,7 @@ No — by design and by enforcement. It reports **observable support-communicati
 <details>
 <summary><b>How is this tested?</b></summary>
 
-172 automated tests (unit / integration / e2e) — grown to **224** with the v1.4.0 webhook-push, semantic-docs-search and SLA coverage — run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The v1.4.0 additions include the full webhook pipeline over the wire (HMAC self-POST → dedup → job → sync → SSE), regression tests for two latent job-queue bugs, and the DST-safe business-hours engine. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
+Automated tests (unit / integration / e2e) — grown to **259** with the v1.4.0 webhook-push/semantic-docs/SLA coverage and the v1.5.0 outreach, ticket-vector, SLA-alert, encrypted-sync and audit coverage — run in CI on every push: lint, strict typecheck, full suite, production build and a real demo-mode boot smoke test. The v1.4.0 additions include the full webhook pipeline over the wire (HMAC self-POST → dedup → job → sync → SSE) and regression tests for two latent job-queue bugs; v1.5.0 adds the spec's critical tag-semantics tests, campaign crash-recovery, the v1.4→v1.5 upgrade path, and audit-phase regression tests for every audit finding. The test suite is architected so **no test can ever send a real message** — see [docs/TESTING.md](docs/TESTING.md).
 </details>
 
 <details>
@@ -363,9 +395,7 @@ Yes for everything local: the mirror, search, analytics, knowledge base and prev
 - [x] v1.2.0 — the hardening release: full independent audit, 40+ fixes (security, data integrity, correctness), 150-test CI with named regression tests ([changelog](CHANGELOG.md))
 - [x] v1.3.0 — Help Scout **Chat / Docs / Beacon** API coverage, **real-time ratings refresh (SSE)**, **multi-mailbox dashboards**, **packaged desktop installers (MSI / DMG / AppImage)** ([changelog](CHANGELOG.md))
 - [x] v1.4.0 — **incoming webhook push for conversations** (register from the app, real-time SSE updates, restart drain), **semantic docs search** (local embeddings + optional Qdrant, hybrid RRF), **per-mailbox SLA / business-hours reporting** — plus two latent job-pipeline bugs found and fixed ([changelog](CHANGELOG.md))
-- [ ] Vector search over tickets/threads (the retrieval layer exists; chunking + job wiring to come)
-- [ ] Business-hours-aware SLA alerts on the Issue Radar
-- [ ] Optional end-to-end encrypted sync for multi-device use
+- [x] v1.5.0 — **Client Segmentation & Outreach** (contact-first segments, explainable selection, individual campaign conversations with full audit), **vector search over tickets/threads**, **business-hours-aware SLA alerts on the Issue Radar**, **optional end-to-end encrypted sync for multi-device** — plus a fresh independent audit that found and fixed 7 real bugs ([changelog](CHANGELOG.md))
 
 Ideas and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 

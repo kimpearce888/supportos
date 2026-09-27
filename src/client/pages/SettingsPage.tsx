@@ -7,7 +7,7 @@ import { useBusinessHours, type BusinessHoursRow } from '../api/hooks.js';
 import type { AppSettings } from '../../shared/types.js';
 
 export function SettingsPage(): ReactNode {
-  const [tab, setTab] = useState<'general' | 'helpscout' | 'lmstudio' | 'qdrant' | 'hours' | 'backups' | 'capability'>('general');
+  const [tab, setTab] = useState<'general' | 'helpscout' | 'lmstudio' | 'qdrant' | 'hours' | 'backups' | 'encsync' | 'capability'>('general');
   const pushToast = useUiStore((s) => s.pushToast);
   const { data: settings, error: settingsError, refetch } = useQuery({ queryKey: ['settings'], queryFn: () => api.get<AppSettings>('/api/settings') });
   const { data: oauth } = useQuery({ queryKey: ['oauth-status'], queryFn: () => api.get<{ configured: boolean; authenticated: boolean; demo_mode: boolean; expires_at: string | null; me: { name: string; email: string | null } | null }>('/api/oauth/status') });
@@ -37,9 +37,9 @@ export function SettingsPage(): ReactNode {
         </div>
       </div>
       <div className="tabs">
-        {['general', 'helpscout', 'lmstudio', 'qdrant', 'hours', 'backups', 'capability'].map((t) => (
+        {['general', 'helpscout', 'lmstudio', 'qdrant', 'hours', 'backups', 'encsync', 'capability'].map((t) => (
           <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t as typeof tab)}>
-            {t === 'general' ? 'Synchronization & AI' : t === 'capability' ? 'Capability matrix' : t === 'helpscout' ? 'Help Scout' : t === 'lmstudio' ? 'LM Studio' : t === 'qdrant' ? 'Qdrant' : t === 'hours' ? 'Business hours' : 'Backups & export'}
+            {t === 'general' ? 'Synchronization & AI' : t === 'capability' ? 'Capability matrix' : t === 'helpscout' ? 'Help Scout' : t === 'lmstudio' ? 'LM Studio' : t === 'qdrant' ? 'Qdrant' : t === 'hours' ? 'Business hours' : t === 'backups' ? 'Backups & export' : t === 'encsync' ? 'Encrypted sync' : t}
           </button>
         ))}
       </div>
@@ -50,6 +50,7 @@ export function SettingsPage(): ReactNode {
       {tab === 'qdrant' ? <QdrantSettings qdrant={qdrant} pushToast={pushToast} /> : null}
       {tab === 'hours' ? <BusinessHoursSettings pushToast={pushToast} /> : null}
       {tab === 'backups' ? <BackupsSettings backups={backups?.backups ?? []} refetch={refetchBackups} pushToast={pushToast} /> : null}
+      {tab === 'encsync' ? <EncryptedSyncSettings pushToast={pushToast} /> : null}
       {tab === 'capability' ? (
         <div className="card" style={{ padding: 0 }}>
           <div style={{ padding: '10px 14px' }}>
@@ -463,6 +464,156 @@ function BusinessHoursEditor({ row, onSave, onCancel, saving }: { row: BusinessH
       <div className="flex mt-8">
         <button className="btn primary" onClick={submit} disabled={saving || days.length === 0}>Save schedule</button>
         <button className="btn ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+interface EncryptedSyncData {
+  bundles: { file: string; size_bytes: number; created_at: string }[];
+  log: { id: number; direction: string; file_path: string; size_bytes: number; conversations: number | null; customers: number | null; at: string }[];
+  bundle_dir: string;
+  design: string;
+}
+
+/**
+ * v1.5.0: optional end-to-end encrypted sync for multi-device use.
+ * File-based by design (no relay server - SupportOS never sees your data):
+ * export an encrypted .sosync bundle, move it however you like, import it on
+ * the other device with the same passphrase. The passphrase never leaves
+ * this browser tab except to the local server over the wire.
+ */
+function EncryptedSyncSettings({ pushToast }: { pushToast: (t: { kind: 'success' | 'error' | 'warning' | 'info'; message: string }) => void }): ReactNode {
+  const [passphrase, setPassphrase] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [importPath, setImportPath] = useState('');
+  const [importPass, setImportPass] = useState('');
+  const { data, refetch } = useQuery({ queryKey: ['encrypted-sync'], queryFn: () => api.get<EncryptedSyncData>('/api/sync/encrypted') });
+
+  const exportBundle = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string; path?: string; size_bytes?: number }>('/api/sync/encrypted/export', { passphrase }),
+    onSuccess: (r) => {
+      pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
+      void refetch();
+      setPassphrase('');
+      setConfirm('');
+    }
+  });
+
+  const verifyBundle = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/sync/encrypted/verify', { path: importPath, passphrase: importPass }),
+    onSuccess: (r) => pushToast({ kind: r.ok ? 'success' : 'error', message: r.message })
+  });
+
+  const importBundle = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string; require_restart?: boolean }>('/api/sync/encrypted/import', { path: importPath, passphrase: importPass }),
+    onSuccess: (r) => {
+      pushToast({ kind: r.ok ? 'warning' : 'error', message: r.message });
+      void refetch();
+    }
+  });
+
+  const uploadBundle = useMutation({
+    mutationFn: async (file: File): Promise<{ ok: boolean; message: string; path?: string }> => {
+      const res = await fetch('/api/sync/encrypted/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: await file.arrayBuffer()
+      });
+      const j = (await res.json()) as { ok: boolean; message: string; path?: string };
+      if (!res.ok || !j.ok) throw new Error(j.message ?? 'Upload failed');
+      return j;
+    },
+    onSuccess: (r) => {
+      pushToast({ kind: 'success', message: r.message });
+      if (r.path) setImportPath(r.path);
+      void refetch();
+    },
+    onError: (e) => pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Upload failed' })
+  });
+
+  const strength = passphrase.length >= 12 && /[^a-zA-Z0-9]/.test(passphrase) ? 'strong' : passphrase.length >= 8 ? 'ok' : 'weak';
+
+  return (
+    <div className="grid-2">
+      <div className="card">
+        <h3 className="card-title">Export an encrypted bundle</h3>
+        <p className="text-xs muted" style={{ marginTop: 0 }}>
+          A .sosync file is your whole support database (customers, conversations, AI analysis, segments, campaigns) encrypted with AES-256-GCM. Attachments are not bundled - they re-download from Help Scout automatically on the other device. No relay server exists by design: move the file yourself (cloud drive, USB, company share). Only the passphrase holder can open it.
+        </p>
+        <label className="text-xs" style={{ display: 'block', marginBottom: 8 }}>
+          <span className="muted">Passphrase (min 8 chars)</span>
+          <input className="input" type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoComplete="new-password" />
+        </label>
+        <label className="text-xs" style={{ display: 'block', marginBottom: 8 }}>
+          <span className="muted">Confirm passphrase</span>
+          <input className="input" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
+        </label>
+        {passphrase ? <span className={`badge ${strength === 'strong' ? 'ok' : strength === 'ok' ? 'warn' : 'err'}`}>{strength} passphrase</span> : null}
+        <div className="mt-8">
+          <button
+            className="btn primary"
+            disabled={passphrase.length < 8 || passphrase !== confirm || exportBundle.isPending}
+            onClick={() => exportBundle.mutate()}
+          >
+            Create encrypted bundle
+          </button>
+        </div>
+        <p className="text-xs muted mt-8" style={{ margin: 0 }}>
+          Bundles land in <span className="mono">{data?.bundle_dir ?? '…'}</span> (newest 5 are kept). There is NO passphrase recovery - losing it means the bundle cannot be decrypted by anyone.
+        </p>
+      </div>
+      <div className="card">
+        <h3 className="card-title">Import on this device</h3>
+        <label className="text-xs" style={{ display: 'block', marginBottom: 8 }}>
+          <span className="muted">Upload a .sosync bundle</span>
+          <input
+            className="input"
+            type="file"
+            accept=".sosync,application/octet-stream"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) uploadBundle.mutate(f);
+            }}
+          />
+        </label>
+        <label className="text-xs" style={{ display: 'block', marginBottom: 8 }}>
+          <span className="muted">…or server-side path</span>
+          <input className="input mono" value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/path/to/supportos-sync-….sosync" />
+        </label>
+        <label className="text-xs" style={{ display: 'block', marginBottom: 8 }}>
+          <span className="muted">Passphrase</span>
+          <input className="input" type="password" value={importPass} onChange={(e) => setImportPass(e.target.value)} autoComplete="off" />
+        </label>
+        <div className="flex" style={{ gap: 8 }}>
+          <button className="btn" disabled={!importPath || !importPass || verifyBundle.isPending} onClick={() => verifyBundle.mutate()}>
+            Verify first (dry run)
+          </button>
+          <button
+            className="btn danger"
+            disabled={!importPath || !importPass || importBundle.isPending}
+            onClick={() => {
+              if (window.confirm('Import replaces the local database with the bundle content (a safety backup of the current data is written first). The app must restart afterwards. Continue?')) importBundle.mutate();
+            }}
+          >
+            Import & replace local data
+          </button>
+        </div>
+        <p className="text-xs muted mt-8" style={{ margin: 0 }}>
+          Import checks integrity + schema compatibility first, writes an automatic safety backup, then swaps the database. Restart SupportOS after importing.
+        </p>
+        {data && data.log.length > 0 ? (
+          <div className="mt-16">
+            <strong className="text-sm">Sync ledger</strong>
+            {data.log.map((l) => (
+              <div key={l.id} className="flex" style={{ gap: 8, padding: '2px 0' }}>
+                <span className={`badge ${l.direction === 'export' ? 'ok' : 'active'}`}>{l.direction}</span>
+                <span className="text-xs mono grow">{l.file_path.split('/').pop() ?? l.file_path}</span>
+                <span className="text-xs muted">{(l.size_bytes / 1024 / 1024).toFixed(1)} MB · {l.conversations ?? '?'} conv</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );

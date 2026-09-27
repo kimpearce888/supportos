@@ -217,4 +217,121 @@ export class SlaService {
       at_risk: atRisk
     };
   }
+
+  // ---------------- SLA alerts (v1.5.0, Issue Radar) ----------------
+
+  /** A conversation enters at-risk once it has consumed >= 80% of its target. */
+  private static readonly AT_RISK_RATIO = 0.8;
+
+  /**
+   * Business-hours-aware SLA alerts for the Issue Radar (v1.5.0).
+   *
+   * For every ACTIVE/PENDING conversation with a business-hours-configured
+   * mailbox we measure how long it has been waiting (business minutes since
+   * the last CUSTOMER message - a conversation that is merely awaiting the
+   * customer is not breaching anything) and compare against the mailbox's
+   * first-response target (no agent reply yet) or resolution target (replied
+   * but unresolved). Honest states everywhere: mailboxes without business
+   * hours or without targets are reported as `unconfigured`, never guessed.
+   */
+  slaAlerts(): SlaAlerts {
+    const now = new Date().toISOString();
+    const mailboxes = this.db.prepare('SELECT id, name FROM mailboxes WHERE deleted_at IS NULL ORDER BY name').all() as { id: number; name: string }[];
+    const alerts: SlaAlertRow[] = [];
+    const perMailbox: { mailbox_id: number; mailbox_name: string; breached: number; at_risk: number; monitored: number }[] = [];
+    const unconfigured: string[] = [];
+
+    for (const m of mailboxes) {
+      const cfg = this.getEffectiveConfig(m.id);
+      if (!cfg || !this.isConfigured(m.id)) {
+        const open = (this.db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE mailbox_local_id = ? AND status IN ('active','pending') AND deleted_at IS NULL").get(m.id) as { n: number }).n;
+        if (open > 0) unconfigured.push(m.name);
+        perMailbox.push({ mailbox_id: m.id, mailbox_name: m.name, breached: 0, at_risk: 0, monitored: 0 });
+        continue;
+      }
+      // Waiting conversations + whether an agent reply exists
+      const rows = this.db
+        .prepare(
+          `SELECT c.id, c.number, c.subject, c.status, c.assignee_local_id,
+             COALESCE(c.last_activity_at, c.remote_created_at) AS since,
+             EXISTS (SELECT 1 FROM threads t WHERE t.conversation_id = c.id AND t.type = 'reply' AND t.state = 'published' AND t.deleted_at IS NULL) AS replied,
+             (SELECT COUNT(*) FROM threads t WHERE t.conversation_id = c.id AND t.type = 'customer' AND t.deleted_at IS NULL) AS customer_threads
+           FROM conversations c
+           WHERE c.mailbox_local_id = ? AND c.status IN ('active','pending') AND c.deleted_at IS NULL
+             AND NOT (c.snoozed_until IS NOT NULL AND c.snoozed_until > ?)`
+        )
+        .all(m.id, now) as { id: number; number: number; subject: string | null; status: string; assignee_local_id: number | null; since: string | null; replied: number; customer_threads: number }[];
+
+      let breached = 0;
+      let atRisk = 0;
+      for (const r of rows) {
+        if (!r.since || r.customer_threads === 0) continue; // nothing awaiting us
+        // The clock starts at the last CUSTOMER message, not the last activity
+        const lastCustomer = (this.db
+          .prepare("SELECT remote_created_at FROM threads WHERE conversation_id = ? AND type = 'customer' AND deleted_at IS NULL ORDER BY remote_created_at DESC LIMIT 1")
+          .get(r.id) as { remote_created_at: string } | undefined)?.remote_created_at ?? r.since;
+        const target = r.replied ? cfg.resolutionTargetMin : cfg.firstResponseTargetMin;
+        if (target == null) continue;
+        const waited = businessMinutesBetween(lastCustomer, now, cfg);
+        if (waited == null) continue;
+        const state: 'ok' | 'breached' | 'at_risk' = waited > target ? 'breached' : waited >= target * SlaService.AT_RISK_RATIO ? 'at_risk' : 'ok';
+        if (state === 'ok') continue;
+        if (state === 'breached') breached++;
+        else atRisk++;
+        alerts.push({
+          conversation_id: r.id,
+          number: r.number,
+          subject: r.subject,
+          status: r.status,
+          mailbox_id: m.id,
+          mailbox_name: m.name,
+          assignee_local_id: r.assignee_local_id,
+          state,
+          waited_business_min: Math.round(waited),
+          target_min: target,
+          target_kind: r.replied ? 'resolution' : 'first_response',
+          overdue_business_min: Math.max(0, Math.round(waited - target)),
+          since: lastCustomer
+        });
+      }
+      perMailbox.push({ mailbox_id: m.id, mailbox_name: m.name, breached, at_risk: atRisk, monitored: rows.length });
+    }
+
+    alerts.sort((a, b) => b.overdue_business_min - a.overdue_business_min || a.number - b.number);
+    return {
+      generated_at: now,
+      total_breached: alerts.filter((a) => a.state === 'breached').length,
+      total_at_risk: alerts.filter((a) => a.state === 'at_risk').length,
+      alerts: alerts.slice(0, 50),
+      per_mailbox: perMailbox,
+      unconfigured_mailboxes: unconfigured,
+      note: 'Alerts measure BUSINESS minutes (nights/weekends excluded) since each conversation\'s last customer message, against the mailbox\'s SLA targets. Mailboxes without business hours or targets are listed as unconfigured - nothing is guessed.'
+    };
+  }
+}
+
+export interface SlaAlertRow {
+  conversation_id: number;
+  number: number;
+  subject: string | null;
+  status: string;
+  mailbox_id: number;
+  mailbox_name: string;
+  assignee_local_id: number | null;
+  state: 'breached' | 'at_risk';
+  waited_business_min: number;
+  target_min: number;
+  target_kind: 'first_response' | 'resolution';
+  overdue_business_min: number;
+  since: string;
+}
+
+export interface SlaAlerts {
+  generated_at: string;
+  total_breached: number;
+  total_at_risk: number;
+  alerts: SlaAlertRow[];
+  per_mailbox: { mailbox_id: number; mailbox_name: string; breached: number; at_risk: number; monitored: number }[];
+  unconfigured_mailboxes: string[];
+  note: string;
 }

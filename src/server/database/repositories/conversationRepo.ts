@@ -1,7 +1,7 @@
 import type { DB } from '../connection.js';
 import { nowIso, hashJson, isoOrNull } from './helpers.js';
 import type { ConversationSummary, ThreadSummary, AttachmentMeta, ConversationStatus } from '../../../shared/types.js';
-import { htmlToText } from '../../../shared/utils.js';
+import { htmlToText, chunkText } from '../../../shared/utils.js';
 import type { ConversationRow, ThreadRow, AttachmentRow } from './types.js';
 
 interface ConversationV3 {
@@ -577,5 +577,93 @@ export class ConversationRepository {
       )
       .get() as { active: number; pending: number; closed: number; spam: number; unassigned: number; backlog: number; total: number };
     return { active: r.active ?? 0, pending: r.pending ?? 0, closed: r.closed ?? 0, spam: r.spam ?? 0, unassigned: r.unassigned ?? 0, backlog: r.backlog ?? 0, total: r.total ?? 0 };
+  }
+
+  // ---------------- Ticket/thread vector chunks (v1.5.0) ----------------
+
+  /**
+   * (Re)chunk a conversation for semantic ticket search. Mirrors the docs_chunks
+   * lifecycle (v1.4.0): delete+insert in a transaction, embedding state reset -
+   * thread changes invalidate previous embeddings.
+   *
+   * Chunk text = self-describing context header (#number, subject, customer,
+   * tags) + thread bodies in chronological order (customer messages, agent
+   * replies AND notes: this is a LOCAL search surface over the operator's own
+   * mirror, so internal notes are legitimately searchable - same visibility
+   * model as the existing FTS search, which indexes everything locally).
+   */
+  rechunkConversation(localId: number): void {
+    const conv = this.db
+      .prepare(
+        `SELECT c.id, c.number, c.subject,
+           TRIM(COALESCE(cu.first_name,'') || ' ' || COALESCE(cu.last_name,'')) AS customer,
+           (SELECT GROUP_CONCAT(t.name) FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = c.id) AS tags
+         FROM conversations c LEFT JOIN customers cu ON cu.id = c.customer_local_id WHERE c.id = ?`
+      )
+      .get(localId) as { id: number; number: number; subject: string | null; customer: string | null; tags: string | null } | undefined;
+    if (!conv) return;
+    const threads = this.db
+      .prepare(
+        `SELECT body_text, type, remote_created_at FROM threads
+         WHERE conversation_id = ? AND deleted_at IS NULL AND body_text IS NOT NULL AND LENGTH(body_text) > 0
+         ORDER BY remote_created_at ASC, id ASC`
+      )
+      .all(localId) as { body_text: string; type: string | null; remote_created_at: string | null }[];
+    const header = [
+      `#${conv.number} ${conv.subject ?? '(no subject)'}`,
+      conv.customer ? `Customer: ${conv.customer}` : null,
+      conv.tags ? `Tags: ${conv.tags}` : null
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const threadText = threads.map((t) => t.body_text.slice(0, 4000)).join('\n\n---\n\n');
+    const full = `${header}\n\n${threadText}`;
+    const chunks = threadText ? chunkText(full, 1200, 150) : [full];
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM conversation_chunks WHERE conversation_id = ?').run(localId);
+      const ins = this.db.prepare('INSERT INTO conversation_chunks (conversation_id, chunk_index, content, chunk_version) VALUES (?, ?, ?, 1)');
+      chunks.forEach((c, i) => ins.run(localId, i, c));
+    });
+    tx();
+  }
+
+  conversationChunkStats(): { chunks: number; indexed: number; pending: number; failed: number } {
+    const r = this.db
+      .prepare(
+        `SELECT COUNT(*) AS chunks,
+           SUM(CASE WHEN embedding_state='indexed' THEN 1 ELSE 0 END) AS indexed,
+           SUM(CASE WHEN embedding_state IN ('not_indexed','queued') THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN embedding_state='failed' THEN 1 ELSE 0 END) AS failed
+         FROM conversation_chunks`
+      )
+      .get() as { chunks: number; indexed: number | null; pending: number | null; failed: number | null };
+    return { chunks: r.chunks ?? 0, indexed: r.indexed ?? 0, pending: r.pending ?? 0, failed: r.failed ?? 0 };
+  }
+
+  listConversationChunksNeedingEmbedding(limit = 60): { id: number; conversation_id: number; content: string }[] {
+    return this.db
+      .prepare(
+        `SELECT id, conversation_id, content FROM conversation_chunks
+         WHERE embedding_state = 'not_indexed' OR embedding_state = 'failed' LIMIT ?`
+      )
+      .all(limit) as { id: number; conversation_id: number; content: string }[];
+  }
+
+  setConversationChunkEmbeddingState(chunkId: number, state: string, model?: string | null): void {
+    this.db.prepare('UPDATE conversation_chunks SET embedding_state = ?, embedding_model = COALESCE(?, embedding_model) WHERE id = ?').run(state, model ?? null, chunkId);
+  }
+
+  updateConversationChunkEmbedding(chunkId: number, model: string | null, embedding: Float32Array | null, state: string): void {
+    this.db.prepare('UPDATE conversation_chunks SET embedding = ?, embedding_model = ?, embedding_state = ? WHERE id = ?').run(embedding ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength) : null, model, state, chunkId);
+  }
+
+  /** All ticket chunks with a stored local embedding (the no-Qdrant fallback scan). */
+  listConversationChunksWithEmbedding(limit = 5000): { id: number; conversation_id: number; content: string; embedding: Buffer }[] {
+    return this.db
+      .prepare(
+        `SELECT id, conversation_id, content, embedding FROM conversation_chunks
+         WHERE embedding IS NOT NULL AND embedding_state = 'indexed' LIMIT ?`
+      )
+      .all(limit) as { id: number; conversation_id: number; content: string; embedding: Buffer }[];
   }
 }

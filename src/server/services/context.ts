@@ -34,6 +34,10 @@ import { DocsRepository } from '../database/repositories/docsRepo.js';
 import { ReferenceRepository } from '../database/repositories/referenceRepo.js';
 import { PeopleRepository } from '../database/repositories/peopleRepo.js';
 import { AnalyticsRepository } from '../database/repositories/analyticsRepo.js';
+import { OutreachRepository } from '../database/repositories/outreachRepo.js';
+import { SegmentEngine } from '../segmentation/segmentEngine.js';
+import { CampaignService } from '../outreach/campaignService.js';
+import { EncryptedSyncService } from './encryptedSyncService.js';
 import { WorkerManager } from './workers.js';
 
 /**
@@ -71,6 +75,10 @@ export class AppContext {
   referenceRepo: ReferenceRepository;
   peopleRepo: PeopleRepository;
   analyticsRepo: AnalyticsRepository;
+  outreachRepo: OutreachRepository;
+  segmentEngine: SegmentEngine;
+  campaigns: CampaignService;
+  encryptedSync: EncryptedSyncService;
   evidenceBuilder: EvidenceBuilder;
   toolRegistry: AiToolRegistry;
 
@@ -114,6 +122,10 @@ export class AppContext {
     this.referenceRepo = new ReferenceRepository(this.db);
     this.peopleRepo = new PeopleRepository(this.db);
     this.analyticsRepo = new AnalyticsRepository(this.db);
+    this.outreachRepo = new OutreachRepository(this.db);
+    this.segmentEngine = new SegmentEngine(this.db);
+    this.campaigns = new CampaignService(this.db, this.provider, this.outreachRepo, this.peopleRepo, this.jobsRepo);
+    this.encryptedSync = new EncryptedSyncService(this.db, getDatabasePath(), this.config.backupsPath);
 
     // Services
     this.coordinator = new SyncCoordinator(this.db, this.provider);
@@ -177,6 +189,7 @@ export class AppContext {
   private rebindProvider(): void {
     this.coordinator = new SyncCoordinator(this.db, this.provider);
     this.operations = new ConversationOperations(this.db, this.provider);
+    this.campaigns = new CampaignService(this.db, this.provider, this.outreachRepo, this.peopleRepo, this.jobsRepo);
     this.workers.rebindCoordinator(this.coordinator);
   }
 }

@@ -38,7 +38,7 @@ function ensureSource(): void {
       }
     }
   };
-  for (const name of ['hello', 'ratings', 'sync', 'error']) {
+  for (const name of ['hello', 'ratings', 'sync', 'campaign', 'error']) {
     source.addEventListener(name, forward(name) as EventListener);
   }
 }
@@ -77,6 +77,16 @@ export interface ConversationEventData {
   mailboxId: number | null;
   subject: string | null;
   reason: 'webhook' | 'sync' | 'manual';
+  at: string;
+}
+
+export interface CampaignEventData {
+  campaignId: number;
+  status: string;
+  sent: number;
+  failed: number;
+  unknown: number;
+  remaining: number;
   at: string;
 }
 
@@ -124,6 +134,16 @@ export function ServerEventsBridge(): null {
             kind: 'info',
             message: `#${d.conversationNumber} updated — pushed by webhook${d.subject ? `: ${d.subject.slice(0, 80)}` : ''}`
           });
+        }
+      } else if (event === 'campaign') {
+        // v1.5.0: outreach campaign progress (queued batches, completion, failures).
+        const d = data as CampaignEventData;
+        void qc.invalidateQueries({ queryKey: ['outreach-campaigns'] });
+        void qc.invalidateQueries({ queryKey: ['outreach-campaign', d.campaignId] });
+        if (d.status === 'completed') {
+          pushToast({ kind: 'success', message: `Campaign #${d.campaignId} completed — ${d.sent} sent${d.failed > 0 ? `, ${d.failed} failed` : ''}.` });
+        } else if (d.failed > 0 && d.remaining === 0) {
+          pushToast({ kind: 'warning', message: `Campaign #${d.campaignId} finished with ${d.failed} failed recipient(s).` });
         }
       }
     });

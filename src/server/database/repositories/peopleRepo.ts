@@ -8,6 +8,10 @@ interface CustomerV3 {
   lastName?: string | null;
   photoUrl?: string | null;
   jobTitle?: string | null;
+  background?: string | null;
+  age?: string | number | null;
+  gender?: string | null;
+  location?: string | null;
   phone?: string | null;
   address?: Record<string, unknown> | null;
   emails?: { value?: string | null; type?: string | null }[] | null;
@@ -15,6 +19,7 @@ interface CustomerV3 {
   websites?: { value?: string | null }[] | null;
   socialProfiles?: { value?: string | null; type?: string | null }[] | null;
   organization?: { id: number; name?: string | null } | null;
+  properties?: { definitionRemoteId: number | null; key: string | null; name: string | null; value: string | null }[] | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   [key: string]: unknown;
@@ -29,10 +34,11 @@ export class PeopleRepository {
     const orgLocal = c.organization?.id ? this.getOrganizationByRemoteId(c.organization.id) : null;
     this.db
       .prepare(
-        `INSERT INTO customers (remote_id, first_name, last_name, photo_url, job_title, organization_id, raw_json, raw_json_hash, remote_created_at, remote_updated_at, last_seen_at, last_synced_at)
-         VALUES (@rid, @first, @last, @photo, @job, @org, @raw, @hash, @rc, @ru, @seen, @synced)
+        `INSERT INTO customers (remote_id, first_name, last_name, photo_url, job_title, background, age, gender, location, organization_id, raw_json, raw_json_hash, remote_created_at, remote_updated_at, last_seen_at, last_synced_at)
+         VALUES (@rid, @first, @last, @photo, @job, @background, @age, @gender, @location, @org, @raw, @hash, @rc, @ru, @seen, @synced)
          ON CONFLICT(remote_id) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, photo_url=excluded.photo_url,
-           job_title=excluded.job_title, organization_id=excluded.organization_id, raw_json=excluded.raw_json, raw_json_hash=excluded.raw_json_hash,
+           job_title=excluded.job_title, background=excluded.background, age=excluded.age, gender=excluded.gender, location=excluded.location,
+           organization_id=excluded.organization_id, raw_json=excluded.raw_json, raw_json_hash=excluded.raw_json_hash,
            remote_created_at=excluded.remote_created_at, remote_updated_at=excluded.remote_updated_at, last_seen_at=excluded.last_seen_at,
            last_synced_at=excluded.last_synced_at`
       )
@@ -42,6 +48,10 @@ export class PeopleRepository {
         last: c.lastName ?? null,
         photo: c.photoUrl ?? null,
         job: c.jobTitle ?? null,
+        background: c.background ?? null,
+        age: c.age == null ? null : String(c.age),
+        gender: c.gender ?? null,
+        location: c.location ?? null,
         org: orgLocal?.id ?? null,
         raw: JSON.stringify(c),
         hash: hashJson(c),
@@ -51,6 +61,13 @@ export class PeopleRepository {
         synced: nowIso()
       });
     const localId = (this.db.prepare('SELECT id FROM customers WHERE remote_id = ?').get(c.id) as { id: number }).id;
+
+    // v1.5.0: customer property VALUES (segmentation targeting data). Only
+    // provided keys are touched - an endpoint that omits properties never
+    // erases values learned from a fuller response.
+    if (c.properties && Array.isArray(c.properties) && c.properties.length > 0) {
+      this.storeCustomerProperties(localId, c.properties);
+    }
 
     // Sub-records
     if (c.emails) {
@@ -160,6 +177,87 @@ export class PeopleRepository {
          JOIN customer_property_definitions d ON d.id = cp.definition_id WHERE cp.customer_id = ?`
       )
       .all(localId) as { name: string; value: string | null }[];
+  }
+
+  /**
+   * v1.5.0: store customer property values, resolving each value to a synced
+   * property definition by remote id first, then by key/name (API vintages
+   * differ). Unknown definitions are skipped honestly - a value without a
+   * definition cannot be typed for the operator matrix and would be
+   * un-filterable anyway.
+   */
+  private storeCustomerProperties(localId: number, props: { definitionRemoteId: number | null; key: string | null; name: string | null; value: string | null }[]): void {
+    const byRemote = this.db.prepare('SELECT id, remote_id, name, slug FROM customer_property_definitions').all() as { id: number; remote_id: number; name: string; slug: string | null }[];
+    const defByRemote = new Map(byRemote.map((d) => [d.remote_id, d.id]));
+    const defByName = new Map(byRemote.map((d) => [d.name.toLowerCase(), d.id]));
+    const defBySlug = new Map(byRemote.filter((d) => d.slug).map((d) => [(d.slug ?? '').toLowerCase(), d.id]));
+    const upsert = this.db.prepare(
+      `INSERT INTO customer_properties (customer_id, definition_id, value) VALUES (?, ?, ?)
+       ON CONFLICT(customer_id, definition_id) DO UPDATE SET value=excluded.value`
+    );
+    const tx = this.db.transaction(() => {
+      for (const p of props) {
+        const defId =
+          (p.definitionRemoteId != null && defByRemote.get(p.definitionRemoteId)) ||
+          (p.key ? defBySlug.get(p.key.toLowerCase()) ?? defByName.get(p.key.toLowerCase()) : undefined) ||
+          (p.name ? defByName.get(p.name.toLowerCase()) : undefined) ||
+          undefined;
+        if (defId == null) continue;
+        upsert.run(localId, defId, p.value ?? '');
+      }
+    });
+    tx();
+  }
+
+  /** Distinct observed values per property definition (dropdown suggestions + populated counts). */
+  propertyDefinitionStats(): { definition_id: number; populated: number; observed_values: string[] }[] {
+    const defs = this.db.prepare('SELECT id FROM customer_property_definitions ORDER BY sort_order, name').all() as { id: number }[];
+    return defs.map((d) => {
+      const rows = this.db
+        .prepare("SELECT value, COUNT(*) AS n FROM customer_properties WHERE definition_id = ? AND value IS NOT NULL AND value <> '' GROUP BY value ORDER BY n DESC LIMIT 25")
+        .all(d.id) as { value: string; n: number }[];
+      return { definition_id: d.id, populated: rows.reduce((a, r) => a + r.n, 0), observed_values: rows.map((r) => r.value) };
+    });
+  }
+
+  /**
+   * v1.5.0: harvest property values from raw_json snapshots (heals databases
+   * synced before property pass-through existed, without a re-sync).
+   */
+  backfillPropertiesFromRawJson(): number {
+    let healed = 0;
+    const rows = this.db.prepare("SELECT id, raw_json FROM customers WHERE raw_json IS NOT NULL").all() as { id: number; raw_json: string }[];
+    for (const r of rows) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(r.raw_json);
+      } catch {
+        continue;
+      }
+      const props = (parsed as { properties?: unknown }).properties;
+      if (!Array.isArray(props) || props.length === 0) continue;
+      // raw_json can carry EITHER shape: the normalized internal one
+      // ({definitionRemoteId, key, name, value} - what upsertCustomer stores)
+      // or the raw wire one ({id, key, value} - what the API returns). Accept
+      // both: the backfill's whole job is healing data we did not control.
+      const normalized = props
+        .map((p): { definitionRemoteId: number | null; key: string | null; name: string | null; value: string | null } | null => {
+          if (p == null || typeof p !== 'object') return null;
+          const o = p as Record<string, unknown>;
+          const defId = typeof o.definitionRemoteId === 'number' ? o.definitionRemoteId : typeof o.id === 'number' ? o.id : null;
+          const key = typeof o.key === 'string' ? o.key : null;
+          const name = typeof o.name === 'string' ? o.name : key;
+          if (defId == null && !key && !name) return null;
+          return { definitionRemoteId: defId, key, name, value: o.value == null ? null : String(o.value) };
+        })
+        .filter((p): p is { definitionRemoteId: number | null; key: string | null; name: string | null; value: string | null } => p != null);
+      if (normalized.length === 0) continue;
+      const before = (this.db.prepare('SELECT COUNT(*) AS n FROM customer_properties WHERE customer_id = ?').get(r.id) as { n: number }).n;
+      this.storeCustomerProperties(r.id, normalized);
+      const after = (this.db.prepare('SELECT COUNT(*) AS n FROM customer_properties WHERE customer_id = ?').get(r.id) as { n: number }).n;
+      healed += Math.max(0, after - before);
+    }
+    return healed;
   }
 
   getCustomerWebsites(localId: number): string[] {

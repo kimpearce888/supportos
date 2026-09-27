@@ -430,6 +430,8 @@ export interface SearchResponse {
   total: number;
   used_semantic: boolean;
   semantic_available: boolean;
+  /** v1.5.0: human-readable explanation of the retrieval mode that actually ran. */
+  mode_note?: string;
 }
 
 // ---------------------------------------------------------------- Analytics

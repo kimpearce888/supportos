@@ -2,7 +2,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Routes, Route, NavLink, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard, Inbox, Search, Users, Building2, Bot, AlertTriangle, BookOpen, BookMarked,
-  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command
+  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command, Megaphone
 } from 'lucide-react';
 import { useUiStore } from './state/uiStore.js';
 import { Toasts } from './components/common/overlays.js';
@@ -22,6 +22,7 @@ import { AutomationPage } from './pages/Automation.js';
 import { SyncHealthPage } from './pages/SyncHealth.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { OnboardingPage } from './pages/Onboarding.js';
+import { OutreachPage } from './pages/Outreach.js';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './api/client.js';
 
@@ -123,6 +124,7 @@ export function App(): ReactNode {
         <NavItem to="/docs" icon={<BookMarked />} label="Docs" />
         <div className="nav-section">Operations</div>
         <NavItem to="/reports" icon={<BarChart3 />} label="Reports" />
+        <NavItem to="/outreach" icon={<Megaphone />} label="Outreach" />
         <NavItem to="/automation" icon={<Workflow />} label="Automation" />
         <NavItem to="/sync-health" icon={<HeartPulse />} label="Sync Health" />
         <NavItem to="/settings" icon={<Settings />} label="Settings" />
@@ -151,6 +153,7 @@ export function App(): ReactNode {
           <Route path="/knowledge" element={<KnowledgePage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/outreach" element={<OutreachPage />} />
           <Route path="/automation" element={<AutomationPage />} />
           <Route path="/sync-health" element={<SyncHealthPage />} />
           <Route path="/settings" element={<SettingsPage />} />

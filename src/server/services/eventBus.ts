@@ -47,11 +47,23 @@ export interface ConversationUpdatedEvent {
   at: string;
 }
 
+/** v1.5.0: an outreach campaign's state or progress changed (queue advanced, completed, paused...). */
+export interface CampaignUpdatedEvent {
+  campaignId: number;
+  status: string;
+  sent: number;
+  failed: number;
+  unknown: number;
+  remaining: number;
+  at: string;
+}
+
 export interface ServerEventMap {
   'rating-received': RatingReceivedEvent;
   'ratings-refreshed': RatingsRefreshedEvent;
   'sync-completed': SyncCompletedEvent;
   'conversation-updated': ConversationUpdatedEvent;
+  'campaign-updated': CampaignUpdatedEvent;
 }
 
 type Handler<K extends keyof ServerEventMap> = (payload: ServerEventMap[K]) => void;

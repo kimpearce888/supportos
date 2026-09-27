@@ -4,6 +4,9 @@ import type { AppContext } from '../services/context.js';
 export async function registerIssueRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/api/issues/clusters', async () => ({ clusters: ctx.issueRepo.listClusters() }));
 
+  // v1.5.0: business-hours-aware SLA alerts for the Issue Radar
+  app.get('/api/issues/sla-alerts', async () => ctx.sla.slaAlerts());
+
   app.get('/api/issues/clusters/:id', async (request, reply) => {
     const cluster = ctx.issueRepo.getCluster(Number((request.params as { id: string }).id));
     if (!cluster) {

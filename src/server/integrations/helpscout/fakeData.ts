@@ -181,11 +181,13 @@ export function buildFakeWorld(): FakeWorld {
   ];
   const customerProps: HsPropertyDef[] = [
     { remoteId: 4101, name: 'Plan', slug: 'plan', type: 'dropdown', order: 1 },
-    { remoteId: 4102, name: 'Employees', slug: 'employees', type: 'number', order: 2 }
+    { remoteId: 4102, name: 'Employees', slug: 'employees', type: 'number', order: 2 },
+    { remoteId: 4103, name: 'Region', slug: 'region', type: 'dropdown', order: 3 },
+    { remoteId: 4104, name: 'Account Manager', slug: 'account-manager', type: 'text', order: 4 }
   ];
   const orgProps: HsPropertyDef[] = [{ remoteId: 4201, name: 'Industry', slug: 'industry', type: 'text', order: 1 }];
 
-  const customers: HsCustomer[] = [
+  const rawCustomers: Omit<HsCustomer, 'background' | 'age' | 'gender' | 'location' | 'properties'>[] = [
     {
       remoteId: 3001,
       firstName: 'Lucía',
@@ -307,6 +309,68 @@ export function buildFakeWorld(): FakeWorld {
       updatedAt: daysAgo(1)
     }
   ];
+  // v1.5.0: contact-first fidelity + customer property VALUES so segmentation
+  // is fully demonstrable in demo mode. Assigned deterministically (not random)
+  // so demo tours and tests are reproducible.
+  const contactEnrichment: Record<number, { background: string | null; age: string | null; gender: string | null; location: string | null }> = {
+    3001: { background: 'Key account contact since 2024. Prefers Spanish, answers in English fine.', age: '30-35', gender: 'female', location: 'Santiago, Chile' },
+    3002: { background: 'Backup dispatcher; escalate to Lucía for billing topics.', age: '25-30', gender: 'male', location: 'Valparaíso, Chile' },
+    3003: { background: 'Technical decision maker. Loves detailed RFC-style answers.', age: '35-40', gender: 'female', location: 'London, UK' },
+    3004: { background: null, age: '25-30', gender: 'male', location: 'London, UK' },
+    3005: { background: 'Freelance consultant using the free plan.', age: null, gender: null, location: 'Stockholm, Sweden' },
+    3006: { background: 'Runs IT for a 40-person studio; strong PowerShell user.', age: '30-35', gender: 'male', location: 'Chennai, India' },
+    3007: { background: 'Invoices go to finance@atelierfrance.fr.', age: '40-45', gender: 'female', location: 'Paris, France' },
+    3008: { background: 'Evaluating the API for an internal tool.', age: '30-35', gender: 'male', location: 'Tokyo, Japan' }
+  };
+  const propertyValues: Record<number, { def: number; value: string }[]> = {
+    3001: [
+      { def: 4101, value: 'Pro' },
+      { def: 4102, value: '120' },
+      { def: 4103, value: 'LATAM' },
+      { def: 4104, value: 'Alex Rivera' }
+    ],
+    3002: [
+      { def: 4101, value: 'Pro' },
+      { def: 4102, value: '120' },
+      { def: 4103, value: 'LATAM' }
+    ],
+    3003: [
+      { def: 4101, value: 'Business' },
+      { def: 4102, value: '45' },
+      { def: 4103, value: 'EMEA' },
+      { def: 4104, value: 'Alex Rivera' }
+    ],
+    3004: [
+      { def: 4101, value: 'Business' },
+      { def: 4102, value: '45' },
+      { def: 4103, value: 'EMEA' }
+    ],
+    3005: [
+      { def: 4101, value: 'Free' },
+      { def: 4102, value: '1' },
+      { def: 4103, value: 'EMEA' }
+    ],
+    3006: [
+      { def: 4101, value: 'Pro' },
+      { def: 4102, value: '40' },
+      { def: 4103, value: 'APAC' }
+    ],
+    3007: [
+      { def: 4101, value: 'Free' },
+      { def: 4102, value: '8' },
+      { def: 4103, value: 'EMEA' }
+    ],
+    3008: [
+      { def: 4101, value: 'Business' },
+      { def: 4102, value: '60' },
+      { def: 4103, value: 'APAC' }
+    ]
+  };
+  const customers: HsCustomer[] = rawCustomers.map((c) => ({
+    ...c,
+    ...(contactEnrichment[c.remoteId] ?? { background: null, age: null, gender: null, location: null }),
+    properties: (propertyValues[c.remoteId] ?? []).map((p) => ({ definitionRemoteId: p.def, key: null, name: null, value: p.value }))
+  }));
   const organizations: HsOrganization[] = [
     { remoteId: 2001, name: 'Andes Logistics', domains: ['andeslogistics.cl'], createdAt: daysAgo(220), updatedAt: daysAgo(10) },
     { remoteId: 2002, name: 'BrightPath Education', domains: ['brightpathedu.org'], createdAt: daysAgo(150), updatedAt: daysAgo(5) }

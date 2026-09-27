@@ -453,6 +453,8 @@ export class SyncCoordinator {
           // v1.4.0: semantic docs search - chunk embeddings are built after the
           // mirror pass (the job is a no-op until an embedding model is configured).
           if (processed > 0) this.jobs.enqueue('embeddings', 'embed_docs_chunks', {}, PRIORITY.INDEXING, 2);
+          // v1.5.0: semantic ticket search - chunk every conversation in the local mirror
+          if (processed > 0) this.jobs.enqueue('embeddings', 'embed_conversation_chunks', {}, PRIORITY.INDEXING, 2);
           return { resource, processed, failed: 0 };
         }
         case 'attachments': {
@@ -530,12 +532,17 @@ export class SyncCoordinator {
             lastName: c.lastName,
             photoUrl: c.photoUrl,
             jobTitle: c.jobTitle,
+            background: c.background,
+            age: c.age,
+            gender: c.gender,
+            location: c.location,
             emails: c.emails.map((e) => ({ value: e.value, type: e.type })),
             phones: c.phones.map((p) => ({ value: p.value, type: p.type })),
             websites: c.websites,
             socialProfiles: c.socialProfiles,
             address: c.address,
             organization: c.organization,
+            properties: c.properties,
             createdAt: c.createdAt,
             updatedAt: c.updatedAt
           });
@@ -596,12 +603,17 @@ export class SyncCoordinator {
           lastName: cust.lastName,
           photoUrl: cust.photoUrl,
           jobTitle: cust.jobTitle,
+          background: cust.background,
+          age: cust.age,
+          gender: cust.gender,
+          location: cust.location,
           emails: cust.emails,
           phones: cust.phones,
           websites: cust.websites,
           socialProfiles: cust.socialProfiles,
           address: cust.address,
           organization: cust.organization,
+          properties: cust.properties,
           createdAt: cust.createdAt,
           updatedAt: cust.updatedAt
         });
@@ -679,5 +691,8 @@ export class SyncCoordinator {
       }
     }
     this.conv.refreshConversationActivity(local.id);
+    // v1.5.0: (re)chunk the ticket for semantic search. Cheap (delete+insert)
+    // and self-debouncing: unchanged content produces identical chunks.
+    this.conv.rechunkConversation(local.id);
   }
 }

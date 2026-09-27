@@ -29,6 +29,7 @@ All endpoint usage in SupportOS was **verified against the current official docu
 |---|---|---|
 | Create reply | `POST /v2/conversations/{id}/reply` | draft / status-after-send / assignTo / cc / bcc / base64 attachments |
 | Create note | `POST /v2/conversations/{id}/notes` | |
+| **Create conversation (v1.5.0)** | `POST /v2/conversations` | Outreach sends: one conversation per customer (never a shared BCC send). Customer identified by **id when known** (prevents accidental duplicate contacts); email fallback only when unresolvable — and the fallback is recorded in the campaign audit trail. The message is a `type=message` thread with `status=active` (published + sent), sent at USER_SEND priority through the same rate-limited API queue as manual replies. Ambiguous outcomes (network error / 504) land in `unknown` and are reconciled by customer+subject+time before any retry — never blindly resent |
 | Update conversation | `PATCH /v2/conversations/{id}` (JSON Patch) | subject / status / assignTo (+`remove` to unassign) / mailboxId (move) / primaryCustomer.id / draft publish |
 | Update tags | `PUT /v2/conversations/{id}/tags` | **replacement-style → SupportOS always fresh-reads + merges** (A,B + add C ⇒ A,B,C) |
 | Update custom fields | `PUT /v2/conversations/{id}/fields` | full replacement; **system fields (Topics/Sentiment) preserved when omitted** (documented) — SupportOS merges fresh state |
@@ -39,6 +40,8 @@ All endpoint usage in SupportOS was **verified against the current official docu
 ## Other verified endpoints
 
 `GET /v2/mailboxes` (+ `/folders`, `/fields`, `/saved-replies`, `/routing`), `GET /v2/users`, `/v2/users/me`, `/v2/users/{id}/status`, `GET /v2/teams` (+ `/members`), `GET /v2/tags`, `GET /v2/customers/{id}`, `GET /v2/organizations`, `GET /v2/{customer|organization}-properties`, `GET /v2/ratings/{id}`, `GET /v2/webhooks`, `POST/DELETE /v2/webhooks`, `GET /v2/conversations/{id}/attachments/{aid}/data`, reports `GET /v2/reports/{company|conversations|happiness|productivity}`.
+
+**Customer property VALUES (v1.5.0):** the mirror persists property values when the API returns them on customer payloads — the v3 list and v2 get responses carry them in slightly different shapes across API vintages, so SupportOS normalizes defensively and skips unknown shapes honestly (a value without a resolvable definition is dropped, never guessed). A raw_json backfill heals databases synced before v1.5.0 without a re-sync. If your account's endpoint responses omit values, the Outreach builder shows the property with "no values locally" and property conditions still work against whatever has been synced — nothing pretends to be populated that isn't.
 
 ## Rate limiting
 
