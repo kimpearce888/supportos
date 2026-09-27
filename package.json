@@ -29,7 +29,8 @@
     "desktop:dev": "npx tauri dev",
     "desktop:build": "npx tauri build",
     "desktop:prepare": "node scripts/build-desktop.mjs",
-    "desktop:icon": "python3 scripts/make_icon.py && npx tauri icon src-tauri/app-icon.png -o src-tauri/icons"
+    "desktop:icon": "python3 scripts/make_icon.py && npx tauri icon src-tauri/app-icon.png -o src-tauri/icons",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
