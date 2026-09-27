@@ -1,0 +1,46 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the problem. If you can reproduce it in demo mode (LOCAL_DEMO_MODE=true), say so — demo repros are much easier to act on.
+      placeholder: |
+        Steps to reproduce:
+        1. Go to ...
+        2. Click ...
+        3. See error ...
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Demo mode (LOCAL_DEMO_MODE=true)
+        - Live Help Scout mode
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: SupportOS version / commit
+      placeholder: "v1.0.0 or commit SHA"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Server output around the time of the problem. Please make sure it contains no real customer data or credentials.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have checked docs/TROUBLESHOOTING.md and existing issues
+          required: true
+        - label: This report contains no real customer data, credentials or secrets
+          required: true
