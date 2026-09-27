@@ -19,6 +19,7 @@ import { migration007 } from '../../src/server/database/migrations/007_channels_
 import { migration008 } from '../../src/server/database/migrations/008_semantic_docs_sla.js';
 import { migration009 } from '../../src/server/database/migrations/009_outreach_semantic_sync.js';
 import { migration010 } from '../../src/server/database/migrations/010_audit_hardening.js';
+import { migration011 } from '../../src/server/database/migrations/011_activity_engine.js';
 import { CampaignService } from '../../src/server/outreach/campaignService.js';
 import { ConversationRepository } from '../../src/server/database/repositories/conversationRepo.js';
 import { getContext, resetContext } from '../../src/server/services/context.js';
@@ -47,7 +48,7 @@ describe('neutral audit phase 3: v1.4 -> v1.5 upgrade', () => {
     const legacyCustomerId = (db.prepare('SELECT id FROM customers WHERE remote_id = 91001').get() as { id: number }).id;
     db.prepare(
       `INSERT INTO conversations (remote_id, number, subject, status, mailbox_local_id, customer_local_id, remote_created_at, local_created_at, local_updated_at)
-       VALUES (99001, 9001, 'Legacy ticket', 'closed', ?, ?, datetime('now'), datetime('now'), datetime('now'))`
+       VALUES (99001, 9001, 'Legacy ticket', 'closed', ?, ?, datetime('now', '-30 days'), datetime('now'), datetime('now'))`
     ).run(legacyMailboxId, legacyCustomerId);
     const customersBefore = (db.prepare('SELECT COUNT(*) AS n FROM customers').get() as { n: number }).n;
     const conversationsBefore = (db.prepare('SELECT COUNT(*) AS n FROM conversations').get() as { n: number }).n;
@@ -59,6 +60,8 @@ describe('neutral audit phase 3: v1.4 -> v1.5 upgrade', () => {
     migration009.up(db); // idempotency: a double-run must not throw or duplicate
     migration010.up(db); // v1.6.0 hardening (docs content_hash + embedding attempts)
     migration010.up(db); // idempotency
+    migration011.up(db); // v1.7.0 activity engine (events + derived columns + states + views)
+    migration011.up(db); // idempotency
 
     // Rows survived; new columns are NULL on old rows (not garbage)
     expect((db.prepare('SELECT COUNT(*) AS n FROM conversations').get() as { n: number }).n).toBe(conversationsBefore);
@@ -69,6 +72,15 @@ describe('neutral audit phase 3: v1.4 -> v1.5 upgrade', () => {
     for (const t of ['segments', 'outreach_campaigns', 'outreach_recipients', 'outreach_attempts', 'outreach_events', 'do_not_contact', 'conversation_chunks', 'encrypted_sync_log']) {
       expect((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n).toBe(0);
     }
+    // v1.7.0 tables exist; default ticket states are seeded; legacy rows derive activity honestly
+    for (const t of ['conversation_events', 'ticket_states', 'ticket_state_transitions', 'inbox_views']) {
+      expect((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n).toBeGreaterThanOrEqual(0);
+    }
+    expect((db.prepare("SELECT COUNT(*) AS n FROM ticket_states WHERE built_in = 1").get() as { n: number }).n).toBe(6);
+    const legacyActivity = db.prepare('SELECT activity_history_complete, first_customer_message_at, customer_waiting_since, supportos_priority FROM conversations WHERE remote_id = 99001').get() as { activity_history_complete: number; first_customer_message_at: string | null; customer_waiting_since: string | null; supportos_priority: string };
+    expect(legacyActivity.supportos_priority).toBe('none');
+    // No threads for the legacy ticket -> history honestly incomplete, not guessed
+    expect(legacyActivity.activity_history_complete).toBe(0);
 
     // After the upgrade, the v1.5 sync path works on the upgraded schema
     const provider = new FakeHelpScoutProvider();

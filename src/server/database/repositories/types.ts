@@ -70,6 +70,21 @@ export interface ConversationRow {
   last_activity_at: string | null;
   raw_json: string | null;
   deleted_at: string | null;
+  // v1.7.0 activity engine columns
+  first_customer_message_at: string | null;
+  first_response_at: string | null;
+  last_customer_reply_at: string | null;
+  last_human_agent_response_at: string | null;
+  last_system_response_at: string | null;
+  last_note_at: string | null;
+  customer_waiting_since: string | null;
+  last_status_change_at: string | null;
+  last_assignment_change_at: string | null;
+  last_tag_change_at: string | null;
+  last_custom_field_change_at: string | null;
+  activity_history_complete: number;
+  supportos_priority: string;
+  supportos_state_id: number | null;
 }
 
 export interface ThreadRow {
@@ -85,6 +100,9 @@ export interface ThreadRow {
   from_type: string | null;
   created_by_user_id: number | null;
   created_by_customer_id: number | null;
+  created_by_system_user_id: number | null;
+  action_type: string | null;
+  action_text: string | null;
   scheduled_for: string | null;
   remote_created_at: string | null;
   saved_reply_local_id: number | null;

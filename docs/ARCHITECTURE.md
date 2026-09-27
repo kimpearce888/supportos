@@ -74,9 +74,20 @@ React client (TanStack Query server state / Zustand UI state)
 ### 8. Startup sequence
 validate environment → run migrations → initialize services → probe Help Scout/LM Studio/Qdrant (optional failures never block startup) → recover stale jobs → start workers → serve UI. In demo mode with an empty database, the initial demo sync + intelligence seeding run automatically.
 
+### 9. Conversation activity engine (v1.7.0)
+Help Scout exposes no historical change log — that API limitation shapes the whole design. The `conversation_events` table is a **derived, honestly-sourced** event history, not a claim of what happened upstream:
+
+- **Message events** (`customer_message`, `human_agent_message`, `system_agent_message`, `internal_note`) are derived from the thread mirror with EXACT timestamps (`source: sync`, dedup key `thread:<remoteId>` — one event per remote thread, idempotent across re-syncs).
+- **Change events** (`status_changed`, `assignment_changed`, `tag_added`…) observed during sync record the **observation time** with `observed: true` metadata — the change happened between two observations, and the event says so.
+- **Local writes** (through `ConversationOperations` — status, assign, tags, fields, snooze, moves, priority, state) record their own exact time with `source: local`.
+- **Rebuild events** (`source: rebuild`) derive once at migration/upgrade time from threads, conversation rows, attachments and Help Scout lineitem action records (conservative keyword mapping, raw action text preserved).
+- `activity_history_complete = 0` flags conversations whose full thread history is not locally known; their response state is `unknown`, never "never responded".
+
+**Derived activity columns** (first_response_at, customer_waiting_since, last_tag_change_at, … 14 total) are indexed on `conversations` and recomputed transactionally on every upsert — the same SQL the migration backfill uses, so fresh and upgraded databases converge. The **response-state machine** is a single SQL CASE (`RESPONSE_STATE_SQL`) shared by the list filter, the view engine and the detail route, with a JS mirror locked to it by a row-by-row equivalence test. **Saved Inbox Views** persist as Zod-validated JSON condition trees; the ViewEngine compiles them to parameterized SQL with whitelisted identifiers at evaluation time (calendar date modes re-resolve on every open). **Priority and custom ticket states** are local layers — `supportos_priority` never touches Help Scout data unless an explicit custom-field mapping is configured, and `ticket_state_transitions` records every transition (previous/new, actor, reason, timestamp) feeding per-state lifecycle metrics and bottleneck ranking.
+
 ## Database
 
-~60 tables across four migrations (see `src/server/database/migrations/`). FTS5 virtual tables are maintained by repositories (delete+insert pattern) and can be rebuilt from base tables at any time (Sync Health → Rebuild search index). WAL mode, foreign keys, busy timeout 5000ms, prepared statements everywhere, batched writes in transactions.
+~60 tables across eleven migrations (see `src/server/database/migrations/`; migration 011 adds `conversation_events`, `ticket_states`, `ticket_state_transitions`, `inbox_views` and the derived activity columns on `conversations`). FTS5 virtual tables are maintained by repositories (delete+insert pattern) and can be rebuilt from base tables at any time (Sync Health → Rebuild search index); the activity engine has its own idempotent global rebuild (`POST /api/conversations/activity/rebuild`). WAL mode, foreign keys, busy timeout 5000ms, prepared statements everywhere, batched writes in transactions.
 
 ## Frontend
 

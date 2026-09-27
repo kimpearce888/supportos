@@ -1,14 +1,39 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client.js';
 import type { ConversationSummary, ConversationListResponse, DashboardStats, DocsCollectionInfo, DocsArticleSummary, DocsArticleDetail, DocsStats, DocsSearchResponse, SlaReportInfo } from '../../shared/types.js';
+import type { SavedInboxView, TicketStateDef, StateTransition, ConversationEvent, ResponseState } from '../../shared/activity.js';
 
-export function useConversations(view: string, page: number, tag?: string | null, channel?: string | null) {
+// ---------------- v1.7.0 inbox filters ----------------
+
+export interface InboxFilters {
+  activityField?: string | null;
+  dateMode?: string | null;
+  from?: string | null;
+  to?: string | null;
+  fromTime?: string | null;
+  toTime?: string | null;
+  responseState?: string | null;
+  priority?: string | null;
+  ticketStateId?: string | null;
+  sort?: string | null;
+  savedViewId?: string | null;
+}
+
+export function useConversations(view: string, page: number, tag?: string | null, channel?: string | null, filters?: InboxFilters) {
+  const f = filters ?? {};
+  const params = new URLSearchParams();
+  params.set('view', view);
+  params.set('page', String(page));
+  if (tag) params.set('tag', tag);
+  if (channel) params.set('channel', channel);
+  for (const key of ['activityField', 'dateMode', 'from', 'to', 'fromTime', 'toTime', 'responseState', 'priority', 'ticketStateId', 'sort', 'savedViewId'] as const) {
+    const v = f[key];
+    if (v) params.set(key, v);
+  }
+  const qs = params.toString();
   return useQuery({
-    queryKey: ['conversations', view, page, tag ?? null, channel ?? null],
-    queryFn: () =>
-      api.get<ConversationListResponse>(
-        `/api/conversations?view=${encodeURIComponent(view)}&page=${page}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}${channel ? `&channel=${encodeURIComponent(channel)}` : ''}`
-      )
+    queryKey: ['conversations', view, page, tag ?? null, channel ?? null, f.activityField ?? null, f.dateMode ?? null, f.from ?? null, f.to ?? null, f.fromTime ?? null, f.toTime ?? null, f.responseState ?? null, f.priority ?? null, f.ticketStateId ?? null, f.sort ?? null, f.savedViewId ?? null],
+    queryFn: () => api.get<ConversationListResponse & { notes?: string[] }>(`/api/conversations?${qs}`)
   });
 }
 
@@ -42,6 +67,23 @@ export interface ConversationDetail {
   workflows: { id: number; remote_id: number; name: string; type: string; status: string | null }[];
   users: { id: number; remote_id: number; first_name: string; last_name: string; email: string | null }[];
   teams: { id: number; remote_id: number; name: string }[];
+  // v1.7.0 activity intelligence
+  activity: {
+    response_state: ResponseState;
+    ages_minutes: Record<string, number | null>;
+    ages_human: Record<string, string | null>;
+    event_counts: Record<string, number>;
+    history_complete: boolean;
+    ticket_state: TicketStateDef | null;
+    state_history: StateTransition[];
+    state_lifecycle: {
+      current_state: TicketStateDef | null;
+      time_in_current_state_min: number | null;
+      transitions: number;
+      per_state: { state_id: number; state_name: string; entries: number; total_minutes: number | null; avg_minutes: number | null; last_entered: string | null }[];
+    };
+  };
+  ticket_states: TicketStateDef[];
 }
 
 export function useConversationDetail(id: number | null) {
@@ -168,5 +210,26 @@ export function useInteractionEvidence(conversationId: number | null) {
     queryKey: ['interaction-evidence', conversationId],
     queryFn: () => api.get<{ observations: { dimension: string; value: string; confidence: string; evidence_excerpt: string | null; conversation_local_id: number | null; thread_local_id: number | null; observed_at: string; provenance: string }[] }>(`/api/interaction/${conversationId}/evidence`),
     enabled: conversationId != null && conversationId > 0
+  });
+}
+
+// ---------------- v1.7.0 activity engine ----------------
+
+export function useInboxViews() {
+  return useQuery({ queryKey: ['inbox-views'], queryFn: () => api.get<{ views: SavedInboxView[] }>('/api/inbox-views') });
+}
+
+export function useTicketStates() {
+  return useQuery({
+    queryKey: ['ticket-states'],
+    queryFn: () => api.get<{ states: TicketStateDef[]; bottlenecks: { state_id: number; state_name: string; conversations: number; avg_minutes: number | null; max_minutes: number | null }[] }>('/api/ticket-states')
+  });
+}
+
+export function useConversationEvents(id: number | null) {
+  return useQuery({
+    queryKey: ['conversation-events', id],
+    queryFn: () => api.get<{ conversation_id: number; events: ConversationEvent[]; counts: Record<string, number> }>(`/api/conversations/${id}/events?limit=500`),
+    enabled: id != null && id > 0
   });
 }

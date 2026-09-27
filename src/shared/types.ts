@@ -77,6 +77,22 @@ export interface ConversationSummary {
   merged_into_conversation_id: number | null;
   first_activity_at: string | null;
   last_activity_at: string | null;
+  // ---- v1.7.0 activity engine ----
+  first_customer_message_at: string | null;
+  first_response_at: string | null;
+  last_customer_reply_at: string | null;
+  last_human_agent_response_at: string | null;
+  customer_waiting_since: string | null;
+  last_status_change_at: string | null;
+  last_assignment_change_at: string | null;
+  last_tag_change_at: string | null;
+  activity_history_complete: 0 | 1;
+  /** Local SupportOS priority (never Help Scout data). */
+  priority: import('./activity.js').TicketPriority;
+  /** Local SupportOS custom ticket state (null = unset). */
+  ticket_state_id: number | null;
+  /** v1.7.0 deterministic response state (mirrors RESPONSE_STATE_SQL). */
+  response_state: import('./activity.js').ResponseState;
 }
 
 export interface ThreadSummary {

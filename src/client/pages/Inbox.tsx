@@ -13,7 +13,9 @@ import { Spinner, EmptyState, ErrorState, StatusBadge, TagChips, RelativeTime, C
 import { ConfirmDialog, Modal } from '../components/common/overlays.js';
 import { SafeHtml } from '../components/common/SafeHtml.js';
 import { useUiStore } from '../state/uiStore.js';
-import type {  } from '../../shared/types.js';
+import { FilterBar, SavedViewsManager, type FilterBarValues } from '../components/inbox/FilterBar.js';
+import { PriorityBadge, ResponseStateBadge, TicketStateBadge, ActivityTimeline, PriorityPicker, TicketStatePicker } from '../components/inbox/ActivityUI.js';
+import type { } from '../../shared/types.js';
 
 const VIEWS = [
   { key: 'active', label: 'Active' },
@@ -39,7 +41,30 @@ export function InboxPage(): ReactNode {
   const channelParam = params.get('channel');
   const channel = channelParam === 'email' || channelParam === 'chat' ? channelParam : null;
   const selectedId = id != null && Number.isFinite(Number(id)) ? Number(id) : null;
-  const { data, isLoading, isError, error } = useConversations(view, page, params.get('tag'), channel);
+
+  // v1.7.0: activity/date/state filters live in the URL, like view/channel/tag.
+  const filterValues: FilterBarValues = {
+    activityField: params.get('activityField'),
+    dateMode: params.get('dateMode'),
+    from: params.get('from'),
+    to: params.get('to'),
+    responseState: params.get('responseState'),
+    priority: params.get('priority'),
+    ticketStateId: params.get('ticketStateId'),
+    sort: params.get('sort'),
+    savedViewId: params.get('savedViewId')
+  };
+  const setFilters = (patch: Partial<FilterBarValues>): void => {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null || v === '') next.delete(k);
+      else next.set(k, v);
+    }
+    next.set('page', '1');
+    setParams(next, { replace: false });
+    setSelection([]);
+  };
+  const { data, isLoading, isError, error } = useConversations(view, page, params.get('tag'), channel, filterValues);
   const pushToast = useUiStore((s) => s.pushToast);
 
   const [selection, setSelection] = useState<number[]>([]);
@@ -108,6 +133,9 @@ export function InboxPage(): ReactNode {
             </button>
           ))}
         </div>
+        {/* v1.7.0: activity/date/state filters + saved views (URL-backed) */}
+        <FilterBar values={filterValues} onChange={setFilters} notes={data?.notes} />
+        <SavedViewsManager current={filterValues.savedViewId} onSelect={(v) => setFilters({ savedViewId: v })} />
         {selection.length > 0 ? (
           <div className="flex wrap" style={{ padding: '6px 10px', gap: 6, borderBottom: '1px solid var(--border)' }}>
             <span className="text-xs muted">{selection.length} selected</span>
@@ -155,6 +183,13 @@ export function InboxPage(): ReactNode {
                   <div className="conv-preview">{c.customer_name ?? 'Unknown'} · {c.preview}</div>
                   <div className="conv-meta">
                     <StatusBadge status={c.status} />
+                    <ResponseStateBadge state={c.response_state} />
+                    <PriorityBadge priority={c.priority} />
+                    {c.customer_waiting_since ? (
+                      <span className="badge warn" title={`Customer waiting since ${new Date(c.customer_waiting_since).toLocaleString()}`}>
+                        <Clock size={10} /> waiting <RelativeTime iso={c.customer_waiting_since} />
+                      </span>
+                    ) : null}
                     {c.type === 'chat' ? <span className="badge ok"><MessageCircle size={10} /> {c.source_via === 'beacon' ? 'Beacon' : 'chat'}</span> : null}
                     <span className="text-xs muted">#{c.number}</span>
                     {c.mailbox_name ? <span className="badge">{c.mailbox_name}</span> : null}
@@ -297,6 +332,7 @@ function ConversationDetail({ id }: { id: number }): ReactNode {
           ))}
         </div>
       ) : null}
+      <ActivityTimeline conversationId={id} historyComplete={data.activity.history_complete} />
       <ContextPane data={data} onRefresh={invalidate} />
     </>
   );
@@ -344,14 +380,26 @@ function ConversationHeader({ data, onRefresh }: { data: NonNullable<ReturnType<
           </h2>
           <div className="flex wrap mt-8" style={{ gap: 6 }}>
             <StatusBadge status={c.status} />
+            <ResponseStateBadge state={c.response_state} />
+            {data.activity.ticket_state ? <TicketStateBadge state={data.activity.ticket_state} /> : null}
             <span className="badge">#{c.number}</span>
             {c.mailbox_name ? <span className="badge">{c.mailbox_name}</span> : null}
             <span className="text-xs muted"><Mail size={11} style={{ display: 'inline', verticalAlign: 'middle' }} /> {c.customer_email ?? c.customer_name}</span>
             <RelativeTime iso={c.remote_created_at} prefix="opened " />
             <RelativeTime iso={c.last_activity_at} prefix="· active " />
+            {data.activity.ages_human.customer_waiting_duration ? (
+              <span className="badge warn" title="Customer has been waiting for a response (deterministic, from local thread history)">
+                <Clock size={10} /> waiting {data.activity.ages_human.customer_waiting_duration}
+              </span>
+            ) : null}
+            {data.activity.state_lifecycle.time_in_current_state_min != null ? (
+              <span className="badge" title="Time in the current SupportOS state">in state {data.activity.state_lifecycle.time_in_current_state_min >= 1440 ? `${Math.round(data.activity.state_lifecycle.time_in_current_state_min / 1440)}d` : data.activity.state_lifecycle.time_in_current_state_min >= 60 ? `${Math.round(data.activity.state_lifecycle.time_in_current_state_min / 60)}h` : `${data.activity.state_lifecycle.time_in_current_state_min}m`}</span>
+            ) : null}
           </div>
         </div>
         <div className="flex wrap" style={{ gap: 6 }}>
+          <PriorityPicker conversationId={c.id} current={c.priority} onDone={onRefresh} />
+          <TicketStatePicker conversationId={c.id} current={data.activity.ticket_state} states={data.ticket_states} onDone={onRefresh} />
           <button className="btn small" onClick={() => act.mutate({ path: `/api/conversations/${c.id}/refresh` })} disabled={act.isPending}>
             <RefreshCw size={11} /> Refresh
           </button>

@@ -39,6 +39,9 @@ import { SegmentEngine } from '../segmentation/segmentEngine.js';
 import { CampaignService } from '../outreach/campaignService.js';
 import { EncryptedSyncService } from './encryptedSyncService.js';
 import { WorkerManager } from './workers.js';
+import { ActivityRepository } from '../database/repositories/activityRepo.js';
+import { TicketStateRepository } from '../database/repositories/ticketStateRepo.js';
+import { InboxViewRepository } from '../database/repositories/inboxViewRepo.js';
 
 /**
  * ApplicationContext: a modular monolith (spec #163) - one process, one SQLite
@@ -81,6 +84,10 @@ export class AppContext {
   encryptedSync: EncryptedSyncService;
   evidenceBuilder: EvidenceBuilder;
   toolRegistry: AiToolRegistry;
+  // v1.7.0 activity engine
+  activityRepo: ActivityRepository;
+  ticketStateRepo: TicketStateRepository;
+  inboxViewRepo: InboxViewRepository;
 
   constructor(opts: { dbPath?: string; demoMode?: boolean } = {}) {
     this.config = config;
@@ -124,6 +131,9 @@ export class AppContext {
     this.analyticsRepo = new AnalyticsRepository(this.db);
     this.outreachRepo = new OutreachRepository(this.db);
     this.segmentEngine = new SegmentEngine(this.db);
+    this.activityRepo = new ActivityRepository(this.db);
+    this.ticketStateRepo = new TicketStateRepository(this.db);
+    this.inboxViewRepo = new InboxViewRepository(this.db);
     this.campaigns = new CampaignService(this.db, this.provider, this.outreachRepo, this.peopleRepo, this.jobsRepo);
     this.encryptedSync = new EncryptedSyncService(this.db, getDatabasePath(), this.config.backupsPath);
 

@@ -456,6 +456,56 @@ export class ConversationOperations {
     return { ok: true, message: `${queued} operations queued.`, data: { queued } };
   }
 
+  // ============================================================ SupportOS priority (v1.7.0, local-only by default)
+
+  /**
+   * Set the local SupportOS ticket priority. Distinct from API job priority:
+   * this is the support rep's triage field. When (and only when) a Help Scout
+   * custom-field mapping is configured in settings, the value is ALSO written
+   * to the mapped field via the existing fresh-read-merge-write path - an
+   * optional, explicitly-configured sync (plan Phase 7).
+   */
+  async setPriority(conversationId: number, priority: 'none' | 'low' | 'medium' | 'high' | 'urgent'): Promise<OperationResult<{ priority: string; hs_field_synced: boolean }>> {
+    const conv = this.conv.getConversationByLocalId(conversationId);
+    if (!conv) return { ok: false, message: 'Conversation not found locally.' };
+    const previous = conv.supportos_priority ?? 'none';
+    let hsSynced = false;
+    let hsError: string | null = null;
+
+    // Optional Help Scout custom-field mapping (default: OFF - local value stays local)
+    const mappingFieldRemoteId = this.settings.get<number | null>('priority_hs_field_id', null);
+    if (mappingFieldRemoteId != null && conv.remote_id) {
+      const auth = this.requireAuth();
+      const evalBlock = this.evalModeBlocked();
+      if (auth) return auth;
+      if (evalBlock) return evalBlock;
+      try {
+        const label = priority === 'none' ? '' : priority.charAt(0).toUpperCase() + priority.slice(1);
+        await this.provider.updateCustomFields(conv.remote_id, [{ id: mappingFieldRemoteId, value: label }]);
+        hsSynced = true;
+      } catch (e) {
+        hsError = e instanceof HelpScoutApiError ? e.friendly : e instanceof Error ? e.message : String(e);
+      }
+    }
+
+    const at = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.db.prepare('UPDATE conversations SET supportos_priority = ? WHERE id = ?').run(priority, conversationId);
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO conversation_events (conversation_id, event_type, actor_type, occurred_at, source, metadata, dedup_key)
+           VALUES (?, 'priority_changed', 'user', ?, 'local', ?, 'priority_changed:' || ? || ':' || ?)`
+        )
+        .run(conversationId, at, JSON.stringify({ previous, next: priority, hs_field_synced: hsSynced }), conversationId, at);
+    });
+    tx();
+    this.jobs.audit({ actor: 'user', action: 'priority_changed', conversation_id: conversationId, before_state: { priority: previous }, after_state: { priority, hs_field_synced: hsSynced } });
+    if (hsError) {
+      return { ok: true, message: `Priority set locally to ${priority}, but the Help Scout custom-field sync failed: ${hsError}`, data: { priority, hs_field_synced: false } };
+    }
+    return { ok: true, message: `Priority set to ${priority}.`, data: { priority, hs_field_synced: hsSynced } };
+  }
+
   // ============================================================ Workflow run (Help Scout workflow, distinct from local automation)
 
   async runHelpScoutWorkflow(workflowId: number, conversationId: number): Promise<OperationResult> {

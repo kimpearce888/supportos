@@ -3,6 +3,9 @@ import { nowIso, hashJson, isoOrNull } from './helpers.js';
 import type { ConversationSummary, ThreadSummary, AttachmentMeta, ConversationStatus } from '../../../shared/types.js';
 import { htmlToText, chunkText } from '../../../shared/utils.js';
 import type { ConversationRow, ThreadRow, AttachmentRow } from './types.js';
+import { ActivityRepository } from './activityRepo.js';
+import { RESPONSE_STATE_SQL, responseStateOf } from '../../inbox/responseState.js';
+import type { TicketPriority } from '../../../shared/activity.js';
 
 interface ConversationV3 {
   id: number;
@@ -62,11 +65,27 @@ export interface InboxViewParams {
   assigneeLocalId?: number | null;
   tag?: string | null;
   query?: string;
+  // ---- v1.7.0 activity filters ----
+  /** Activity column date window (resolved UTC [from, to)). */
+  activityColumn?: string | null;
+  activityFrom?: string | null;
+  activityTo?: string | null;
+  responseState?: string | null;
+  priority?: string | null;
+  ticketStateId?: number | null;
+  /** Extra raw WHERE fragment from the saved-view engine (parameterized). */
+  extraWhere?: string | null;
+  extraParams?: unknown[];
+  sort?: 'newest_activity' | 'oldest_activity' | 'newest_created' | 'oldest_created' | 'waiting_longest' | 'priority' | 'priority_then_waiting';
 }
 
 /** Conversations, threads, attachments repository. */
 export class ConversationRepository {
-  constructor(private db: DB) {}
+  private activity: ActivityRepository;
+
+  constructor(private db: DB) {
+    this.activity = new ActivityRepository(db);
+  }
 
   private localIds = {
     mailbox: (rid: number) => (this.db.prepare('SELECT id FROM mailboxes WHERE remote_id = ?').get(rid) as { id: number } | undefined)?.id ?? null,
@@ -83,6 +102,9 @@ export class ConversationRepository {
 
   /** Persist a v3 conversation payload. Returns local id. */
   upsertConversation(c: ConversationV3): number {
+    // v1.7.0: pre-write snapshot for the change-event diff (source data for
+    // conversation change events; re-syncs produce no duplicate events).
+    const previous = this.getConversationByRemoteId(c.id);
     const mailboxLocal = c.mailboxId ? this.localIds.mailbox(c.mailboxId) : null;
     const folderLocal = c.folderId ? this.localIds.folder(c.folderId) : null;
     const customerLocal = c.primaryCustomer?.id ? this.localIds.customer(c.primaryCustomer.id) : null;
@@ -141,6 +163,136 @@ export class ConversationRepository {
       });
     const localId = (this.db.prepare('SELECT id FROM conversations WHERE remote_id = ?').get(c.id) as { id: number }).id;
 
+    // v1.7.0 conversation change events (sync observation diff). Help Scout
+    // exposes no change log, so these honestly record OBSERVATION time with
+    // source='sync' - the change happened between the previous observation
+    // and this one. Local writes (operations.ts path) record their own exact
+    // events with source='local' and never land here.
+    const observedAt = nowIso();
+    if (!previous) {
+      this.activity.recordEvent({
+        conversationId: localId,
+        eventType: 'conversation_created',
+        actorType: 'customer',
+        actorLocalId: customerLocal,
+        occurredAt: isoOrNull(c.createdAt),
+        source: 'sync',
+        metadata: { number: c.number ?? c.id, mailbox_local_id: mailboxLocal },
+        dedupKey: `conversation_created:${c.id}`
+      });
+    } else {
+      const newStatus = this.mapStatus(c.status);
+      if (previous.status !== newStatus) {
+        this.activity.recordEvent({
+          conversationId: localId,
+          eventType: newStatus === 'closed' ? 'closed' : previous.status === 'closed' ? 'reopened' : 'status_changed',
+          actorType: 'user',
+          occurredAt: observedAt,
+          source: 'sync',
+          metadata: { previous: previous.status, next: newStatus, observed: true },
+          dedupKey: `status_changed:${c.id}:${observedAt}`
+        });
+      }
+      if ((previous.assignee_local_id ?? null) !== (assigneeLocal ?? null)) {
+        this.activity.recordEvent({
+          conversationId: localId,
+          eventType: 'assignment_changed',
+          actorType: 'user',
+          occurredAt: observedAt,
+          source: 'sync',
+          metadata: { previous: previous.assignee_local_id ?? null, next: assigneeLocal ?? null, observed: true },
+          dedupKey: `assignment_changed:${c.id}:${observedAt}`
+        });
+      }
+      if ((previous.assigned_team_local_id ?? null) !== (teamLocal ?? null)) {
+        this.activity.recordEvent({
+          conversationId: localId,
+          eventType: 'team_changed',
+          actorType: 'user',
+          occurredAt: observedAt,
+          source: 'sync',
+          metadata: { previous: previous.assigned_team_local_id ?? null, next: teamLocal ?? null, observed: true },
+          dedupKey: `team_changed:${c.id}:${observedAt}`
+        });
+      }
+      if ((previous.mailbox_local_id ?? null) !== (mailboxLocal ?? null)) {
+        this.activity.recordEvent({
+          conversationId: localId,
+          eventType: 'moved',
+          actorType: 'user',
+          occurredAt: observedAt,
+          source: 'sync',
+          metadata: { previous_mailbox: previous.mailbox_local_id ?? null, next_mailbox: mailboxLocal ?? null, observed: true },
+          dedupKey: `moved:${c.id}:${observedAt}`
+        });
+      }
+      const prevSnooze = previous.snoozed_until ?? null;
+      const nextSnooze = isoOrNull(c.snooze?.snoozedUntil);
+      if (prevSnooze !== nextSnooze) {
+        this.activity.recordEvent({
+          conversationId: localId,
+          eventType: nextSnooze ? 'snoozed' : 'unsnoozed',
+          actorType: 'user',
+          occurredAt: observedAt,
+          source: 'sync',
+          metadata: { previous: prevSnooze, next: nextSnooze, observed: true },
+          dedupKey: `snooze:${c.id}:${observedAt}`
+        });
+      }
+      // Tag diff (old names vs new names, case-insensitive)
+      if (c.tags) {
+        const oldTagNames = new Set((this.db.prepare('SELECT t.name FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = ?').all(localId) as { name: string }[]).map((r) => r.name.toLowerCase()));
+        for (const t of c.tags) {
+          if (!oldTagNames.has(t.tag.toLowerCase())) {
+            this.activity.recordEvent({
+              conversationId: localId,
+              eventType: 'tag_added',
+              actorType: 'user',
+              occurredAt: observedAt,
+              source: 'sync',
+              metadata: { tag: t.tag, observed: true },
+              dedupKey: `tag_added:${c.id}:${t.tag.toLowerCase()}:${observedAt}`
+            });
+          }
+        }
+        const newTagNames = new Set(c.tags.map((t) => t.tag.toLowerCase()));
+        for (const old of oldTagNames) {
+          if (!newTagNames.has(old)) {
+            this.activity.recordEvent({
+              conversationId: localId,
+              eventType: 'tag_removed',
+              actorType: 'user',
+              occurredAt: observedAt,
+              source: 'sync',
+              metadata: { tag: old, observed: true },
+              dedupKey: `tag_removed:${c.id}:${old}:${observedAt}`
+            });
+          }
+        }
+      }
+      // Custom field value diff
+      if (c.customFields) {
+        const oldFields = new Map((this.db.prepare('SELECT field_local_id, value FROM conversation_fields WHERE conversation_id = ?').all(localId) as { field_local_id: number; value: string | null }[]).map((r) => [r.field_local_id, r.value]));
+        for (const f of c.customFields) {
+          const fieldLocal = this.localIds.field(f.id);
+          if (!fieldLocal) continue;
+          const newVal = f.value != null ? String(f.value) : null;
+          const oldVal = oldFields.get(fieldLocal) ?? null;
+          if (oldVal !== newVal) {
+            this.activity.recordEvent({
+              conversationId: localId,
+              eventType: 'custom_field_changed',
+              actorType: 'user',
+              occurredAt: observedAt,
+              source: 'sync',
+              metadata: { field_local_id: fieldLocal, previous: oldVal, next: newVal, observed: true },
+              dedupKey: `custom_field_changed:${c.id}:${fieldLocal}:${observedAt}`
+            });
+          }
+        }
+      }
+    }
+
     // tags
     this.db.prepare('DELETE FROM conversation_tags WHERE conversation_id = ?').run(localId);
     if (c.tags) {
@@ -184,6 +336,8 @@ export class ConversationRepository {
 
     // FTS
     this.reindexConversationFts(localId);
+    // v1.7.0: derived activity columns stay consistent with the mirror
+    this.activity.recomputeActivity(localId);
     return localId;
   }
 
@@ -228,14 +382,18 @@ export class ConversationRepository {
     const page = Math.max(1, params.page ?? 1);
     const pageSize = Math.min(100, params.pageSize ?? 50);
     const where: string[] = ["c.deleted_at IS NULL", "c.merged_into_conversation_id IS NULL"];
-    const args: Record<string, unknown> = {};
+    // v1.7.0: positional parameters throughout - the saved-view engine emits
+    // positional fragments, and better-sqlite3 forbids mixing named and
+    // positional binds in one statement.
+    const args: unknown[] = [];
 
     switch (params.view) {
       case 'my-tickets':
         where.push("c.status IN ('active','pending')");
-        if (params.assigneeLocalId) where.push('c.assignee_local_id = @assignee');
-        else where.push('c.assignee_local_id IS NOT NULL');
-        args.assignee = params.assigneeLocalId ?? null;
+        if (params.assigneeLocalId) {
+          where.push('c.assignee_local_id = ?');
+          args.push(params.assigneeLocalId);
+        } else where.push('c.assignee_local_id IS NOT NULL');
         break;
       case 'unassigned':
         where.push("c.status IN ('active','pending')", 'c.assignee_local_id IS NULL');
@@ -254,27 +412,71 @@ export class ConversationRepository {
         break;
     }
     if (params.mailboxId) {
-      where.push('c.mailbox_local_id = @mailbox');
-      args.mailbox = params.mailboxId;
+      where.push('c.mailbox_local_id = ?');
+      args.push(params.mailboxId);
     }
     if (params.channel) {
-      where.push("c.type = @channel");
-      args.channel = params.channel;
+      where.push('c.type = ?');
+      args.push(params.channel);
     }
     if (params.tag) {
-      where.push('EXISTS (SELECT 1 FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = c.id AND t.name = @tag COLLATE NOCASE)');
-      args.tag = params.tag;
+      where.push('EXISTS (SELECT 1 FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = c.id AND t.name = ? COLLATE NOCASE)');
+      args.push(params.tag);
     }
+    // ---- v1.7.0 filters ----
+    if (params.activityColumn && params.activityFrom && params.activityTo) {
+      // activityColumn is a whitelisted expression from ACTIVITY_FIELD_COLUMN (never user input)
+      where.push(`${params.activityColumn} IS NOT NULL AND ${params.activityColumn} >= ? AND ${params.activityColumn} < ?`);
+      args.push(params.activityFrom, params.activityTo);
+    }
+    if (params.responseState) {
+      where.push(`(${RESPONSE_STATE_SQL}) = ?`);
+      args.push(params.responseState);
+    }
+    if (params.priority) {
+      where.push('c.supportos_priority = ?');
+      args.push(params.priority);
+    }
+    if (params.ticketStateId != null) {
+      where.push('c.supportos_state_id = ?');
+      args.push(params.ticketStateId);
+    }
+    if (params.extraWhere) {
+      where.push(`(${params.extraWhere})`);
+      args.push(...(params.extraParams ?? []));
+    }
+
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
-    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM conversations c ${whereSql}`).get(args) as { n: number }).n;
+    const orderBy = this.orderByFor(params.sort);
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM conversations c ${whereSql}`).get(...args) as { n: number }).n;
     const rows = this.db
       .prepare(
         `SELECT c.* FROM conversations c ${whereSql}
-         ORDER BY COALESCE(c.last_activity_at, c.remote_created_at, c.local_created_at) DESC
-         LIMIT @limit OFFSET @offset`
+         ORDER BY ${orderBy}
+         LIMIT ? OFFSET ?`
       )
-      .all({ ...args, limit: pageSize, offset: (page - 1) * pageSize }) as ConversationRow[];
+      .all(...args, pageSize, (page - 1) * pageSize) as ConversationRow[];
     return { conversations: this.toSummaries(rows), total };
+  }
+
+  private orderByFor(sort: InboxViewParams['sort']): string {
+    switch (sort) {
+      case 'oldest_activity':
+        return 'COALESCE(c.last_activity_at, c.remote_created_at, c.local_created_at) ASC';
+      case 'newest_created':
+        return 'COALESCE(c.remote_created_at, c.local_created_at) DESC';
+      case 'oldest_created':
+        return 'COALESCE(c.remote_created_at, c.local_created_at) ASC';
+      case 'waiting_longest':
+        return 'c.customer_waiting_since IS NULL, c.customer_waiting_since ASC';
+      case 'priority':
+        return "CASE c.supportos_priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END ASC, COALESCE(c.last_activity_at, c.remote_created_at) DESC";
+      case 'priority_then_waiting':
+        return "CASE c.supportos_priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END ASC, c.customer_waiting_since IS NULL, c.customer_waiting_since ASC";
+      case 'newest_activity':
+      default:
+        return 'COALESCE(c.last_activity_at, c.remote_created_at, c.local_created_at) DESC';
+    }
   }
 
   /**
@@ -405,7 +607,28 @@ export class ConversationRepository {
       hs_url: r.hs_url,
       merged_into_conversation_id: r.merged_into_conversation_id,
       first_activity_at: r.first_activity_at,
-      last_activity_at: r.last_activity_at
+      last_activity_at: r.last_activity_at,
+      // v1.7.0 activity engine
+      first_customer_message_at: r.first_customer_message_at ?? null,
+      first_response_at: r.first_response_at ?? null,
+      last_customer_reply_at: r.last_customer_reply_at ?? null,
+      last_human_agent_response_at: r.last_human_agent_response_at ?? null,
+      customer_waiting_since: r.customer_waiting_since ?? null,
+      last_status_change_at: r.last_status_change_at ?? null,
+      last_assignment_change_at: r.last_assignment_change_at ?? null,
+      last_tag_change_at: r.last_tag_change_at ?? null,
+      activity_history_complete: (r.activity_history_complete ? 1 : 0) as 0 | 1,
+      priority: (r.supportos_priority ?? 'none') as TicketPriority,
+      ticket_state_id: r.supportos_state_id ?? null,
+      response_state: responseStateOf({
+        status: r.status,
+        snoozed_until: r.snoozed_until ?? null,
+        first_customer_message_at: r.first_customer_message_at ?? null,
+        first_response_at: r.first_response_at ?? null,
+        last_customer_reply_at: r.last_customer_reply_at ?? null,
+        last_human_agent_response_at: r.last_human_agent_response_at ?? null,
+        activity_history_complete: r.activity_history_complete ?? 0
+      })
     };
   }
 
@@ -514,6 +737,11 @@ export class ConversationRepository {
       this.db.prepare('UPDATE threads SET fts_indexed = 0 WHERE id = ?').run(localId);
     }
     this.refreshConversationActivity(conversationLocalId);
+    // v1.7.0: message/note/lineitem event (deduped on thread remote id) +
+    // derived activity recompute (first_response_at, waiting_since, ...).
+    const savedThread = this.db.prepare('SELECT * FROM threads WHERE id = ?').get(localId) as ThreadRow;
+    this.activity.recordThreadEvent(conversationLocalId, savedThread);
+    this.activity.recomputeActivity(conversationLocalId);
     return localId;
   }
 
@@ -586,11 +814,40 @@ export class ConversationRepository {
   }
 
   updateLocalStatus(localId: number, status: string): void {
+    const previous = this.getConversationByLocalId(localId);
     this.db.prepare('UPDATE conversations SET status = ?, local_updated_at = datetime(\'now\') WHERE id = ?').run(status, localId);
+    // v1.7.0 local change event (exact time - WE performed this write)
+    if (previous && previous.status !== status) {
+      const at = nowIso();
+      this.activity.recordEvent({
+        conversationId: localId,
+        eventType: status === 'closed' ? 'closed' : previous.status === 'closed' && status !== 'closed' ? 'reopened' : 'status_changed',
+        actorType: 'user',
+        occurredAt: at,
+        source: 'local',
+        metadata: { previous: previous.status, next: status },
+        dedupKey: `status_changed:${localId}:${at}`
+      });
+    }
+    this.activity.recomputeActivity(localId);
   }
 
   updateLocalAssignee(localId: number, assigneeLocalId: number | null): void {
+    const previous = this.getConversationByLocalId(localId);
     this.db.prepare('UPDATE conversations SET assignee_local_id = ?, local_updated_at = datetime(\'now\') WHERE id = ?').run(assigneeLocalId, localId);
+    if (previous && (previous.assignee_local_id ?? null) !== (assigneeLocalId ?? null)) {
+      const at = nowIso();
+      this.activity.recordEvent({
+        conversationId: localId,
+        eventType: 'assignment_changed',
+        actorType: 'user',
+        occurredAt: at,
+        source: 'local',
+        metadata: { previous: previous.assignee_local_id ?? null, next: assigneeLocalId ?? null },
+        dedupKey: `assignment_changed:${localId}:${at}`
+      });
+    }
+    this.activity.recomputeActivity(localId);
   }
 
   updateLocalSubject(localId: number, subject: string): void {
@@ -599,14 +856,41 @@ export class ConversationRepository {
   }
 
   updateLocalMailbox(localId: number, mailboxLocalId: number): void {
+    const previous = this.getConversationByLocalId(localId);
     this.db.prepare('UPDATE conversations SET mailbox_local_id = ?, local_updated_at = datetime(\'now\') WHERE id = ?').run(mailboxLocalId, localId);
+    if (previous && (previous.mailbox_local_id ?? null) !== mailboxLocalId) {
+      const at = nowIso();
+      this.activity.recordEvent({
+        conversationId: localId,
+        eventType: 'moved',
+        actorType: 'user',
+        occurredAt: at,
+        source: 'local',
+        metadata: { previous_mailbox: previous.mailbox_local_id ?? null, next_mailbox: mailboxLocalId },
+        dedupKey: `moved:${localId}:${at}`
+      });
+    }
   }
 
   updateLocalSnooze(localId: number, until: string | null): void {
+    const previous = this.getConversationByLocalId(localId);
     this.db.prepare('UPDATE conversations SET snoozed_until = ?, local_updated_at = datetime(\'now\') WHERE id = ?').run(until, localId);
+    if (previous && (previous.snoozed_until ?? null) !== (until ?? null)) {
+      const at = nowIso();
+      this.activity.recordEvent({
+        conversationId: localId,
+        eventType: until ? 'snoozed' : 'unsnoozed',
+        actorType: 'user',
+        occurredAt: at,
+        source: 'local',
+        metadata: { previous: previous.snoozed_until ?? null, next: until ?? null },
+        dedupKey: `snooze:${localId}:${at}`
+      });
+    }
   }
 
   updateLocalTags(localId: number, tagNames: string[]): void {
+    const previousNames = (this.db.prepare('SELECT t.name FROM conversation_tags ct JOIN tags t ON t.id = ct.tag_local_id WHERE ct.conversation_id = ?').all(localId) as { name: string }[]).map((r) => r.name.toLowerCase());
     this.db.prepare('DELETE FROM conversation_tags WHERE conversation_id = ?').run(localId);
     const getTag = this.db.prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE');
     const insTag = this.db.prepare('INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_local_id) VALUES (?, ?)');
@@ -622,6 +906,21 @@ export class ConversationRepository {
     });
     tx();
     this.reindexConversationFts(localId);
+    // v1.7.0 tag diff events (local write - exact time)
+    const at = nowIso();
+    const newNames = new Set(tagNames.map((t) => t.toLowerCase()));
+    for (const prev of previousNames) {
+      if (!newNames.has(prev)) {
+        this.activity.recordEvent({ conversationId: localId, eventType: 'tag_removed', actorType: 'user', occurredAt: at, source: 'local', metadata: { tag: prev }, dedupKey: `tag_removed:${localId}:${prev}:${at}` });
+      }
+    }
+    const prevSet = new Set(previousNames);
+    for (const next of newNames) {
+      if (!prevSet.has(next)) {
+        this.activity.recordEvent({ conversationId: localId, eventType: 'tag_added', actorType: 'user', occurredAt: at, source: 'local', metadata: { tag: next }, dedupKey: `tag_added:${localId}:${next}:${at}` });
+      }
+    }
+    this.activity.recomputeActivity(localId);
   }
 
   updateLocalFields(localId: number, fields: { field_local_id: number; value: string | null; text_value?: string | null }[]): void {
@@ -629,10 +928,19 @@ export class ConversationRepository {
       `INSERT INTO conversation_fields (conversation_id, field_local_id, value, text_value) VALUES (?, ?, ?, ?)
        ON CONFLICT(conversation_id, field_local_id) DO UPDATE SET value=excluded.value, text_value=excluded.text_value`
     );
+    const at = nowIso();
+    const changed: { field_local_id: number; previous: string | null; next: string | null }[] = [];
     const tx = this.db.transaction(() => {
-      for (const f of fields) stmt.run(localId, f.field_local_id, f.value, f.text_value ?? null);
+      for (const f of fields) {
+        const old = (this.db.prepare('SELECT value FROM conversation_fields WHERE conversation_id = ? AND field_local_id = ?').get(localId, f.field_local_id) as { value: string | null } | undefined)?.value ?? null;
+        if (old !== (f.value ?? null)) changed.push({ field_local_id: f.field_local_id, previous: old, next: f.value ?? null });
+        stmt.run(localId, f.field_local_id, f.value, f.text_value ?? null);
+      }
     });
     tx();
+    for (const ch of changed) {
+      this.activity.recordEvent({ conversationId: localId, eventType: 'custom_field_changed', actorType: 'user', occurredAt: at, source: 'local', metadata: ch, dedupKey: `custom_field_changed:${localId}:${ch.field_local_id}:${at}` });
+    }
   }
 
   setUnread(localId: number, unread: boolean): void {

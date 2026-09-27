@@ -204,7 +204,100 @@ async function main() {
     expect(r.status === 200, 'conversation detail loads', `status ${r.status}`);
   }
 
-  console.log('\n== H. rate limiting on mutations ==');
+  console.log('\n== H. v1.7.0 activity engine (black-box) ==');
+  // H1. New summary fields present and typed on every row
+  {
+    const list = (await req('GET', '/api/conversations?view=all&pageSize=100')).json;
+    const rows = list?.conversations ?? [];
+    if (rows.length === 0) finding('medium', 'no conversations to audit', 'demo corpus empty');
+    for (const c of rows) {
+      if (typeof c.response_state !== 'string') { finding('medium', 'response_state missing on a row', `conv ${c.id}`); break; }
+      if (typeof c.priority !== 'string') { finding('medium', 'priority missing on a row', `conv ${c.id}`); break; }
+      if (typeof c.activity_history_complete !== 'number') { finding('medium', 'activity_history_complete missing', `conv ${c.id}`); break; }
+    }
+    // Notes surface resolution semantics (honest labeling)
+    if (Array.isArray(list?.notes) && list.notes.length > 0 && !/calendar|rolling|exact/.test(list.notes.join(' '))) {
+      finding('low', 'filter notes do not state boundary semantics', JSON.stringify(list.notes));
+    }
+  }
+  // H2. Adversarial filter params -> 422, never 500
+  for (const p of [
+    '/api/conversations?view=all&responseState=happy',
+    '/api/conversations?view=all&priority=ULTRA',
+    '/api/conversations?view=all&activityField=shard;DROP TABLE conversations;--&dateMode=today',
+    '/api/conversations?view=all&activityField=created_at&dateMode=whenever',
+    '/api/conversations?view=all&activityField=created_at&dateMode=exact_date&from=2024-02-31',
+    '/api/conversations?view=all&activityField=created_at&dateMode=custom_range&from=%27OR%271%27%3D%271&to=2024-01-01',
+    '/api/conversations?view=all&sort=;DELETE FROM users',
+    '/api/conversations?view=all&savedViewId=999999999',
+    '/api/conversations?view=all&ticketStateId=-5'
+  ]) {
+    r = await req('GET', p);
+    if (r.status === 500) finding('high', `filter param crashed: ${p}`, 'status 500');
+    else if (r.status !== 422 && r.status !== 404) finding('medium', `hostile filter not rejected: ${p}`, `status ${r.status}`);
+  }
+  // H3. Saved-view endpoints: hostile definitions never persist, never execute
+  {
+    const evilDefs = [
+      { combinator: 'all', conditions: [{ kind: 'status', statuses: ["'; DROP TABLE conversations;--"] }] },
+      { combinator: 'all', conditions: [{ kind: 'date_activity', activityField: 'created_at', mode: 'today', from: '2024-01-01', fromTime: '99:99' }] },
+      { combinator: 'all', conditions: [{ kind: 'response_age', metric: 'time_since_customer_reply', op: 'gt', minutes: 1e12 }] },
+      'SELECT * FROM conversations',
+      { combinator: 'all', conditions: [{ kind: 'group', combinator: 'all', children: [] }] }
+    ];
+    for (const def of evilDefs) {
+      r = await req('POST', '/api/inbox-views', { name: 'audit-probe', definition: def });
+      if (r.status === 500) finding('high', 'hostile view definition crashed create', JSON.stringify(def).slice(0, 80));
+      else if (r.status === 200) {
+        finding('medium', 'hostile view definition was ACCEPTED', JSON.stringify(def).slice(0, 80));
+        await req('DELETE', `/api/inbox-views/${r.json?.view?.id}`);
+      }
+    }
+    r = await req('POST', '/api/inbox-views/preview', { definition: { combinator: 'all', conditions: [{ kind: 'drop', statuses: [] }] } });
+    if (r.status !== 422) finding('medium', 'preview did not reject hostile definition', `status ${r.status}`);
+    // The conversations table must still exist and answer
+    r = await req('GET', '/api/conversations?view=active&pageSize=1');
+    if (r.status !== 200) finding('high', 'conversations table damaged after injection probes', `status ${r.status}`);
+  }
+  // H4. Priority/state write paths: valid ops work, hostile payloads rejected
+  {
+    const first = (await req('GET', '/api/conversations?view=active&pageSize=1')).json?.conversations?.[0];
+    if (first) {
+      r = await req('POST', `/api/conversations/${first.id}/priority`, { priority: 'high' });
+      if (r.status !== 200) finding('medium', 'valid priority write failed', `status ${r.status}`);
+      r = await req('POST', `/api/conversations/${first.id}/priority`, { priority: "high', (SELECT password FROM oauth_tokens), '" });
+      if (r.status === 422) finding('low', 'injection-shaped priority returned 422 (acceptable)', 'confirm bound params');
+      else if (r.status !== 422) finding('medium', 'injection-shaped priority not rejected', `status ${r.status}`);
+      const states = (await req('GET', '/api/ticket-states')).json?.states ?? [];
+      if (states.length < 6) finding('medium', 'built-in ticket states not seeded', `${states.length} states`);
+      if (states.length > 0) {
+        r = await req('POST', `/api/conversations/${first.id}/state`, { stateId: states[0].id, reason: "'; DELETE FROM ticket_state_transitions;--" });
+        if (r.status !== 200) finding('medium', 'valid state write failed', `status ${r.status}`);
+        r = await req('POST', `/api/conversations/${first.id}/state`, { stateId: 1e9 });
+        if (r.status !== 422) finding('medium', 'unknown stateId not rejected', `status ${r.status}`);
+      }
+      // Timeline: chronological, honest sources, deduped
+      r = await req('GET', `/api/conversations/${first.id}/events?limit=1000`);
+      if (r.status === 200) {
+        const evs = r.json?.events ?? [];
+        let ordered = true;
+        for (let i = 1; i < evs.length; i++) if (evs[i].id === evs[i - 1].id) ordered = false;
+        const times = evs.map((e) => Date.parse(e.occurred_at ?? e.created_at));
+        for (let i = 1; i < times.length; i++) if (times[i] < times[i - 1]) ordered = false;
+        if (!ordered) finding('medium', 'event timeline not chronological', `conv ${first.id}`);
+        const keys = new Set(evs.map((e) => e.event_type + ':' + (e.metadata?.thread_remote_id ?? e.metadata?.tag ?? e.metadata?.next ?? '')));
+        if (keys.size !== evs.length) finding('low', 'possible duplicate events in timeline', `${evs.length} events, ${keys.size} identities`);
+        const rebuilt = await req('POST', '/api/conversations/activity/rebuild');
+        if (rebuilt.status !== 200) finding('medium', 'activity rebuild failed', `status ${rebuilt.status}`);
+        const after = (await req('GET', `/api/conversations/${first.id}/events?limit=1000`)).json?.events ?? [];
+        if (after.length !== evs.length) finding('medium', 'rebuild changed event count (dup or loss)', `${evs.length} -> ${after.length}`);
+      } else {
+        finding('high', 'event timeline endpoint failed', `status ${r.status}`);
+      }
+    }
+  }
+
+  console.log('\n== I. rate limiting on mutations ==');
   let last429 = 0;
   for (let i = 0; i < 320; i++) {
     const rr = await req('POST', '/api/outreach/segments/estimate', { combinator: 'all', conditions: [], exclude: [] });

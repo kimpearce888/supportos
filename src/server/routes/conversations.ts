@@ -2,6 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
 import { replyRequestSchema, noteRequestSchema, statusRequestSchema, assignRequestSchema, tagsRequestSchema, fieldsRequestSchema, snoozeRequestSchema, scheduleRequestSchema, schedulePublishRequestSchema, bulkRequestSchema, subjectRequestSchema, moveToInboxRequestSchema } from '../../shared/schemas.js';
 import { sanitizeThreadHtml } from '../security/sanitize.js';
+import { inboxFilterQuerySchema, setPriorityRequestSchema, setStateRequestSchema, ACTIVITY_FIELD_COLUMN } from '../../shared/activity.js';
+import { resolveDateRange, resolveTimezone, formatAgeMinutes } from '../services/dateRange.js';
+import { responseStateOf, responseAgesOf } from '../inbox/responseState.js';
+import { ViewEngine, ViewCompileError } from '../inbox/viewEngine.js';
+import { ViewDefinition } from '../../shared/activity.js';
 
 function clampListParam(value: string | undefined, fallback: number, min: number, max: number): number {
   const n = value != null && value !== '' ? Number(value) : fallback;
@@ -37,6 +42,63 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
       }
       channel = q.channel;
     }
+
+    // ---- v1.7.0 activity/date/state filters (Zod-validated) ----
+    const parsed = inboxFilterQuerySchema.safeParse(q);
+    if (!parsed.success) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: parsed.error.issues[0]?.message ?? 'Invalid filter parameters.', detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
+      return;
+    }
+    const f = parsed.data;
+    const notes: string[] = [];
+    let activityColumn: string | null = null;
+    let activityFrom: string | null = null;
+    let activityTo: string | null = null;
+    if (f.activityField && f.dateMode) {
+      const tz = resolveTimezone(f.timezone ?? null, ctx.settingsRepo.get('display_timezone', 'system'));
+      const range = resolveDateRange({
+        mode: f.dateMode,
+        timezone: tz,
+        from: f.from ?? null,
+        to: f.to ?? null,
+        fromTime: f.fromTime ?? null,
+        toTime: f.toTime ?? null
+      });
+      if (!range) {
+        reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: `dateMode '${f.dateMode}' requires valid from/to dates (YYYY-MM-DD).` });
+        return;
+      }
+      activityColumn = ACTIVITY_FIELD_COLUMN[f.activityField];
+      activityFrom = range.from;
+      activityTo = range.to;
+      notes.push(`Date filter '${f.activityField}' = ${range.label} (${range.kind} boundaries, ${tz}).`);
+    }
+
+    // Saved view (dynamic: conditions compiled at open time)
+    let extraWhere: string | null = null;
+    let extraParams: unknown[] = [];
+    if (f.savedViewId != null) {
+      const saved = ctx.inboxViewRepo.getView(Number(f.savedViewId));
+      if (!saved) {
+        reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Saved view not found.' });
+        return;
+      }
+      const tz = resolveTimezone(f.timezone ?? null, ctx.settingsRepo.get('display_timezone', 'system'));
+      try {
+        const engine = new ViewEngine(ctx.db, { timezone: tz, resolveSlaConversationIds: (states) => ctx.sla.slaAlerts().alerts.filter((a) => states.includes(a.state as 'at_risk' | 'breached')).map((a) => a.conversation_id) });
+        const compiled = engine.compile(saved.definition as ViewDefinition);
+        extraWhere = compiled.whereSql === '1=1' ? null : compiled.whereSql;
+        extraParams = compiled.params;
+        notes.push(`Saved view '${saved.name}' (v${saved.version}) applied.`, ...compiled.notes);
+      } catch (e) {
+        if (e instanceof ViewCompileError) {
+          reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: `Saved view '${saved.name}' could not be evaluated: ${e.message}` });
+          return;
+        }
+        throw e;
+      }
+    }
+
     const result = repo.listConversations({
       view,
       mailboxId: Number.isFinite(mailboxId) ? mailboxId : null,
@@ -44,9 +106,18 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
       page,
       pageSize,
       assigneeLocalId,
-      tag: q.tag ?? null
+      tag: q.tag ?? null,
+      activityColumn,
+      activityFrom,
+      activityTo,
+      responseState: f.responseState ?? null,
+      priority: f.priority ?? null,
+      ticketStateId: f.ticketStateId != null ? Number(f.ticketStateId) : null,
+      extraWhere,
+      extraParams,
+      sort: f.sort ?? undefined
     });
-    return { conversations: result.conversations, total: result.total, page, page_size: pageSize, view };
+    return { conversations: result.conversations, total: result.total, page, page_size: pageSize, view, notes };
   });
 
   // Conversation detail with threads (sanitized HTML), customer summary, analysis, drafts
@@ -88,6 +159,31 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
     const users = ctx.referenceRepo.getUsers();
     const teams = ctx.referenceRepo.getTeams();
     repo.setUnread(id, false);
+    // v1.7.0: activity intelligence on the detail payload (the full event
+    // timeline is served by /api/conversations/:id/events)
+    const ticketState = ctx.ticketStateRepo.getConversationState(id);
+    const stateHistory = ctx.ticketStateRepo.listTransitions(id, 50);
+    const stateLifecycle = ctx.ticketStateRepo.stateLifecycle(id);
+    const responseState = responseStateOf({
+      status: conv.status,
+      snoozed_until: conv.snoozed_until ?? null,
+      first_customer_message_at: conv.first_customer_message_at ?? null,
+      first_response_at: conv.first_response_at ?? null,
+      last_customer_reply_at: conv.last_customer_reply_at ?? null,
+      last_human_agent_response_at: conv.last_human_agent_response_at ?? null,
+      activity_history_complete: conv.activity_history_complete ?? 0
+    });
+    const ages = responseAgesOf({
+      remote_created_at: conv.remote_created_at,
+      first_response_at: conv.first_response_at ?? null,
+      last_customer_reply_at: conv.last_customer_reply_at ?? null,
+      last_human_agent_response_at: conv.last_human_agent_response_at ?? null,
+      customer_waiting_since: conv.customer_waiting_since ?? null,
+      closed_at: conv.closed_at
+    });
+    const agesHuman: Record<string, string | null> = {};
+    for (const [k, v] of Object.entries(ages)) agesHuman[k] = formatAgeMinutes(v);
+    const eventCounts = ctx.activityRepo.eventCounts(id);
     return {
       conversation: summary,
       threads,
@@ -101,8 +197,99 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
       audit,
       workflows,
       users,
-      teams
+      teams,
+      activity: {
+        response_state: responseState,
+        ages_minutes: ages,
+        ages_human: agesHuman,
+        event_counts: eventCounts,
+        history_complete: (conv.activity_history_complete ?? 0) === 1,
+        ticket_state: ticketState,
+        state_history: stateHistory,
+        state_lifecycle: stateLifecycle
+      },
+      ticket_states: ctx.ticketStateRepo.listStates()
     };
+  });
+
+  // v1.7.0: full event timeline for a conversation (paged, filterable by type)
+  app.get('/api/conversations/:id/events', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const conv = repo.getConversationByLocalId(id);
+    if (!conv) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Conversation not found locally.' });
+      return;
+    }
+    const q = request.query as Record<string, string>;
+    const limit = clampListParam(q.limit, 200, 1, 1000);
+    const events = ctx.activityRepo.listEvents(id, limit);
+    return { conversation_id: id, events, counts: ctx.activityRepo.eventCounts(id) };
+  });
+
+  // v1.7.0: set local SupportOS priority (optional HS custom-field mapping)
+  app.post('/api/conversations/:id/priority', async (request, reply) => {
+    const body = setPriorityRequestSchema.parse(request.body);
+    const result = await ops.setPriority(Number((request.params as { id: string }).id), body.priority);
+    if (!result.ok) reply.code(422);
+    return result;
+  });
+
+  // v1.7.0: set SupportOS custom ticket state (records transition history)
+  app.post('/api/conversations/:id/state', async (request, reply) => {
+    const body = setStateRequestSchema.parse(request.body);
+    const id = Number((request.params as { id: string }).id);
+    const conv = repo.getConversationByLocalId(id);
+    if (!conv) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Conversation not found locally.' });
+      return;
+    }
+    const result = ctx.ticketStateRepo.setState({ conversationLocalId: id, newStateId: body.stateId, reason: body.reason ?? null, actorType: 'user' });
+    if (!result.ok) reply.code(422);
+    else ctx.jobsRepo.audit({ actor: 'user', action: 'ticket_state_changed', conversation_id: id, before_state: { state_id: result.previousStateId }, after_state: { state_id: body.stateId, reason: body.reason ?? null } });
+    return result;
+  });
+
+  // v1.7.0: ticket state definitions (CRUD) + lifecycle metrics
+  app.get('/api/ticket-states', async () => ({ states: ctx.ticketStateRepo.listStates(), bottlenecks: ctx.ticketStateRepo.stateBottlenecks() }));
+  app.post('/api/ticket-states', async (request, reply) => {
+    const { createStateRequestSchema } = await import('../../shared/activity.js');
+    const body = createStateRequestSchema.parse(request.body);
+    try {
+      const state = ctx.ticketStateRepo.createState(body);
+      return { ok: true, message: `State '${state.name}' created.`, state };
+    } catch (e) {
+      reply.code(422);
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  app.patch('/api/ticket-states/:id', async (request, reply) => {
+    const { updateStateRequestSchema } = await import('../../shared/activity.js');
+    const body = updateStateRequestSchema.parse(request.body);
+    const id = Number((request.params as { id: string }).id);
+    try {
+      const state = ctx.ticketStateRepo.updateState(id, body);
+      if (!state) {
+        reply.code(404);
+        return { ok: false, message: 'State not found.' };
+      }
+      return { ok: true, message: 'State updated.', state };
+    } catch (e) {
+      reply.code(422);
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  app.delete('/api/ticket-states/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const result = ctx.ticketStateRepo.deleteState(id);
+    if (!result.ok) reply.code(422);
+    return result;
+  });
+
+  // v1.7.0: rebuild the activity engine from the thread mirror (admin; idempotent)
+  app.post('/api/conversations/activity/rebuild', async () => {
+    const result = ctx.activityRepo.rebuildAll();
+    ctx.jobsRepo.audit({ actor: 'user', action: 'activity_rebuild', after_state: result });
+    return { ok: true, message: `Rebuilt activity history for ${result.conversations} conversation(s); ${result.events_inserted} new event(s) derived.`, data: result };
   });
 
   // Reply (send or draft) with duplicate-send protection
