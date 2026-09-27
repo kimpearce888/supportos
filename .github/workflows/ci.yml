@@ -13,10 +13,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -41,4 +41,4 @@ jobs:
       - name: Smoke test (server boots in demo mode)
         run: |
           LOCAL_DEMO_MODE=true PORT=3999 HOST=127.0.0.1 timeout 25 node dist/server/index.js & sleep 8
-          curl -sf http://127.0.0.1:3999/health | tee /dev/stderr | rg -q '"status":"ok"' && echo "HEALTH OK"
+          curl -sf http://127.0.0.1:3999/health | tee /dev/stderr | grep -q '"status":"ok"' && echo "HEALTH OK"
