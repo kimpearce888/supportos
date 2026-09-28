@@ -175,6 +175,23 @@ export class AiToolRegistry {
           description: 'Search rows from an APPROVED local data connector. Only connectors explicitly marked AI-visible are searchable - data that is not explicitly allowed stays private. Use for account/deployment/release data the operator has connected and approved.',
           parameters: { type: 'object', properties: { connector: { type: 'string', description: 'Connector name' }, query: { type: 'string', description: 'Keyword filter on row contents' }, limit: { type: 'number', description: 'Max rows (default 5, max 10)' } }, required: ['connector'] }
         }
+      },
+      // ---------------- v2.1.0 (M5): quality tools ----------------
+      {
+        type: 'function',
+        function: {
+          name: 'get_knowledge_gaps',
+          description: 'List local knowledge-gap candidates: repeated questions without coverage, questions existing docs did not solve, conflicting documents, missing troubleshooting steps, undocumented issues. Candidates await human approval - nothing auto-publishes.',
+          parameters: { type: 'object', properties: { kind: { type: 'string', description: 'Optional gap kind filter (repeated_question_uncovered, repeated_question_unsolved, conflicting_knowledge, missing_troubleshooting_steps, new_issue_undocumented)' }, limit: { type: 'number', description: 'Max candidates (default 5, max 10)' } } }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'get_friction_report',
+          description: 'Local conversation-friction summary: how often customers repeat explanations, agents re-ask questions, troubleshooting loops, repeated handoffs, duplicated information requests occur. Deterministic heuristics over the local mirror - patterns, not judgments about people.',
+          parameters: { type: 'object', properties: { days: { type: 'number', description: 'Lookback window in days (default 30, max 365)' } } }
+        }
       }
     ];
   }
@@ -475,6 +492,42 @@ export class AiToolRegistry {
             return out;
           });
         return { connector: row.name, results };
+      }
+      // ---------------- v2.1.0 (M5): quality tools ----------------
+      case 'get_knowledge_gaps': {
+        const kindFilter = args.kind == null ? null : String(args.kind).slice(0, 60);
+        const rows = (this.db
+          .prepare(`SELECT id, kind, question, occurrence_count, status, detail FROM knowledge_candidates ORDER BY CASE status WHEN 'candidate' THEN 0 ELSE 1 END, occurrence_count DESC LIMIT 50`)
+          .all() as { id: number; kind: string; question: string; occurrence_count: number; status: string; detail: string | null }[])
+          .filter((r) => !kindFilter || r.kind === kindFilter)
+          .slice(0, Math.min(10, Math.max(1, limit)));
+        return rows.map((r) => {
+          let explanation = '';
+          try {
+            explanation = String((JSON.parse(r.detail ?? '{}') as Record<string, unknown>).explanation ?? '');
+          } catch {
+            explanation = '';
+          }
+          return {
+            id: r.id, kind: r.kind, question: this.red(r.question.slice(0, 200)), occurrences: r.occurrence_count, status: r.status,
+            explanation: this.red(explanation.slice(0, 300)),
+            note: 'Candidates are deterministic detections awaiting human approval; approving never publishes automatically.'
+          };
+        });
+      }
+      case 'get_friction_report': {
+        const days = Math.min(365, Math.max(1, Number(args.days) || 30));
+        const rows = (this.db
+          .prepare(`SELECT kind, COUNT(*) AS conversations, SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) AS high
+                    FROM friction_findings f JOIN conversations c ON c.id = f.conversation_id
+                    WHERE COALESCE(julianday(c.remote_created_at), julianday(f.computed_at)) >= julianday('now', ?)
+                    GROUP BY kind ORDER BY conversations DESC`)
+          .all(`-${days} days`) as { kind: string; conversations: number; high: number }[]);
+        return {
+          window_days: days,
+          kinds: rows.map((r) => ({ kind: r.kind, conversations: r.conversations, high_severity: r.high })),
+          note: 'Deterministic text-shape heuristics over the local mirror - patterns, not judgments about people. Findings exist only for analyzed conversations.'
+        };
       }
       default:
         return { error: `Unknown tool ${name} - allowed tools are read-only search tools` };

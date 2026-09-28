@@ -3,6 +3,7 @@ import type { AppContext } from '../services/context.js';
 import type { SegmentDefinition, RecipientWhyTicket } from '../../shared/segmentation.js';
 import { OPERATORS_BY_TYPE } from '../../shared/segmentation.js';
 import { z } from 'zod';
+import { LmStudioError } from '../integrations/lmstudio/lmStudioClient.js';
 
 /**
  * Outreach API (v1.5.0) - Client Segmentation & Outreach.
@@ -74,6 +75,22 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
     const tags = (ctx.db.prepare('SELECT name FROM tags WHERE deleted_at IS NULL ORDER BY name').all() as { name: string }[]).map((t) => t.name);
     const mailboxes = (ctx.db.prepare('SELECT id, name, email FROM mailboxes WHERE deleted_at IS NULL ORDER BY name').all() as { id: number; name: string; email: string | null }[]).map((m) => ({ local_id: m.id, name: m.name, email: m.email }));
     const assignees = (ctx.db.prepare("SELECT id, first_name, last_name FROM users WHERE deleted_at IS NULL AND type = 'user' ORDER BY last_name").all() as { id: number; first_name: string | null; last_name: string | null }[]).map((u) => ({ local_id: u.id, name: [u.first_name, u.last_name].filter(Boolean).join(' ') }));
+    // v2.1.0 (M5, plan Phase 31): advanced condition catalogs.
+    const orgDefs = (ctx.db.prepare('SELECT id, remote_id, name, slug, type, sort_order FROM organization_property_definitions ORDER BY sort_order, name').all() as {
+      id: number; remote_id: number; name: string; slug: string | null; type: string | null; sort_order: number;
+    }[]).map((d) => {
+      const type = (['text', 'number', 'date', 'dropdown', 'url'].includes(d.type ?? '') ? d.type : 'text') as 'text' | 'number' | 'date' | 'dropdown' | 'url';
+      const observed = (ctx.db.prepare("SELECT DISTINCT value FROM organization_properties WHERE definition_id = ? AND value IS NOT NULL AND value <> '' ORDER BY value LIMIT 20").all(d.id) as { value: string }[]).map((r) => r.value);
+      const populated = (ctx.db.prepare("SELECT COUNT(DISTINCT organization_id) AS n FROM organization_properties WHERE definition_id = ? AND value IS NOT NULL AND value <> ''").get(d.id) as { n: number }).n;
+      return { id: d.id, remote_id: d.remote_id, name: d.name, slug: d.slug, type, observed_values: observed, populated };
+    });
+    const ticketCustomFields = (ctx.db.prepare('SELECT id, name, type FROM inbox_fields WHERE deleted_at IS NULL ORDER BY sort_order, name').all() as { id: number; name: string; type: string | null }[]).map((f) => ({ local_id: f.id, name: f.name, type: f.type }));
+    const channels = (ctx.db.prepare("SELECT DISTINCT source_type FROM conversations WHERE source_type IS NOT NULL AND source_type <> '' AND deleted_at IS NULL ORDER BY source_type").all() as { source_type: string }[]).map((r) => r.source_type);
+    const clusters = (ctx.db.prepare('SELECT id, title FROM issue_clusters ORDER BY conversation_count DESC LIMIT 50').all() as { id: number; title: string }[]).map((c) => ({ id: c.id, kind: 'cluster' as const, label: c.title }));
+    const knownIssues = (ctx.db.prepare('SELECT id, title FROM known_issues ORDER BY conversation_count DESC LIMIT 50').all() as { id: number; title: string }[]).map((k) => ({ id: k.id, kind: 'known_issue' as const, label: k.title }));
+    const incidents = (ctx.db.prepare('SELECT id, code, title, status FROM incidents ORDER BY updated_at DESC LIMIT 50').all() as { id: number; code: string; title: string; status: string }[]).map((i) => ({ id: i.id, code: i.code, title: i.title, status: i.status }));
+    const campaigns = (ctx.db.prepare('SELECT id, name, status FROM outreach_campaigns ORDER BY updated_at DESC LIMIT 50').all() as { id: number; name: string; status: string }[]).map((c) => ({ id: c.id, name: c.name, status: c.status }));
+    const customObjectTypes = (ctx.db.prepare('SELECT id, name, slug FROM custom_object_types WHERE deleted_at IS NULL ORDER BY name').all() as { id: number; name: string; slug: string }[]).map((t) => ({ id: t.id, name: t.name, slug: t.slug }));
     return {
       property_definitions: propertyDefinitions,
       tags,
@@ -82,7 +99,17 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
       contact_fields: ['name', 'email', 'email_domain', 'organization', 'job_title', 'location', 'background', 'has_email', 'has_phone', 'has_multiple_emails'],
       ticket_statuses: ['active', 'pending', 'closed', 'spam'],
       operators_by_type: OPERATORS_BY_TYPE,
-      personalization_variables: ['first_name', 'last_name', 'company', 'organization', 'last_ticket_number', 'last_ticket_subject']
+      personalization_variables: ['first_name', 'last_name', 'company', 'organization', 'last_ticket_number', 'last_ticket_subject'],
+      organization_fields: ['name', 'domains'] as ('name' | 'domains')[],
+      organization_property_definitions: orgDefs,
+      ticket_custom_fields: ticketCustomFields,
+      channels,
+      issues: [...knownIssues, ...clusters],
+      incidents,
+      campaigns,
+      custom_object_types: customObjectTypes,
+      customer_event_kinds: ['signup', 'support_conversation', 'customer_message', 'campaign', 'campaign_reply', 'rating', 'incident_exposure', 'custom_object_event'],
+      support_health_metrics: ['avg_rating', 'avg_effort_score', 'first_response_resolution_rate', 'high_friction_rate'] as ('avg_rating' | 'avg_effort_score' | 'first_response_resolution_rate' | 'high_friction_rate')[]
     };
   });
 
@@ -104,6 +131,40 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
     const tree = parseTree(request.body);
     if (!tree) return { matched: 0 };
     return { matched: ctx.segmentEngine.count(tree) };
+  });
+
+  // v2.1.0 (M5, plan Phase 31): natural-language -> segment DEFINITION
+  // suggestion. The local model only proposes a condition tree; the
+  // deterministic engine immediately evaluates it and THAT preview is what
+  // the user sees. Nothing is saved - saving stays an explicit human action.
+  app.post('/api/outreach/segments/suggest', async (request, reply) => {
+    const body = z.object({ request: z.string().min(3).max(500) }).parse(request.body ?? {});
+    if (ctx.settingsRepo.get('ai_enabled', true) !== true) {
+      reply.code(503).send({
+        statusCode: 503,
+        error: 'ServiceUnavailable',
+        message: 'AI is disabled in Settings. The natural-language suggestion needs the local model; you can build the segment manually.'
+      });
+      return;
+    }
+    try {
+      const suggestion = await ctx.segmentSuggest.suggest(body.request);
+      // The deterministic engine executes the actual selection (never the model).
+      const preview = ctx.segmentEngine.preview(suggestion.definition, 1, 25);
+      return {
+        ok: true,
+        definition: suggestion.definition,
+        model: suggestion.model,
+        preview,
+        notes: [...suggestion.notes, 'The model proposed the DEFINITION only; the deterministic segment engine selected the recipients. Nothing was saved - review and save explicitly.']
+      };
+    } catch (e) {
+      if (e instanceof LmStudioError) {
+        reply.code(503).send({ statusCode: 503, error: 'ServiceUnavailable', message: e.message });
+        return;
+      }
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: e instanceof Error ? e.message : 'The suggestion failed.' });
+    }
   });
 
   app.get('/api/outreach/segments', async () => ({ segments: ctx.outreachRepo.listSegments() }));

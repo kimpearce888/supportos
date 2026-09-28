@@ -9,6 +9,10 @@ import { CustomObjectRepository } from '../customobjects/customObjectsRepo.js';
 import { ConnectorService } from '../connectors/connectorService.js';
 import { CustomerEventRepository } from '../database/repositories/customerEventsRepo.js';
 import { CustomerEventSweep } from '../timeline/customerEventSweep.js';
+import { FrictionAnalyzer } from '../ai/friction.js';
+import { PostResolutionQaService } from '../ai/postResolutionQa.js';
+import { KnowledgeGapService } from '../knowledge/gapEngine.js';
+import { InteractionEngine } from '../ai/interaction/engine.js';
 
 function docIdByTitle(db: Database, title: string): number {
   const row = db.prepare('SELECT id FROM knowledge_documents WHERE title = ?').get(title) as { id: number } | undefined;
@@ -214,6 +218,39 @@ export function seedDemoData(db: import('better-sqlite3').Database): void {
     seededAnalyses++;
   }
   console.log(`Seeded ${seededAnalyses} sample AI analyses (marked ai_generated).`);
+
+  // v2.1.0 (M5): a REPEATED question across two conversations - the honest
+  // input the knowledge gap engine exists for. Both analyses carry the same
+  // primary question with no covering document, so the gap rebuild derives a
+  // repeated_question_uncovered candidate (the same deterministic detection
+  // a real instance runs on demand).
+  const repeatedQuestion = 'How do I connect my own custom domain to my workspace?';
+  for (const number of [5005, 5010]) {
+    const conv = byNumber(number);
+    if (!conv) continue;
+    const analysis = {
+      intent: 'how_to',
+      primary_question: repeatedQuestion,
+      secondary_questions: [],
+      customer_goal: 'Serve the product from their own domain.',
+      product: 'Workspace',
+      feature: 'Domains',
+      problem_type: 'how_to',
+      requested_action: 'Provide custom domain setup steps.',
+      urgency: 'normal',
+      sentiment: 'neutral',
+      known_issue_candidate: null,
+      issue_cluster_candidate: 'custom domains',
+      frustration_level: 'low',
+      confidence: 0.9
+    };
+    const signature = ai.getAnalysisSignature(conv.id);
+    const inputHash = ai.inputHash(conv.id, signature);
+    const runId = ai.startRun('ticket_analysis', { conversationId: conv.id, promptVersion: 'ticket_analysis_v1', inputHash, inputRefs: [conv.id] });
+    ai.completeRun(runId, analysis, 700);
+    ai.saveAnalysis(runId, conv.id, analysis as never, []);
+  }
+  console.log('Seeded 1 repeated question across 2 conversations (gap-engine input).');
 
   // ---------------- Customer memories ----------------
   const lucia = byNumber(5001);
@@ -421,6 +458,71 @@ export function seedDemoData(db: import('better-sqlite3').Database): void {
   const sweep = new CustomerEventSweep(db, events);
   const derived = sweep.rebuild();
   console.log(`Derived ${derived.created} customer timeline events.`);
+
+  // ---------------- v2.1.0 (M5): quality layer seeds ----------------
+  // Friction findings + post-resolution QA rows + knowledge-gap candidates
+  // are all DETERMINISTIC derivations over the demo world - the same code
+  // paths a real instance runs on demand (no fake data).
+  try {
+    // Interaction outcomes (deterministic): the same engine the workers'
+    // post-sync backfill uses, so effectiveness/QA/friction all have data
+    // even when the demo DB was seeded via a direct initialSync.
+    const engine = new InteractionEngine(db);
+    const convs = db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL').all() as { id: number }[];
+    for (const c of convs) engine.computeOutcome(c.id);
+    console.log(`Seeded interaction outcomes for ${convs.length} conversations.`);
+  } catch (e) {
+    console.log(`Demo outcome seed skipped: ${(e as Error).message}`);
+  }
+
+  try {
+    const friction = new FrictionAnalyzer(db);
+    const fr = friction.rebuild();
+    console.log(`Seeded ${fr.findings} friction findings across ${fr.conversations} conversations.`);
+  } catch (e) {
+    console.log(`Demo friction seed skipped: ${(e as Error).message}`);
+  }
+
+  try {
+    const qa = new PostResolutionQaService(db, null, new FrictionAnalyzer(db));
+    const seeded = qa.rebuild();
+    console.log(`Seeded deterministic post-resolution QA for ${seeded.conversations} closed conversations.`);
+  } catch (e) {
+    console.log(`Demo QA seed skipped: ${(e as Error).message}`);
+  }
+
+  try {
+    const gaps = new KnowledgeGapService(db);
+    const built = gaps.rebuild(90);
+    console.log(`Seeded ${built.candidates} knowledge-gap candidates (${built.new} new).`);
+    // Give the demo world one human decision so the lifecycle is visible:
+    // approve the most frequent candidate if any exist.
+    // Approve one candidate ONLY when at least two exist, so the demo world
+    // always keeps an open candidate for the lifecycle UI.
+    const openCount = (db.prepare("SELECT COUNT(*) AS n FROM knowledge_candidates WHERE status = 'candidate'").get() as { n: number }).n;
+    if (openCount >= 2) {
+      const first = db.prepare("SELECT id FROM knowledge_candidates WHERE status = 'candidate' ORDER BY occurrence_count DESC LIMIT 1").get() as { id: number } | undefined;
+      if (first) gaps.decide(first.id, 'approved', 'Demo decision: document this answer.', null);
+    }
+  } catch (e) {
+    console.log(`Demo gap seed skipped: ${(e as Error).message}`);
+  }
+
+  // One saved report definition so the builder opens with an example.
+  try {
+    const existing = db.prepare("SELECT COUNT(*) AS n FROM report_definitions").get() as { n: number };
+    if (existing.n === 0) {
+      const from = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      const to = new Date().toISOString().slice(0, 10);
+      db.prepare("INSERT INTO report_definitions (name, config, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))").run(
+        'Conversations per day (last 30 days)',
+        JSON.stringify({ metric: 'conversations', dimension: 'day', dateFrom: from, dateTo: to, comparison: 'previous_period', filters: {}, sort: 'dimension_asc', limit: 40 })
+      );
+      console.log('Seeded 1 saved report definition (conversations per day).');
+    }
+  } catch (e) {
+    console.log(`Demo report seed skipped: ${(e as Error).message}`);
+  }
 
   console.log('Demo seed complete.');
   console.log('NOTE: all seeded AI content is marked ai_generated; demo data never mixes with production data.');

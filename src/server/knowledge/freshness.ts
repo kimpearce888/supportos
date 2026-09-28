@@ -109,14 +109,14 @@ export class KnowledgeFreshnessService {
       const tokens = this.ftsTokens(String(q.question));
       const matched = this.db
         .prepare(
-          `SELECT f.doc_id AS doc_id FROM fts_knowledge f WHERE fts_knowledge MATCH ? LIMIT 5`
+          `SELECT f.document_id AS document_id FROM fts_knowledge f WHERE fts_knowledge MATCH ? LIMIT 5`
         )
-        .all(tokens) as { doc_id: number }[];
+        .all(tokens) as { document_id: number }[];
       questionMatchCounts.set(String(q.question), matched.length);
       for (const m of matched) {
-        if (!questionDocHits.has(m.doc_id)) questionDocHits.set(m.doc_id, []);
+        if (!questionDocHits.has(m.document_id)) questionDocHits.set(m.document_id, []);
         const coverage = matched.length > 1 ? 'ambiguous' : 'partial';
-        questionDocHits.get(m.doc_id)!.push({ question: String(q.question), conversation_count: Number(q.n), coverage });
+        questionDocHits.get(m.document_id)!.push({ question: String(q.question), conversation_count: Number(q.n), coverage });
       }
     }
 

@@ -844,6 +844,8 @@ export interface AppSettings {
   display_timezone: string;
   redaction_enabled: boolean;
   ai_evaluation_mode: boolean;
+  /** v2.1.0 (M5): agent's preferred drafting language (translation feature). */
+  agent_language: string;
 }
 
 // ---------------------------------------------------------------- Webhooks

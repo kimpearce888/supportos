@@ -1,6 +1,7 @@
 import { type ReactNode, useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client.js';
+import { SUPPORTED_LANGUAGES } from '../../shared/translation.js';
 import { Spinner, ErrorState, KV } from '../components/common/ui.js';
 import { useUiStore } from '../state/uiStore.js';
 import { useBusinessHours, type BusinessHoursRow } from '../api/hooks.js';
@@ -133,6 +134,22 @@ function GeneralSettings({ settings, onSave }: { settings: AppSettings; onSave: 
         </div>
         <div className="mt-16">
           <Toggle label="Redaction layer" hint="Mask payment data, tokens, API keys before prompting the model" value={settings.redaction_enabled} onChange={(v) => onSave({ redaction_enabled: v })} />
+        </div>
+        <div className="form-row mt-16">
+          <label className="field" htmlFor="agent-language">Your drafting language (translation feature)</label>
+          <select
+            id="agent-language"
+            className="input"
+            defaultValue={settings.agent_language || 'en'}
+            onChange={(e) => onSave({ agent_language: e.target.value })}
+          >
+            {SUPPORTED_LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>{l.name}</option>
+            ))}
+          </select>
+          <p className="text-xs muted" style={{ marginBottom: 0 }}>
+            Customer messages can be translated into this language for your review, and your drafts translated into the customer's language - always side by side, never sent automatically, local model only.
+          </p>
         </div>
       </div>
     </div>

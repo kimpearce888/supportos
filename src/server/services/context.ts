@@ -59,6 +59,13 @@ import { CustomerEventRepository } from '../database/repositories/customerEvents
 import { CustomerEventSweep } from '../timeline/customerEventSweep.js';
 import { SupportHealthService } from '../analytics/supportHealth.js';
 import { KnowledgeFreshnessService } from '../knowledge/freshness.js';
+import { KnowledgeGapService } from '../knowledge/gapEngine.js';
+import { FrictionAnalyzer } from '../ai/friction.js';
+import { PostResolutionQaService } from '../ai/postResolutionQa.js';
+import { TranslationService } from '../ai/translation.js';
+import { ResponseEffectivenessService } from '../analytics/effectiveness.js';
+import { ReportBuilderService } from '../analytics/reportBuilder.js';
+import { SegmentSuggestService } from '../ai/segmentSuggest.js';
 
 /**
  * ApplicationContext: a modular monolith (spec #163) - one process, one SQLite
@@ -126,6 +133,15 @@ export class AppContext {
   customerEventSweep: CustomerEventSweep;
   supportHealth: SupportHealthService;
   knowledgeFreshness: KnowledgeFreshnessService;
+  // v2.1.0 (M5): knowledge gap engine, post-resolution QA, friction,
+  // response effectiveness, translation, report builder, segment suggest
+  knowledgeGaps: KnowledgeGapService;
+  friction: FrictionAnalyzer;
+  qa: PostResolutionQaService;
+  translation: TranslationService;
+  effectiveness: ResponseEffectivenessService;
+  reportBuilder: ReportBuilderService;
+  segmentSuggest: SegmentSuggestService;
 
   constructor(opts: { dbPath?: string; demoMode?: boolean } = {}) {
     this.config = config;
@@ -219,6 +235,14 @@ export class AppContext {
     this.supportHealth = new SupportHealthService(this.db);
     this.knowledgeFreshness = new KnowledgeFreshnessService(this.db, this.settingsRepo);
     this.incidentService = new IncidentService(this.db, this.notificationSweep);
+    // v2.1.0 (M5): quality, translation and reporting services.
+    this.knowledgeGaps = new KnowledgeGapService(this.db);
+    this.friction = new FrictionAnalyzer(this.db);
+    this.qa = new PostResolutionQaService(this.db, (opts) => this.lmStudio.chat(opts), this.friction);
+    this.translation = new TranslationService(this.db, (opts) => this.lmStudio.chat(opts));
+    this.effectiveness = new ResponseEffectivenessService(this.db);
+    this.reportBuilder = new ReportBuilderService(this.db);
+    this.segmentSuggest = new SegmentSuggestService(this.db, (opts) => this.lmStudio.chat(opts));
     this.automation = new AutomationEngine(this.db);
     this.knowledge = new KnowledgeIngestor(this.db);
     this.backup = new BackupService(this.db, getDatabasePath(), this.settingsRepo, this.config.backupsPath);

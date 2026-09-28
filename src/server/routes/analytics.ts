@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../services/context.js';
 import { clampDaysParam } from './helpers.js';
 import { z } from 'zod';
+import { REPORT_METRICS, REPORT_DIMENSIONS } from '../../shared/reporting.js';
+import type { ReportMetricKey, ReportDimensionKey } from '../../shared/reporting.js';
 
 function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86400000).toISOString();
@@ -146,4 +148,91 @@ export async function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppCont
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // ---------------- v2.1.0 (M5, plan Phase 28): response effectiveness ----------------
+
+  app.get('/api/reports/effectiveness', async (request) => {
+    const q = request.query as Record<string, string>;
+    return ctx.effectiveness.report(daysParam(q, 90));
+  });
+
+  // ---------------- v2.1.0 (M5, plan Phase 33): custom report builder ----------------
+
+  app.get('/api/reports/builder/catalog', async () => ctx.reportBuilder.catalog());
+
+  app.post('/api/reports/builder/run', async (request, reply) => {
+    const parsed = reportConfigSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
+      return;
+    }
+    try {
+      return ctx.reportBuilder.run(parsed.data);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Report execution failed.';
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message });
+    }
+  });
+
+  app.get('/api/reports/builder/saved', async () => ({ saved: ctx.reportBuilder.listSaved() }));
+
+  app.post('/api/reports/builder/saved', async (request, reply) => {
+    const body = z
+      .object({ name: z.string().min(1).max(120) })
+      .and(reportConfigSchema)
+      .parse(request.body ?? {});
+    return { ok: true, saved: ctx.reportBuilder.saveSaved(body.name, pickConfig(body)) };
+  });
+
+  app.delete('/api/reports/builder/saved/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) {
+      reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'Report id must be a positive integer.' });
+      return;
+    }
+    const ok = ctx.reportBuilder.deleteSaved(id);
+    if (!ok) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Saved report not found.' });
+      return;
+    }
+    return { ok: true };
+  });
+}
+
+// ---------------- report config schema (plan Phase 33) ----------------
+
+const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+const metricKeyList = REPORT_METRICS.map((m) => m.key) as [ReportMetricKey, ...ReportMetricKey[]];
+const dimensionKeyList = REPORT_DIMENSIONS.map((d) => d.key) as [ReportDimensionKey, ...ReportDimensionKey[]];
+const metricKeys = z.enum(metricKeyList);
+const dimensionKeys = z.enum(dimensionKeyList);
+
+const reportConfigSchema = z.object({
+  metric: metricKeys,
+  dimension: dimensionKeys,
+  dateFrom: z.string().regex(dateRegex),
+  dateTo: z.string().regex(dateRegex),
+  comparison: z.enum(['none', 'previous_period']).default('none'),
+  filters: z
+    .object({
+      mailboxLocalIds: z.array(z.number().int().positive()).max(20).optional(),
+      channel: z.string().max(40).nullable().optional(),
+      tagsAny: z.array(z.string().min(1).max(80)).max(10).optional(),
+      tagsNone: z.array(z.string().min(1).max(80)).max(10).optional(),
+      statuses: z.array(z.string().min(1).max(40)).max(10).optional(),
+      assigneeLocalIds: z.array(z.number().int().positive()).max(20).optional(),
+      minPriority: z.enum(['low', 'normal', 'high', 'urgent']).nullable().optional(),
+      attributeKey: z.string().max(60).nullable().optional(),
+      attributeValue: z.string().max(200).nullable().optional(),
+      stateKey: z.string().max(80).nullable().optional()
+    })
+    .optional(),
+  sort: z.enum(['metric_desc', 'metric_asc', 'dimension_asc']).default('metric_desc'),
+  limit: z.number().int().min(1).max(200).nullable().optional()
+});
+
+function pickConfig(body: { name: string } & z.infer<typeof reportConfigSchema>) {
+  const { name, ...config } = body;
+  void name;
+  return config;
 }

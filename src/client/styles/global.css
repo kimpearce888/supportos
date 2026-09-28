@@ -445,3 +445,42 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--font-size
 .form-grid { display: grid; grid-template-columns: 160px 1fr; gap: 8px 10px; align-items: center; }
 .form-grid .label { font-size: var(--font-size-xs); color: var(--text-secondary); font-weight: 600; }
 @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } .form-grid .label { margin-bottom: 0; } }
+
+/* ---------------------------------------------------------------- v2.1.0 (M5): quality, translation, report builder */
+
+/* Knowledge gap candidates (Knowledge > Gaps) */
+.gap-candidate { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-sunken); }
+.gap-candidate.status-approved { border-color: var(--ok, #22c55e); }
+.gap-candidate.status-rejected { border-color: var(--danger, #ef4444); opacity: 0.75; }
+.gap-draft { border: 1px dashed var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-raised); }
+
+/* Friction (Reports > Friction + conversation QA panel) */
+.friction-kind { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+.friction-finding { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; background: var(--bg-sunken); }
+
+/* QA + Translation panels in the conversation detail */
+.detail-extra-panels { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 12px; border-top: 1px solid var(--border); }
+.qa-panel .collapsible, .translation-panel .collapsible { background: none; border: none; cursor: pointer; text-align: left; width: 100%; padding: 0; font: inherit; color: var(--text-primary); }
+.kv-list { display: flex; flex-direction: column; gap: 4px; }
+.kv-row { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dashed var(--border); padding: 2px 0; }
+.kv-row span { color: var(--text-secondary); }
+
+/* Translation side-by-side */
+.translation-side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-sunken); }
+.translation-col { min-width: 0; }
+.pre-wrap { white-space: pre-wrap; word-break: break-word; }
+@media (max-width: 720px) { .translation-side-by-side { grid-template-columns: 1fr; } }
+.agent-draft-translation textarea { width: 100%; }
+
+/* Report builder */
+.builder-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.builder-grid label { display: flex; flex-direction: column; gap: 4px; font-size: var(--font-size-xs); color: var(--text-secondary); }
+.bar-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.bar-label { width: 130px; font-size: var(--font-size-xs); color: var(--text-secondary); text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { position: relative; display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0; }
+.bar-track .bar { background: var(--accent); color: #fff; border-radius: 3px; padding: 2px 6px; font-size: var(--font-size-xs); min-width: fit-content; }
+.bar-track .bar.compare { background: var(--border); opacity: 0.6; }
+
+/* Outreach NL suggest box */
+.suggest-box { border: 1px dashed var(--border); border-radius: var(--radius); padding: 10px; margin-bottom: 12px; background: var(--bg-sunken); }
+.suggest-result { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-raised); }

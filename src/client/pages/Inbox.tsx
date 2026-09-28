@@ -16,6 +16,8 @@ import { useUiStore } from '../state/uiStore.js';
 import { FilterBar, SavedViewsManager, type FilterBarValues } from '../components/inbox/FilterBar.js';
 import { PriorityBadge, ResponseStateBadge, TicketStateBadge, ActivityTimeline, PriorityPicker, TicketStatePicker } from '../components/inbox/ActivityUI.js';
 import { SideThreadsPanel } from '../components/inbox/SideThreads.js';
+import { QaPanel } from '../components/inbox/QaPanel.js';
+import { TranslationPanel } from '../components/inbox/TranslationPanel.js';
 import { CopilotPanel } from '../components/inbox/CopilotPanel.js';
 import { AttributeSnapshotCard } from '../components/inbox/AttributeSnapshotCard.js';
 import { MentionTextarea } from '../components/inbox/MentionTextarea.js';
@@ -343,6 +345,11 @@ function ConversationDetail({ id }: { id: number }): ReactNode {
       ) : null}
       <ActivityTimeline conversationId={id} historyComplete={data.activity.history_complete} />
       <SideThreadsPanel conversationId={id} />
+      {/* v2.1.0 (M5, plan phases 27 + 30): after-close QA + local translation. */}
+      <div className="detail-extra-panels">
+        <QaPanel conversationId={id} closed={c.status === 'closed'} />
+        <TranslationPanel conversationId={id} />
+      </div>
       <ContextPane data={data} onRefresh={invalidate} />
     </>
   );

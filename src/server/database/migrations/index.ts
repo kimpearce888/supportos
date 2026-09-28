@@ -14,8 +14,9 @@ import { migration011 } from './011_activity_engine.js';
 import { migration012 } from './012_m2_collaboration.js';
 import { migration013 } from './013_m3_copilot_attributes.js';
 import { migration014 } from './014_m4_intelligence_workspace.js';
+import { migration015 } from './015_m5_quality_translation_reports.js';
 
-export const migrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014];
+export const migrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015];
 
 export function applyMigrations(db: DB): { applied: number; total: number } {
   return runMigrations(db, migrations);

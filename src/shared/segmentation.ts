@@ -115,9 +115,19 @@ export interface TicketCondition {
     op: 'equals' | 'not_equals' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte';
     value: string;
   } | null;
+  /**
+   * v2.1.0 (M5, plan Phase 31 "TICKET: custom fields"): custom (mailbox)
+   * field tests applied to the SAME conversation as the rest of this node.
+   * Unknown field ids match NOTHING (safe deny).
+   */
+  customFields?: TicketCustomFieldTest[];
+  /** v2.1.0 (M5): conversation channel (source_type, e.g. email/chat). */
+  channel?: string | null;
 }
 
-export type HistoryMetric = 'ticket_count' | 'open_count' | 'closed_count' | 'last_contact_within_days' | 'first_contact_before_days';
+export type HistoryMetric =
+  | 'ticket_count' | 'open_count' | 'closed_count' | 'last_contact_within_days' | 'first_contact_before_days'
+  | 'waited_over_hours_count';
 
 export interface HistoryCondition {
   kind: 'history';
@@ -133,7 +143,88 @@ export interface HistoryTagCondition {
   withinDays?: number | null;
 }
 
-export type SegmentCondition = CustomerPropertyCondition | ContactCondition | TicketCondition | HistoryCondition | HistoryTagCondition;
+// ---------------- v2.1.0 (M5, plan Phase 31): advanced segmentation ---------
+
+/**
+ * Organization data / properties (plan Phase 31 "ORGANIZATION"). Standard
+ * fields (name, domains) plus typed org custom properties discovered from
+ * the synced definitions - the same operator table as customer properties.
+ */
+export interface OrganizationPropertyCondition {
+  kind: 'organization_property';
+  /** Standard field ('name'|'domains') or null when using a custom property definition. */
+  field: 'name' | 'domains' | null;
+  definitionId?: number | null;
+  name?: string | null;
+  type?: PropertyType | null;
+  op: PropertyOperator;
+  value?: string | null;
+  value2?: string | null;
+  values?: string[];
+}
+
+/**
+ * Ticket-level extension (plan Phase 31 "TICKET"): custom fields and channel
+ * apply to the SAME conversation as the rest of the ticket node's filters.
+ */
+export interface TicketCustomFieldTest {
+  fieldLocalId: number;
+  op: 'equals' | 'not_equals' | 'contains' | 'is_empty' | 'is_not_empty';
+  value?: string | null;
+}
+
+/** Support history: previous issues (plan Phase 31 "SUPPORT HISTORY"). */
+export interface HistoryIssueCondition {
+  kind: 'history_issue';
+  issueKind: 'cluster' | 'known_issue';
+  /** Local issue id; null = any issue of this kind. */
+  issueLocalId?: number | null;
+  op: 'gte' | 'eq';
+  value: number;
+}
+
+/** SUPPORTOS layer: exposure to an incident (active incidents if id omitted). */
+export interface IncidentExposureCondition {
+  kind: 'incident_exposure';
+  incidentId?: number | null;
+  withinDays?: number | null;
+}
+
+/** SUPPORTOS layer: campaign history, including exclusions (not_received). */
+export interface CampaignHistoryCondition {
+  kind: 'campaign_history';
+  relation: 'received' | 'replied' | 'not_received';
+  campaignId?: number | null;
+}
+
+/** SUPPORTOS layer: deterministic customer support-health aggregates. */
+export type SupportHealthMetric = 'avg_rating' | 'avg_effort_score' | 'first_response_resolution_rate' | 'high_friction_rate';
+
+export interface SupportHealthCondition {
+  kind: 'support_health';
+  metric: SupportHealthMetric;
+  op: 'gte' | 'lte';
+  value: number;
+}
+
+/** SUPPORTOS layer: customer is linked (custom object links) to an object of a type. */
+export interface CustomObjectLinkCondition {
+  kind: 'custom_object_link';
+  /** Custom object type id; null = any type. */
+  typeId?: number | null;
+}
+
+/** SUPPORTOS layer: customer event timeline condition (closed kind union). */
+export interface CustomerEventCondition {
+  kind: 'customer_event';
+  eventKind: 'signup' | 'support_conversation' | 'customer_message' | 'campaign' | 'campaign_reply' | 'rating' | 'incident_exposure' | 'custom_object_event';
+  withinDays?: number | null;
+}
+
+export type SegmentCondition =
+  | CustomerPropertyCondition | ContactCondition | TicketCondition | HistoryCondition | HistoryTagCondition
+  | OrganizationPropertyCondition | HistoryIssueCondition | IncidentExposureCondition | CampaignHistoryCondition
+  | SupportHealthCondition | CustomObjectLinkCondition | CustomerEventCondition;
 export type SegmentNode = SegmentGroup | SegmentCondition;
 
 export interface SegmentDefinition {
@@ -294,4 +385,15 @@ export interface OutreachMeta {
   ticket_statuses: string[];
   operators_by_type: Record<PropertyType, PropertyOperator[]>;
   personalization_variables: readonly string[];
+  /** v2.1.0 (M5, plan Phase 31): advanced condition catalogs. */
+  organization_fields: ('name' | 'domains')[];
+  organization_property_definitions: PropertyDefInfo[];
+  ticket_custom_fields: { local_id: number; name: string; type: string | null }[];
+  channels: string[];
+  issues: { id: number; kind: 'cluster' | 'known_issue'; label: string }[];
+  incidents: { id: number; code: string; title: string; status: string }[];
+  campaigns: { id: number; name: string; status: string }[];
+  custom_object_types: { id: number; name: string; slug: string }[];
+  customer_event_kinds: string[];
+  support_health_metrics: SupportHealthMetric[];
 }

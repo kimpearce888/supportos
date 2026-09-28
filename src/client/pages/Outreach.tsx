@@ -240,6 +240,10 @@ function AudienceStep({
         <p className="text-xs muted" style={{ marginTop: 0 }}>
           Properties answer “which customers?” · tags answer “which tickets?” · SupportOS resolves tickets to unique contacts.
         </p>
+        {/* v2.1.0 (M5, plan Phase 31): natural-language suggestion. The model
+            only PROPOSES a definition; the deterministic engine (the same
+            preview below) selects recipients. Nothing is saved implicitly. */}
+        <SuggestBox onApply={(def) => { setDefinition(def); setSavedSegmentId(null); }} />
         <div className="flex" style={{ gap: 8, alignItems: 'center', marginBottom: 10 }}>
           <span className="text-xs muted">Match</span>
           <select className="input" style={{ width: 90 }} value={definition.combinator} onChange={(e) => setDefinition({ ...definition, combinator: e.target.value as 'all' | 'any' })}>
@@ -279,6 +283,28 @@ function AudienceStep({
           </button>
           <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'history', metric: 'ticket_count', op: 'gte', value: 1 }] as SegmentCondition[])}>
             + Support history
+          </button>
+          {/* v2.1.0 (M5, plan Phase 31): the advanced condition kinds. */}
+          <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'organization_property', field: 'name', op: 'contains', value: '' }] as SegmentCondition[])}>
+            + Organization
+          </button>
+          <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'history_issue', issueKind: 'known_issue', issueLocalId: null, op: 'gte', value: 1 }] as SegmentCondition[])}>
+            + Previous issues
+          </button>
+          <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'incident_exposure', incidentId: null, withinDays: null }] as SegmentCondition[])}>
+            + Incident exposure
+          </button>
+          <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'campaign_history', relation: 'received', campaignId: null }] as SegmentCondition[])}>
+            + Campaign history
+          </button>
+          <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'support_health', metric: 'avg_rating', op: 'gte', value: 4 }] as SegmentCondition[])}>
+            + Support health
+          </button>
+          <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'custom_object_link', typeId: null }] as SegmentCondition[])}>
+            + Custom object
+          </button>
+          <button className="btn small" onClick={(): void => setConditions([...definition.conditions, { kind: 'customer_event', eventKind: 'campaign_reply', withinDays: null }] as SegmentCondition[])}>
+            + Timeline event
           </button>
         </div>
 
@@ -1116,6 +1142,65 @@ function DncPanel(): ReactNode {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------- v2.1.0 (M5, plan Phase 31): NL -> segment suggestion ----------------
+
+function SuggestBox({ onApply }: { onApply: (def: SegmentDefinition) => void }): ReactNode {
+  const [request, setRequest] = useState('');
+  const [result, setResult] = useState<{ definition: SegmentDefinition; model: string; notes: string[] } | null>(null);
+  const pushToast = useUiStore((s) => s.pushToast);
+
+  const suggest = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; definition: SegmentDefinition; model: string; notes: string[]; message?: string }>('/api/outreach/segments/suggest', { request }),
+    onSuccess: (r) => {
+      setResult({ definition: r.definition, model: r.model, notes: r.notes });
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
+
+  return (
+    <div className="suggest-box">
+      <div className="flex gap-8 wrap">
+        <input
+          className="input grow"
+          placeholder="Describe the audience in plain language (e.g. “customers in Europe with an open billing ticket who replied to the last campaign”)…"
+          value={request}
+          maxLength={500}
+          onChange={(e) => setRequest(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && request.trim().length >= 3) suggest.mutate(); }}
+        />
+        <button className="btn small" onClick={() => suggest.mutate()} disabled={suggest.isPending || request.trim().length < 3}>
+          {suggest.isPending ? 'Asking the local model…' : 'Suggest segment (AI)'}
+        </button>
+      </div>
+      <p className="text-xs muted mt-4 mb-0">
+        The local model only proposes the condition definition; the deterministic engine selects recipients. Nothing is saved - apply it below and review.
+      </p>
+      {result ? (
+        <div className="suggest-result mt-8">
+          <div className="text-sm">
+            <strong>Proposed definition</strong> <span className="muted text-xs">(model: {result.model})</span>
+          </div>
+          <ul className="text-xs mt-4 mb-0" style={{ paddingLeft: 18 }}>
+            {result.definition.conditions.map((n, i) => (
+              <li key={`c-${i}`}>{describeCondition(n)}</li>
+            ))}
+            {result.definition.exclude.map((n, i) => (
+              <li key={`e-${i}`}><strong>exclude:</strong> {describeCondition(n)}</li>
+            ))}
+          </ul>
+          <div className="flex gap-8 mt-8">
+            <button className="btn small primary" onClick={() => { onApply(result.definition); setRequest(''); setResult(null); pushToast({ kind: 'success', message: 'Definition applied to the builder - review it below.' }); }}>
+              Apply to builder
+            </button>
+            <button className="btn small ghost" onClick={() => setResult(null)}>Discard</button>
+          </div>
+          {result.notes.map((n, i) => <div key={i} className="muted text-xs mt-4">{n}</div>)}
+        </div>
+      ) : null}
     </div>
   );
 }

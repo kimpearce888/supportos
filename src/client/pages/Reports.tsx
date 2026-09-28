@@ -5,9 +5,12 @@ import { Spinner, EmptyState, ErrorState, KV } from '../components/common/ui.js'
 import { useUiStore } from '../state/uiStore.js';
 import { useSlaReport } from '../api/hooks.js';
 import type { SlaMailboxRowInfo } from '../../shared/types.js';
+import { EffectivenessTab } from '../components/reports/EffectivenessTab.js';
+import { FrictionTab } from '../components/reports/FrictionTab.js';
+import { BuilderTab } from '../components/reports/BuilderTab.js';
 
 export function ReportsPage(): ReactNode {
-  const [tab, setTab] = useState<'overview' | 'sla' | 'questions' | 'intelligence' | 'definitions' | 'helpscout' | 'releases'>('overview');
+  const [tab, setTab] = useState<'overview' | 'sla' | 'questions' | 'intelligence' | 'effectiveness' | 'friction' | 'builder' | 'definitions' | 'helpscout' | 'releases'>('overview');
   const [days, setDays] = useState(30);
   const pushToast = useUiStore((s) => s.pushToast);
   // v1.6.0 audit fix: every tab query lacked an error state - a failed fetch
@@ -46,6 +49,9 @@ export function ReportsPage(): ReactNode {
         <button className={`tab ${tab === 'sla' ? 'active' : ''}`} onClick={() => setTab('sla')}>SLA & business hours</button>
         <button className={`tab ${tab === 'questions' ? 'active' : ''}`} onClick={() => setTab('questions')}>Why customers contact us</button>
         <button className={`tab ${tab === 'intelligence' ? 'active' : ''}`} onClick={() => setTab('intelligence')}>Support intelligence</button>
+        <button className={`tab ${tab === 'effectiveness' ? 'active' : ''}`} onClick={() => setTab('effectiveness')}>Response effectiveness</button>
+        <button className={`tab ${tab === 'friction' ? 'active' : ''}`} onClick={() => setTab('friction')}>Friction</button>
+        <button className={`tab ${tab === 'builder' ? 'active' : ''}`} onClick={() => setTab('builder')}>Report builder</button>
         <button className={`tab ${tab === 'helpscout' ? 'active' : ''}`} onClick={() => setTab('helpscout')}>Help Scout reports</button>
         <button className={`tab ${tab === 'definitions' ? 'active' : ''}`} onClick={() => setTab('definitions')}>Metric definitions</button>
         <button className={`tab ${tab === 'releases' ? 'active' : ''}`} onClick={() => setTab('releases')}>Release correlation</button>
@@ -79,6 +85,11 @@ export function ReportsPage(): ReactNode {
       ) : null}
 
       {tab === 'sla' ? <SlaReports days={days} /> : null}
+
+      {/* v2.1.0 (M5, plan phases 28, 29, 33). */}
+      {tab === 'effectiveness' ? <EffectivenessTab /> : null}
+      {tab === 'friction' ? <FrictionTab /> : null}
+      {tab === 'builder' ? <BuilderTab /> : null}
 
       {tab === 'questions' ? (
         <div className="grid-2">

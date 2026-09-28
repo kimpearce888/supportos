@@ -12,7 +12,14 @@ import type {
   ContactCondition,
   TicketCondition,
   HistoryCondition,
-  HistoryTagCondition
+  HistoryTagCondition,
+  OrganizationPropertyCondition,
+  HistoryIssueCondition,
+  IncidentExposureCondition,
+  CampaignHistoryCondition,
+  SupportHealthCondition,
+  CustomObjectLinkCondition,
+  CustomerEventCondition
 } from '../../shared/segmentation.js';
 
 /**
@@ -116,6 +123,21 @@ export class SegmentEngine {
         return this.evalHistory(node);
       case 'history_tag':
         return this.evalHistoryTag(node);
+      // v2.1.0 (M5, plan Phase 31): advanced contact segmentation.
+      case 'organization_property':
+        return this.evalOrganizationProperty(node);
+      case 'history_issue':
+        return this.evalHistoryIssue(node);
+      case 'incident_exposure':
+        return this.evalIncidentExposure(node);
+      case 'campaign_history':
+        return this.evalCampaignHistory(node);
+      case 'support_health':
+        return this.evalSupportHealth(node);
+      case 'custom_object_link':
+        return this.evalCustomObjectLink(node);
+      case 'customer_event':
+        return this.evalCustomerEvent(node);
       default:
         return [];
     }
@@ -323,6 +345,11 @@ export class SegmentEngine {
         params.push(...listed);
       }
     }
+    // v2.1.0 (M5, plan Phase 31): channel on the SAME conversation.
+    if (typeof t.channel === 'string' && t.channel.trim() !== '') {
+      where.push(`LOWER(COALESCE(c.source_type, '')) = LOWER(?)`);
+      params.push(t.channel.trim());
+    }
     if (t.createdWithinDays != null && Number.isFinite(t.createdWithinDays)) {
       where.push(`julianday(c.remote_created_at) >= julianday('now', ?)`);
       params.push(`-${Math.max(0, t.createdWithinDays)} days`);
@@ -421,6 +448,60 @@ export class SegmentEngine {
       notes.push(`AI attribute '${def.label}' ${aa.op} '${aa.value}' evaluated over current local attribute rows (missing = unknown).`);
     }
 
+    // v2.1.0 (M5, plan Phase 31 "TICKET: custom fields"): custom mailbox
+    // field tests on the SAME conversation. Field ids are whitelisted
+    // against the synced inbox_fields table; unknown ids match NOTHING
+    // (safe deny, same policy as the AI attribute catalog).
+    const customFields = t.customFields ?? [];
+    if (customFields.length > 0) {
+      for (const cf of customFields) {
+        if (!Number.isInteger(cf.fieldLocalId) || cf.fieldLocalId <= 0) continue;
+        const exists = this.db.prepare('SELECT id FROM inbox_fields WHERE id = ? AND deleted_at IS NULL').get(cf.fieldLocalId);
+        if (!exists) {
+          notes.push(`Custom field #${cf.fieldLocalId} does not exist locally - condition matched no conversations.`);
+          return [];
+        }
+        const val = (cf.value ?? '').trim();
+        switch (cf.op) {
+          case 'is_empty':
+            where.push(
+              `NOT EXISTS (SELECT 1 FROM conversation_fields f WHERE f.conversation_id = c.id AND f.field_local_id = ? AND COALESCE(f.text_value, f.value) IS NOT NULL AND COALESCE(f.text_value, f.value) <> '')`
+            );
+            params.push(cf.fieldLocalId);
+            break;
+          case 'is_not_empty':
+            where.push(
+              `EXISTS (SELECT 1 FROM conversation_fields f WHERE f.conversation_id = c.id AND f.field_local_id = ? AND COALESCE(f.text_value, f.value) IS NOT NULL AND COALESCE(f.text_value, f.value) <> '')`
+            );
+            params.push(cf.fieldLocalId);
+            break;
+          case 'equals':
+            if (!val) return [];
+            where.push(
+              `EXISTS (SELECT 1 FROM conversation_fields f WHERE f.conversation_id = c.id AND f.field_local_id = ? AND LOWER(COALESCE(f.text_value, f.value)) = LOWER(?))`
+            );
+            params.push(cf.fieldLocalId, val);
+            break;
+          case 'not_equals':
+            if (!val) return [];
+            where.push(
+              `NOT EXISTS (SELECT 1 FROM conversation_fields f WHERE f.conversation_id = c.id AND f.field_local_id = ? AND LOWER(COALESCE(f.text_value, f.value)) = LOWER(?))`
+            );
+            params.push(cf.fieldLocalId, val);
+            break;
+          case 'contains':
+            if (!val) return [];
+            where.push(
+              `EXISTS (SELECT 1 FROM conversation_fields f WHERE f.conversation_id = c.id AND f.field_local_id = ? AND COALESCE(f.text_value, f.value) LIKE ? ESCAPE '\\')`
+            );
+            params.push(cf.fieldLocalId, `%${escapeLike(val)}%`);
+            break;
+          default:
+            return [];
+        }
+      }
+    }
+
     const sql = `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c WHERE ${where.join(' AND ')}`;
     return this.ids(sql, params);
   }
@@ -452,6 +533,24 @@ export class SegmentEngine {
           `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c JOIN customers cu ON cu.id = c.customer_local_id WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND julianday(c.remote_created_at) < julianday('now', ?)`,
           [`-${Math.max(0, v)} days`]
         );
+      // v2.1.0 (M5, plan Phase 31 "SUPPORT HISTORY: waiting"): customers with
+      // at least one conversation whose observed wait (last customer message
+      // to close-or-now) exceeded the given hours ('gte'), or customers whose
+      // conversations never waited that long ('lte').
+      case 'waited_over_hours_count': {
+        const overSet = this.ids(
+          `SELECT c.customer_local_id AS cid FROM conversations c
+           WHERE c.deleted_at IS NULL AND c.customer_local_id IS NOT NULL
+             AND julianday(COALESCE(c.closed_at, datetime('now'))) - julianday(COALESCE(c.last_customer_reply_at, c.first_customer_message_at, c.remote_created_at)) > ?`,
+          [Math.max(0, v) / 24.0]
+        );
+        if (h.op === 'gte') return overSet;
+        if (h.op === 'lte') {
+          const over = new Set(overSet);
+          return this.allCustomerIds().filter((id) => !over.has(id));
+        }
+        return [];
+      }
       default:
         return [];
     }
@@ -475,6 +574,277 @@ export class SegmentEngine {
          JOIN customers cu ON cu.id = c.customer_local_id
        WHERE c.deleted_at IS NULL AND cu.deleted_at IS NULL AND LOWER(tg.name) = ?`,
       [tag]
+    );
+  }
+
+  // ---------------- v2.1.0 (M5, plan Phase 31): advanced conditions ----------------
+
+  /**
+   * ORGANIZATION data/properties: customers whose organization matches.
+   * Standard fields (name, domains) plus typed org custom properties - the
+   * same operator semantics as customer properties, resolved through the
+   * customers -> organizations join so results stay unique contacts.
+   */
+  private evalOrganizationProperty(o: OrganizationPropertyCondition): number[] {
+    const val = (o.value ?? '').trim();
+    if (o.field === 'name' || o.field === 'domains') {
+      const expr = o.field === 'name' ? `o.name` : `o.domains`;
+      switch (o.op) {
+        case 'is_empty':
+          return this.ids(
+            `SELECT c.id AS cid FROM customers c LEFT JOIN organizations o ON o.id = c.organization_id WHERE c.deleted_at IS NULL AND (${expr} IS NULL OR TRIM(${expr}) = '')`,
+            []
+          );
+        case 'is_not_empty':
+          return this.ids(
+            `SELECT c.id AS cid FROM customers c LEFT JOIN organizations o ON o.id = c.organization_id WHERE c.deleted_at IS NULL AND (${expr} IS NOT NULL AND TRIM(${expr}) <> '')`,
+            []
+          );
+        case 'equals':
+          if (!val) return [];
+          return this.ids(
+            `SELECT c.id AS cid FROM customers c JOIN organizations o ON o.id = c.organization_id WHERE c.deleted_at IS NULL AND LOWER(${expr}) LIKE ?`,
+            [`%${escapeLike(val.toLowerCase())}%`]
+          );
+        case 'not_equals':
+          if (!val) return [];
+          return this.ids(
+            `SELECT c.id AS cid FROM customers c LEFT JOIN organizations o ON o.id = c.organization_id WHERE c.deleted_at IS NULL AND (${expr} IS NULL OR LOWER(${expr}) NOT LIKE ?)`,
+            [`%${escapeLike(val.toLowerCase())}%`]
+          );
+        case 'contains':
+          if (!val) return [];
+          return this.ids(
+            `SELECT c.id AS cid FROM customers c JOIN organizations o ON o.id = c.organization_id WHERE c.deleted_at IS NULL AND ${expr} LIKE ? ESCAPE '\\'`,
+            [`%${escapeLike(val)}%`]
+          );
+        case 'starts_with':
+          if (!val) return [];
+          return this.ids(
+            `SELECT c.id AS cid FROM customers c JOIN organizations o ON o.id = c.organization_id WHERE c.deleted_at IS NULL AND ${expr} LIKE ? ESCAPE '\\'`,
+            [`${escapeLike(val)}%`]
+          );
+        case 'ends_with':
+          if (!val) return [];
+          return this.ids(
+            `SELECT c.id AS cid FROM customers c JOIN organizations o ON o.id = c.organization_id WHERE c.deleted_at IS NULL AND ${expr} LIKE ? ESCAPE '\\'`,
+            [`%${escapeLike(val)}`]
+          );
+        default:
+          return [];
+      }
+    }
+    // Custom org property by definition id (absence IS emptiness).
+    const defId = o.definitionId;
+    if (!Number.isInteger(defId) || defId == null || defId <= 0) return [];
+    switch (o.op) {
+      case 'is_empty':
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND (c.organization_id IS NULL OR c.organization_id NOT IN (SELECT op.organization_id FROM organization_properties op WHERE op.definition_id = ? AND op.value IS NOT NULL AND op.value <> ''))`,
+          [defId]
+        );
+      case 'is_not_empty':
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c JOIN organization_properties op ON op.organization_id = c.organization_id WHERE c.deleted_at IS NULL AND op.definition_id = ? AND op.value IS NOT NULL AND op.value <> ''`,
+          [defId]
+        );
+      case 'equals':
+        if (!val) return [];
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c JOIN organization_properties op ON op.organization_id = c.organization_id WHERE c.deleted_at IS NULL AND op.definition_id = ? AND LOWER(op.value) = LOWER(?)`,
+          [defId, val]
+        );
+      case 'not_equals':
+        if (!val) return [];
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND (c.organization_id IS NULL OR c.organization_id NOT IN (SELECT op.organization_id FROM organization_properties op WHERE op.definition_id = ? AND LOWER(op.value) = LOWER(?)))`,
+          [defId, val]
+        );
+      case 'contains':
+        if (!val) return [];
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c JOIN organization_properties op ON op.organization_id = c.organization_id WHERE c.deleted_at IS NULL AND op.definition_id = ? AND op.value LIKE ? ESCAPE '\\'`,
+          [defId, `%${escapeLike(val)}%`]
+        );
+      case 'is_any_of': {
+        const list = (o.values ?? []).map((s) => s.toLowerCase()).filter(Boolean);
+        if (list.length === 0) return [];
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c JOIN organization_properties op ON op.organization_id = c.organization_id WHERE c.deleted_at IS NULL AND op.definition_id = ? AND LOWER(op.value) IN (${list.map(() => '?').join(',')})`,
+          [defId, ...list]
+        );
+      }
+      case 'is_none_of': {
+        const list = (o.values ?? []).map((s) => s.toLowerCase()).filter(Boolean);
+        if (list.length === 0) return this.allCustomerIds();
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND (c.organization_id IS NULL OR c.organization_id NOT IN (SELECT op.organization_id FROM organization_properties op WHERE op.definition_id = ? AND LOWER(op.value) IN (${list.map(() => '?').join(',')})))`,
+          [defId, ...list]
+        );
+      }
+      case 'gt':
+      case 'gte':
+      case 'lt':
+      case 'lte': {
+        const n = Number(val);
+        if (!Number.isFinite(n)) return [];
+        const opSql = o.op === 'gt' ? '>' : o.op === 'gte' ? '>=' : o.op === 'lt' ? '<' : '<=';
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c JOIN organization_properties op ON op.organization_id = c.organization_id WHERE c.deleted_at IS NULL AND op.definition_id = ? AND CAST(op.value AS REAL) ${opSql} ?`,
+          [defId, n]
+        );
+      }
+      default:
+        return [];
+    }
+  }
+
+  /** SUPPORT HISTORY: previous issues (clusters or known issues). */
+  private evalHistoryIssue(h: HistoryIssueCondition): number[] {
+    // Closed-vocabulary check first: an unknown issue kind matches NOTHING
+    // (safe deny) instead of falling through to a default link table.
+    if (h.issueKind !== 'cluster' && h.issueKind !== 'known_issue') return [];
+    const v = Number(h.value);
+    if (!Number.isFinite(v) || v < 0) return [];
+    const linkTable = h.issueKind === 'cluster' ? 'issue_cluster_conversations' : 'known_issue_conversations';
+    const idCol = h.issueKind === 'cluster' ? 'cluster_id' : 'known_issue_id';
+    const specific = Number.isInteger(h.issueLocalId) && h.issueLocalId != null && h.issueLocalId! > 0;
+    const issueFilter = specific ? ` AND l.${idCol} = ?` : '';
+    const issueParams: unknown[] = specific ? [h.issueLocalId] : [];
+    // Count DISTINCT linked conversations per customer (NOT ticket counts).
+    const matching = this.ids(
+      `SELECT c.customer_local_id AS cid FROM conversations c
+         JOIN ${linkTable} l ON l.conversation_id = c.id
+       WHERE c.deleted_at IS NULL AND c.customer_local_id IS NOT NULL${issueFilter}
+       GROUP BY c.customer_local_id HAVING COUNT(DISTINCT c.id) >= ?`,
+      [...issueParams, Math.max(1, Math.ceil(v))]
+    );
+    if (h.op === 'gte') return matching;
+    const set = new Set(matching);
+    return this.allCustomerIds().filter((id) => !set.has(id));
+  }
+
+  /** SUPPORTOS: exposure to an incident (any active incident when id omitted). */
+  private evalIncidentExposure(i: IncidentExposureCondition): number[] {
+    const specific = Number.isInteger(i.incidentId) && i.incidentId != null && i.incidentId! > 0;
+    const within = i.withinDays != null && Number.isFinite(i.withinDays) ? Math.max(0, i.withinDays) : null;
+    const params: unknown[] = [];
+    let incidentFilter = '';
+    if (specific) {
+      incidentFilter = ` AND inc.id = ?`;
+      params.push(i.incidentId);
+    } else {
+      // "Any active incident": the incident must not be resolved.
+      incidentFilter = ` AND inc.status <> 'resolved'`;
+    }
+    let timeFilter = '';
+    if (within != null) {
+      timeFilter = ` AND julianday(COALESCE(c.remote_created_at, inc.created_at)) >= julianday('now', ?)`;
+      params.push(`-${within} days`);
+    }
+    return this.ids(
+      `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c
+         JOIN incident_conversations ic ON ic.conversation_id = c.id
+         JOIN incidents inc ON inc.id = ic.incident_id
+       WHERE c.deleted_at IS NULL AND c.customer_local_id IS NOT NULL${incidentFilter}${timeFilter}`,
+      params
+    );
+  }
+
+  /** SUPPORTOS: campaign history (received / replied / not_received). */
+  private evalCampaignHistory(ch: CampaignHistoryCondition): number[] {
+    const specific = Number.isInteger(ch.campaignId) && ch.campaignId != null && ch.campaignId! > 0;
+    const campaignFilter = specific ? ' AND r.campaign_id = ?' : '';
+    const campaignParams: unknown[] = specific ? [ch.campaignId] : [];
+    if (ch.relation === 'received') {
+      return this.ids(
+        `SELECT DISTINCT r.customer_local_id AS cid FROM outreach_recipients r JOIN customers c ON c.id = r.customer_local_id WHERE c.deleted_at IS NULL AND r.sent_at IS NOT NULL${campaignFilter}`,
+        campaignParams
+      );
+    }
+    if (ch.relation === 'replied') {
+      return this.ids(
+        `SELECT DISTINCT r.customer_local_id AS cid FROM outreach_recipients r JOIN customers c ON c.id = r.customer_local_id WHERE c.deleted_at IS NULL AND r.replied_at IS NOT NULL${campaignFilter}`,
+        campaignParams
+      );
+    }
+    if (ch.relation === 'not_received') {
+      const received = this.ids(
+        `SELECT DISTINCT r.customer_local_id AS cid FROM outreach_recipients r${campaignFilter}`,
+        campaignParams
+      );
+      const set = new Set(received);
+      return this.allCustomerIds().filter((id) => !set.has(id));
+    }
+    return [];
+  }
+
+  /** SUPPORTOS: deterministic customer support-health aggregates. */
+  private evalSupportHealth(s: SupportHealthCondition): number[] {
+    const v = Number(s.value);
+    if (!Number.isFinite(v)) return [];
+    const cmp = s.op === 'gte' ? '>=' : '<=';
+    switch (s.metric) {
+      case 'avg_rating':
+        // avg_rating is 0..5 derived from the local ratings mirror ('great' 5,
+        // 'okay' 3, 'not-good' 1) - same values the support-health page shows.
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND
+             (SELECT AVG(CASE ra.rating WHEN 'great' THEN 5.0 WHEN 'okay' THEN 3.0 WHEN 'not-good' THEN 1.0 ELSE NULL END)
+              FROM ratings ra WHERE ra.customer_local_id = c.id) ${cmp} ?`,
+          [v]
+        );
+      case 'avg_effort_score':
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND
+             (SELECT AVG(o.effort_score) FROM client_support_outcomes o WHERE o.customer_id = c.id AND o.effort_score IS NOT NULL) ${cmp} ?`,
+          [v]
+        );
+      case 'first_response_resolution_rate':
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND
+             (SELECT AVG(CASE WHEN o.resolved_after_first_response = 1 THEN 1.0 ELSE 0.0 END)
+              FROM client_support_outcomes o WHERE o.customer_id = c.id) ${cmp} ?`,
+          [v]
+        );
+      case 'high_friction_rate':
+        return this.ids(
+          `SELECT c.id AS cid FROM customers c WHERE c.deleted_at IS NULL AND
+             (SELECT AVG(CASE WHEN o.friction = 'high' THEN 1.0 ELSE 0.0 END)
+              FROM client_support_outcomes o WHERE o.customer_id = c.id) ${cmp} ?`,
+          [v]
+        );
+      default:
+        return [];
+    }
+  }
+
+  /** SUPPORTOS: customer is linked to a custom object (of a type, or any). */
+  private evalCustomObjectLink(col: CustomObjectLinkCondition): number[] {
+    const specific = Number.isInteger(col.typeId) && col.typeId != null && col.typeId! > 0;
+    const params: unknown[] = specific ? [col.typeId] : [];
+    return this.ids(
+      `SELECT DISTINCT l.target_local_id AS cid FROM custom_object_links l
+         JOIN custom_objects o ON o.id = l.object_id AND o.deleted_at IS NULL
+         ${specific ? 'JOIN custom_object_types t ON t.id = o.type_id AND t.deleted_at IS NULL' : ''}
+       WHERE l.target_kind = 'customer'${specific ? ' AND t.id = ?' : ''}`,
+      params
+    );
+  }
+
+  /** SUPPORTOS: customer event timeline condition (closed kind union). */
+  private evalCustomerEvent(ce: CustomerEventCondition): number[] {
+    const within = ce.withinDays != null && Number.isFinite(ce.withinDays) ? Math.max(0, ce.withinDays) : null;
+    const params: unknown[] = [ce.eventKind];
+    let timeFilter = '';
+    if (within != null) {
+      timeFilter = ` AND COALESCE(julianday(e.occurred_at), julianday(e.created_at)) >= julianday('now', ?)`;
+      params.push(`-${within} days`);
+    }
+    return this.ids(
+      `SELECT DISTINCT e.customer_local_id AS cid FROM customer_events e JOIN customers c ON c.id = e.customer_local_id
+       WHERE c.deleted_at IS NULL AND e.event_kind = ?${timeFilter}`,
+      params
     );
   }
 
@@ -607,6 +977,27 @@ export class SegmentEngine {
           out.push({ text: describeHistory(n) });
         } else if (n.kind === 'history_tag') {
           out.push({ text: `has a ticket tagged "${n.tag}"${n.withinDays != null ? ` within ${n.withinDays} days` : ''}` });
+        } else if (n.kind === 'organization_property') {
+          const fieldName = n.field === 'name' ? 'organization name' : n.field === 'domains' ? 'organization domains' : (n.name ?? `organization property #${n.definitionId ?? '?'}`);
+          if (n.op === 'is_empty' || n.op === 'is_not_empty') {
+            out.push({ text: `${fieldName} ${describeOp(n.op)}` });
+          } else {
+            out.push({ text: `${fieldName} ${describeOp(n.op)} ${n.value ?? ''}` });
+          }
+        } else if (n.kind === 'history_issue') {
+          const label = n.issueKind === 'cluster' ? 'issue cluster' : 'known issue';
+          out.push({ text: `linked to ${n.issueLocalId != null ? `${label} #${n.issueLocalId}` : `at least one ${label}`}` });
+        } else if (n.kind === 'incident_exposure') {
+          out.push({ text: `exposed to ${n.incidentId != null ? `incident #${n.incidentId}` : 'an active incident'}${n.withinDays != null ? ` within ${n.withinDays} days` : ''}` });
+        } else if (n.kind === 'campaign_history') {
+          const rel = n.relation === 'received' ? 'received an outreach campaign' : n.relation === 'replied' ? 'replied to an outreach campaign' : 'never received an outreach campaign';
+          out.push({ text: `${rel}${n.campaignId != null ? ` (#${n.campaignId})` : ''}` });
+        } else if (n.kind === 'support_health') {
+          out.push({ text: `support health: ${n.metric.replace(/_/g, ' ')} ${n.op === 'gte' ? 'at least' : 'at most'} ${n.value}` });
+        } else if (n.kind === 'custom_object_link') {
+          out.push({ text: `linked to a custom object${n.typeId != null ? ` of type #${n.typeId}` : ''}` });
+        } else if (n.kind === 'customer_event') {
+          out.push({ text: `timeline includes a "${n.eventKind.replace(/_/g, ' ')}" event${n.withinDays != null ? ` within ${n.withinDays} days` : ''}` });
         }
       }
     };

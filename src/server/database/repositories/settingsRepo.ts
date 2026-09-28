@@ -41,7 +41,8 @@ export class SettingsRepository {
       log_level: this.get('log_level', 'info'),
       display_timezone: this.get('display_timezone', 'system'),
       redaction_enabled: this.get('redaction_enabled', true),
-      ai_evaluation_mode: this.get('ai_evaluation_mode', false)
+      ai_evaluation_mode: this.get('ai_evaluation_mode', false),
+      agent_language: this.get('agent_language', 'en')
     };
   }
 

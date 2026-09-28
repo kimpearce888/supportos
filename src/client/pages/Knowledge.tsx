@@ -7,11 +7,12 @@ import { Spinner, EmptyState, ErrorState, RelativeTime, KV } from '../components
 import { Modal } from '../components/common/overlays.js';
 import { useUiStore } from '../state/uiStore.js';
 import type { KnowledgeFreshnessRow } from '../../shared/workspace.js';
+import { GapsTab } from '../components/knowledge/GapsTab.js';
 
 interface KnowledgeDoc { id: number; source_id: number; title: string; visibility: string; version: number; content_preview: string; chunk_count: number; created_at: string; updated_at: string }
 
 export function KnowledgePage(): ReactNode {
-  const [tab, setTab] = useState<'documents' | 'sources' | 'freshness'>('documents');
+  const [tab, setTab] = useState<'documents' | 'sources' | 'freshness' | 'gaps'>('documents');
   const [importing, setImporting] = useState(false);
   // Deep links: /knowledge?doc=N opens that document's reader (used by search
   // results and the AI evidence chips - previously this link was dead).
@@ -91,6 +92,7 @@ export function KnowledgePage(): ReactNode {
         <button className={`tab ${tab === 'documents' ? 'active' : ''}`} onClick={() => setTab('documents')}>Documents</button>
         <button className={`tab ${tab === 'sources' ? 'active' : ''}`} onClick={() => setTab('sources')}>Sources</button>
         <button className={`tab ${tab === 'freshness' ? 'active' : ''}`} onClick={() => setTab('freshness')}><Clock size={12} style={{ display: 'inline', verticalAlign: 'middle' }} /> Freshness</button>
+        <button className={`tab ${tab === 'gaps' ? 'active' : ''}`} onClick={() => setTab('gaps')}>Gaps</button>
       </div>
 
       {tab === 'documents' ? (
@@ -124,6 +126,7 @@ export function KnowledgePage(): ReactNode {
         </>
       ) : null}
       {tab === 'freshness' ? <FreshnessTab /> : null}
+      {tab === 'gaps' ? <GapsTab /> : null}
       {tab === 'sources' ? (
         <div className="card">
           <h3 className="card-title">Knowledge sources</h3>

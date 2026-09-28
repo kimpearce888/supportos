@@ -435,7 +435,9 @@ export const settingsPatchSchema = z
     log_level: z.enum(['debug', 'info', 'warn', 'error']),
     display_timezone: z.string().max(64),
     redaction_enabled: z.boolean(),
-    ai_evaluation_mode: z.boolean()
+    ai_evaluation_mode: z.boolean(),
+    // v2.1.0 (M5): agent drafting language for the local translation feature.
+    agent_language: z.string().regex(/^[a-z]{2}$/)
   })
   .strict()
   .partial();
