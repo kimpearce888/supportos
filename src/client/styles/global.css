@@ -484,3 +484,33 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--font-size
 /* Outreach NL suggest box */
 .suggest-box { border: 1px dashed var(--border); border-radius: var(--radius); padding: 10px; margin-bottom: 12px; background: var(--bg-sunken); }
 .suggest-result { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-raised); }
+
+/* ---------------------------------------------------------------- v2.2.0 (M6): support graph, agent coaching, customer memory */
+/* Graph explorer */
+.graph-stat-chips { display: flex; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: var(--font-size-xs); color: var(--text-secondary); background: var(--bg-sunken); }
+.chip-human { border-color: var(--success, #3aa76d); }
+.chip-ai { border-color: var(--ai, #8b5cf6); }
+.graph-search-results { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
+.graph-search-hit { display: flex; align-items: center; gap: 8px; text-align: left; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); cursor: pointer; }
+.graph-search-hit:hover { background: var(--bg-sunken); }
+.graph-edge-list { display: flex; flex-direction: column; gap: 10px; }
+.graph-edge-group { display: flex; flex-direction: column; gap: 4px; }
+.graph-edge-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+.graph-edge-row:last-child { border-bottom: none; }
+.graph-edge-form { border: 1px dashed var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-sunken); }
+
+/* Coaching (composer, advisory-only) */
+.coaching-panel { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.coaching-results { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-sunken); max-height: 340px; overflow-y: auto; }
+.coaching-check { padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.coaching-check:last-child { border-bottom: none; }
+.coaching-check.flagged .coaching-finding { border-left: 3px solid var(--danger, #d9534f); padding-left: 8px; margin-top: 6px; }
+.coaching-finding { display: flex; flex-direction: column; gap: 4px; }
+.btn.warn-btn { border-color: var(--warn, #b8860b); }
+
+/* Customer memory panel */
+.memory-panel .collapsible { width: 100%; text-align: left; }
+.memory-section { margin-top: 10px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.memory-entry { padding: 6px 0; }
+.memory-add { border: 1px dashed var(--border); border-radius: var(--radius); padding: 10px; background: var(--bg-sunken); }

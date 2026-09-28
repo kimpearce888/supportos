@@ -194,6 +194,13 @@ export class WorkerManager {
   private async maintenance(): Promise<void> {
     try {
       this.ctx.issueRepo.computeTrends();
+      // v2.2.0 (M6): deterministic products registry refresh (INSERT OR
+      // IGNORE - a rebuild can only ever ADD names, never overwrite).
+      try {
+        this.ctx.graph.refreshProducts();
+      } catch {
+        /* registry refresh never breaks maintenance */
+      }
       // v1.8.0: notification sweep piggybacks on maintenance so long-idle
       // instances (sweep disabled by interval) still produce state notifications.
       this.notificationSweepTick();
@@ -593,6 +600,12 @@ export class WorkerManager {
 
   /** After initial sync: enqueue attachment downloads + first embedding pass. */
   private async onAfterInitialSync(): Promise<void> {
+    // v2.2.0 (M6): products registry over the fresh mirror.
+    try {
+      this.ctx.graph.refreshProducts();
+    } catch {
+      /* registry refresh never breaks sync */
+    }
     if (this.ctx.settingsRepo.get('attachment_auto_download', true)) {
       this.ctx.jobsRepo.enqueue('attachments', 'download_recent_attachments', {}, PRIORITY.INDEXING, 2);
     }

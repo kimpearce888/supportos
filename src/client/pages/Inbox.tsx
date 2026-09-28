@@ -18,6 +18,8 @@ import { PriorityBadge, ResponseStateBadge, TicketStateBadge, ActivityTimeline, 
 import { SideThreadsPanel } from '../components/inbox/SideThreads.js';
 import { QaPanel } from '../components/inbox/QaPanel.js';
 import { TranslationPanel } from '../components/inbox/TranslationPanel.js';
+import { CoachingPanel } from '../components/inbox/CoachingPanel.js';
+import { MemoryPanel } from '../components/inbox/MemoryPanel.js';
 import { CopilotPanel } from '../components/inbox/CopilotPanel.js';
 import { AttributeSnapshotCard } from '../components/inbox/AttributeSnapshotCard.js';
 import { MentionTextarea } from '../components/inbox/MentionTextarea.js';
@@ -346,9 +348,12 @@ function ConversationDetail({ id }: { id: number }): ReactNode {
       <ActivityTimeline conversationId={id} historyComplete={data.activity.history_complete} />
       <SideThreadsPanel conversationId={id} />
       {/* v2.1.0 (M5, plan phases 27 + 30): after-close QA + local translation. */}
+      {/* v2.2.0 (M6, plan phases 35 + 36): advisory pre-send coaching lives in
+          the Composer; customer memory composes here per customer. */}
       <div className="detail-extra-panels">
         <QaPanel conversationId={id} closed={c.status === 'closed'} />
         <TranslationPanel conversationId={id} />
+        <MemoryPanel customerId={c.customer_id} conversationId={id} />
       </div>
       <ContextPane data={data} onRefresh={invalidate} />
     </>
@@ -984,6 +989,9 @@ function Composer({ conversationId, customerId: _customerId, customerEmail, draf
           </select>
         </div>
       ) : null}
+      {/* v2.2.0 (M6, plan Phase 35): optional advisory coaching on the current
+          draft - never blocks the send. */}
+      {state.mode === 'reply' ? <CoachingPanel conversationId={conversationId} draft={state.text} /> : null}
       <div className="composer-actions">
         {state.mode === 'reply' ? (
           <>

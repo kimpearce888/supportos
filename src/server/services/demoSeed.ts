@@ -13,6 +13,8 @@ import { FrictionAnalyzer } from '../ai/friction.js';
 import { PostResolutionQaService } from '../ai/postResolutionQa.js';
 import { KnowledgeGapService } from '../knowledge/gapEngine.js';
 import { InteractionEngine } from '../ai/interaction/engine.js';
+import { GraphService } from '../graph/graphService.js';
+import { CustomerMemoryService } from '../memory/customerMemoryService.js';
 
 function docIdByTitle(db: Database, title: string): number {
   const row = db.prepare('SELECT id FROM knowledge_documents WHERE title = ?').get(title) as { id: number } | undefined;
@@ -522,6 +524,52 @@ export function seedDemoData(db: import('better-sqlite3').Database): void {
     }
   } catch (e) {
     console.log(`Demo report seed skipped: ${(e as Error).message}`);
+  }
+
+  // ---------------- v2.2.0 (M6): graph + memory seeds ----------------
+  // The graph is a read-time layer over data the earlier seeds already
+  // created; the only NEW persisted things are deterministic product
+  // registry rows, one human graph edge (so the human-edge surface has data)
+  // and one human memory entry. Everything else composes at read time.
+  try {
+    const graph = new GraphService(db);
+    const products = graph.refreshProducts();
+    console.log(`Seeded products registry (${products.added} new product names).`);
+    // One human edge between the two demo incidents: INC-002 depends on
+    // INC-001 (only when both exist and the edge is new).
+    const incA = db.prepare("SELECT id FROM incidents WHERE code = 'INC-001'").get() as { id: number } | undefined;
+    const incB = db.prepare("SELECT id FROM incidents WHERE code = 'INC-002'").get() as { id: number } | undefined;
+    if (incA && incB) {
+      const linked = graph.linkHumanEdge({
+        source_kind: 'incident', source_local_id: incB.id,
+        target_kind: 'incident', target_local_id: incA.id,
+        relation: 'depends_on', note: 'Demo: the timezone issue is being tracked against the Slack incident investigation.',
+        user_local_id: null
+      });
+      if (linked.ok) console.log('Seeded 1 human graph edge (INC-002 depends_on INC-001).');
+    }
+  } catch (e) {
+    console.log(`Demo graph seed skipped: ${(e as Error).message}`);
+  }
+
+  try {
+    const memory = new CustomerMemoryService(db);
+    // One human memory entry on the demo customer with the most
+    // conversations (only when the key is new).
+    const top = db.prepare(`SELECT c.customer_local_id AS cid, COUNT(*) AS n FROM conversations c
+                              WHERE c.customer_local_id IS NOT NULL AND c.deleted_at IS NULL
+                              GROUP BY c.customer_local_id ORDER BY n DESC LIMIT 1`).get() as { cid: number } | undefined;
+    if (top) {
+      const written = memory.upsertHumanEntry(top.cid, {
+        key: 'Preferred escalation path',
+        value: 'Ping the on-call engineer directly after 2 unresolved replies; this account has a history of urgency.',
+        kind: 'context',
+        conversation_id: null
+      });
+      if (written.ok) console.log('Seeded 1 human memory entry (escalation context).');
+    }
+  } catch (e) {
+    console.log(`Demo memory seed skipped: ${(e as Error).message}`);
   }
 
   console.log('Demo seed complete.');

@@ -4,6 +4,8 @@ import { EvidenceBuilder } from './evidence.js';
 import { redactText } from '../security/redaction.js';
 import type { ChatTool } from '../integrations/lmstudio/lmStudioClient.js';
 import { htmlToText } from '../../shared/utils.js';
+import { GraphService } from '../graph/graphService.js';
+import { CustomerMemoryService } from '../memory/customerMemoryService.js';
 
 /**
  * Controlled AI read tools (spec #29). The AI never gets arbitrary SQL access;
@@ -192,6 +194,31 @@ export class AiToolRegistry {
           description: 'Local conversation-friction summary: how often customers repeat explanations, agents re-ask questions, troubleshooting loops, repeated handoffs, duplicated information requests occur. Deterministic heuristics over the local mirror - patterns, not judgments about people.',
           parameters: { type: 'object', properties: { days: { type: 'number', description: 'Lookback window in days (default 30, max 365)' } } }
         }
+      },
+      // ---------------- v2.2.0 (M6): graph + memory tools ----------------
+      {
+        type: 'function',
+        function: {
+          name: 'get_graph_neighbors',
+          description: 'Explore the local support graph around one node: which customers, organizations, conversations, issues, incidents, knowledge, agents, campaigns, products, custom objects or connector rows are connected to it, with the relation and provenance of every edge. Derived edges are computed live from the local mirror.',
+          parameters: { type: 'object', properties: { kind: { type: 'string', description: 'Node kind (customer, organization, conversation, known_issue, issue_cluster, incident, knowledge_document, agent, campaign, product, custom_object, connector_data)' }, local_id: { type: 'number', description: 'Node local id' }, limit: { type: 'number', description: 'Max edges (default 5, max 10)' } }, required: ['kind', 'local_id'] }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'get_graph_stats',
+          description: 'Support graph overview: live node counts per kind and derived edge counts per relation. Use for "how connected is our support data" style questions.',
+          parameters: { type: 'object', properties: {} }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'get_customer_memory',
+          description: 'Get the composed support memory for the customer of a conversation: known issue history, previous resolutions, communication preferences, recurring patterns, campaign history and human-written notes. Composed live from the local mirror; psychological/personality judgments are never included.',
+          parameters: { type: 'object', properties: { number: { type: 'number', description: 'Any conversation number belonging to the customer' } }, required: ['number'] }
+        }
       }
     ];
   }
@@ -304,16 +331,20 @@ export class AiToolRegistry {
         return similar.map((s) => ({ conversation_id: s.conversation_id, number: s.number, subject: s.subject, resolution: this.red(String(s.resolution ?? '').slice(0, 400)) }));
       }
       case 'get_issue_clusters': {
-        const q = args.query == null ? '' : String(args.query).slice(0, 200).toLowerCase();
+        const q = args.query == null ? '' : String(args.query).slice(0, 200);
+        // v2.2.0 perf: keyword filtering + row bound pushed INTO the SQL
+        // (was: full-table .all() with JS filter - plan Phase 41).
+        const escaped = q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+        const like = q ? `%${escaped}%` : '%';
         const rows = (this.db
           .prepare(
             `SELECT ic.id, ic.title, ic.summary, ic.category, ic.product, ic.feature, ic.ai_generated,
                (SELECT GROUP_CONCAT(c.number) FROM issue_cluster_conversations icc JOIN conversations c ON c.id = icc.conversation_id WHERE icc.cluster_id = ic.id ORDER BY c.number DESC) AS numbers
-             FROM issue_clusters ic ORDER BY ic.id DESC`
+             FROM issue_clusters ic
+             ${q ? "WHERE ic.title LIKE ? ESCAPE '\\' OR ic.summary LIKE ? ESCAPE '\\' OR ic.category LIKE ? ESCAPE '\\'" : ''}
+             ORDER BY ic.id DESC LIMIT ${Math.min(10, Math.max(1, limit)) * (q ? 3 : 1)}`
           )
-          .all() as Record<string, unknown>[])
-          .filter((c) => !q || `${c.title} ${c.summary} ${c.category ?? ''}`.toLowerCase().includes(q))
-          .slice(0, Math.min(10, Math.max(1, limit)));
+          .all(...(q ? [like, like, like] : []) as unknown[]) as Record<string, unknown>[]);
         return rows.map((c) => ({ title: c.title, summary: this.red(String(c.summary ?? '').slice(0, 400)), category: c.category ?? null, product: c.product ?? null, feature: c.feature ?? null, conversation_numbers: String(c.numbers ?? '').split(',').filter(Boolean).map(Number).slice(0, 15), ai_generated: Number(c.ai_generated) === 1 }));
       }
       case 'get_ai_analysis': {
@@ -527,6 +558,68 @@ export class AiToolRegistry {
           window_days: days,
           kinds: rows.map((r) => ({ kind: r.kind, conversations: r.conversations, high_severity: r.high })),
           note: 'Deterministic text-shape heuristics over the local mirror - patterns, not judgments about people. Findings exist only for analyzed conversations.'
+        };
+      }
+      // ---------------- v2.2.0 (M6): graph + memory tools ----------------
+      case 'get_graph_neighbors': {
+        const kind = String(args.kind ?? '');
+        const localId = Number(args.local_id);
+        if (!Number.isFinite(localId) || localId <= 0) return { error: 'Invalid local_id' };
+        const service = new GraphService(this.db);
+        const validKinds = ['customer', 'organization', 'conversation', 'known_issue', 'issue_cluster', 'incident', 'knowledge_document', 'agent', 'campaign', 'product', 'custom_object', 'connector_data'];
+        if (!validKinds.includes(kind)) return { error: `Unknown node kind. Valid kinds: ${validKinds.join(', ')}` };
+        const nb = service.neighbors(kind as Parameters<typeof service.neighbors>[0], localId, { limit: Math.min(10, Math.max(1, limit * 2)) });
+        if (!nb) return { error: 'Node not found' };
+        return {
+          node: { kind: nb.node.kind, label: this.red(nb.node.label.slice(0, 160)) },
+          total_edges: nb.total_edges,
+          edges: nb.edges.slice(0, Math.min(10, Math.max(1, limit))).map((e) => ({
+            relation: e.relation,
+            origin: e.origin,
+            direction: e.source.local_id === localId && e.source.kind === kind ? 'outgoing' : 'incoming',
+            connected: `${e.source.kind === kind ? '' : `${this.red(e.source.label.slice(0, 120))} -> `}${e.target.kind === kind ? '' : this.red(e.target.label.slice(0, 120))}`,
+            connected_kind: e.source.kind === kind ? e.target.kind : e.source.kind,
+            note: e.note ? this.red(e.note.slice(0, 120)) : null
+          })),
+          note: 'Edges are derived live from the local mirror; only human-asserted edges are stored.'
+        };
+      }
+      case 'get_graph_stats': {
+        const service = new GraphService(this.db);
+        const stats = service.stats();
+        return {
+          nodes: stats.nodes.map((n) => ({ kind: n.kind, count: n.count })),
+          edges: stats.edges.map((e) => ({ relation: e.relation, origin: e.origin, count: e.count })),
+          note: 'Live counts - no denormalized totals. Connector rows have no derived edges by design.'
+        };
+      }
+      case 'get_customer_memory': {
+        const num = Number(args.number);
+        if (!Number.isFinite(num)) return { error: 'Invalid number' };
+        const customer = (this.db
+          .prepare('SELECT c.customer_local_id FROM conversations c WHERE c.number = ? AND c.deleted_at IS NULL')
+          .get(num) as { customer_local_id: number | null } | undefined)?.customer_local_id;
+        if (!customer) return { error: 'Conversation not found or has no customer' };
+        const service = new CustomerMemoryService(this.db);
+        const profile = service.profile(customer);
+        if (!profile) return { error: 'Customer not found' };
+        const sections = profile.sections
+          .filter((s) => s.entries.length > 0)
+          .map((s) => ({
+            section: s.section,
+            entries: s.entries.slice(0, 5).map((e) => ({
+              title: this.red(e.title.slice(0, 140)),
+              value: e.value ? this.red(e.value.slice(0, 200)) : null,
+              source: e.source,
+              confidence: e.confidence,
+              last_seen: e.last_seen_at
+            }))
+          }));
+        return {
+          customer: `${profile.customer.first_name ?? ''} ${profile.customer.last_name ?? ''}`.trim(),
+          sections,
+          quarantined: profile.quarantined.length,
+          note: 'Composed live from the local mirror - human-written entries are the only persisted rows. Psychological/personality judgments are never included.'
         };
       }
       default:

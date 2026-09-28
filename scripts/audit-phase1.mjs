@@ -864,6 +864,151 @@ async function main() {
     expect(writeShaped.length === 0, 'copilot registry contains no write-shaped tool names', writeShaped.join(','));
   }
 
+  console.log('\n== N. v2.2.0 (M6): support graph, coaching, memory ==');
+  {
+    // N1: graph stats + honest notes.
+    const stats = await req('GET', '/api/graph/stats');
+    expect(stats.status === 200, 'graph stats serves', `got ${stats.status}`);
+    const statsNotes = (stats.json.notes ?? []).join(' ');
+    if (!statsNotes.includes('Connector rows carry no derived edges')) finding('medium', 'graph stats must disclose the connector-data honesty rule', statsNotes.slice(0, 200));
+    const nodeKinds = (stats.json.nodes ?? []).map((n) => n.kind);
+    for (const required of ['customer', 'organization', 'conversation', 'incident', 'knowledge_document', 'agent', 'campaign', 'product', 'custom_object', 'connector_data', 'known_issue', 'issue_cluster']) {
+      expect(nodeKinds.includes(required), `graph stats lists node kind ${required}`, 'missing');
+    }
+
+    // N2: hostile node kinds / ids / directions / limits.
+    for (const [path, label] of [
+      ['/api/graph/neighbors/drop_table/1', 'hostile node kind 422'],
+      ['/api/graph/neighbors/conversation/0', 'zero id 422'],
+      ['/api/graph/neighbors/conversation/-1', 'negative id 422'],
+      ['/api/graph/neighbors/conversation/1?direction=sideways', 'hostile direction 422'],
+      ['/api/graph/neighbors/conversation/1?limit=99999', 'oversized limit 422'],
+      ['/api/graph/subgraph/customer/1?depth=9', 'oversized depth 422'],
+      ['/api/graph/node/execvp/1', 'hostile node endpoint kind 422']
+    ]) {
+      const r = await req('GET', path);
+      expect(r.status === 422, `graph hostile: ${label}`, `got ${r.status}`);
+    }
+    expect((await req('GET', '/api/graph/neighbors/customer/999999')).status === 404, 'graph neighbors unknown node 404', 'got other');
+
+    // N3: human-edge lifecycle with hostile payloads + injection-as-data.
+    const convList = await req('GET', '/api/conversations?pageSize=5');
+    const convId = (convList.json.conversations ?? convList.json.rows ?? [])[0]?.id;
+    const incSearch = await req('GET', '/api/graph/search?q=INC');
+    const incidentId = (incSearch.json.results ?? []).find((x) => x.kind === 'incident')?.local_id;
+    if (convId && incidentId) {
+      const note = "'; DROP TABLE conversations;-- <script>alert('graph')</script>";
+      const created = await req('POST', '/api/graph/edges', { source_kind: 'conversation', source_local_id: convId, target_kind: 'incident', target_local_id: incidentId, relation: 'related_to', note });
+      expect(created.status === 200, 'human edge created', `got ${created.status}`);
+      const dup = await req('POST', '/api/graph/edges', { source_kind: 'conversation', source_local_id: convId, target_kind: 'incident', target_local_id: incidentId, relation: 'related_to' });
+      expect(dup.status === 409, 'duplicate human edge 409', `got ${dup.status}`);
+      for (const [body, label] of [
+        [{ source_kind: 'conversation', source_local_id: convId, target_kind: 'incident', target_local_id: incidentId, relation: 'destroys' }, 'hostile relation 422'],
+        [{ source_kind: 'rm -rf', source_local_id: 1, target_kind: 'incident', target_local_id: 1, relation: 'related_to' }, 'hostile source kind 422'],
+        [{ source_kind: 'conversation', source_local_id: convId, target_kind: 'incident', target_local_id: 1, relation: 'related_to', note: 42 }, 'numeric note 422'],
+        [{}, 'empty body 422']
+      ]) {
+        const r = await req('POST', '/api/graph/edges', body);
+        expect(r.status === 422, `graph edge hostile: ${label}`, `got ${r.status}`);
+      }
+      // The injection-shaped note must survive AS DATA and tables must stay intact.
+      const listed = await req('GET', '/api/graph/edges');
+      const edge = (listed.json.edges ?? []).find((e) => e.note === note);
+      expect(edge != null, 'injection-shaped note stored as data verbatim', 'missing');
+      const intact = await req('GET', '/api/graph/stats');
+      expect(intact.status === 200 && (intact.json.human_edges ?? 0) >= 1, 'conversations table survives injection-shaped notes', 'stats broken');
+      const removed = await req('DELETE', `/api/graph/edges/${edge.id}`);
+      expect(removed.status === 200, 'human edge deleted', `got ${removed.status}`);
+      expect((await req('DELETE', `/api/graph/edges/${edge.id}`)).status === 404, 'deleted edge 404 on repeat', 'got other');
+    }
+
+    // N4: coaching hardening + advisory-only wording.
+    if (convId) {
+      const review = await req('POST', `/api/coaching/${convId}/review`, { draft: 'We will fix this within 2 hours, guaranteed.' });
+      expect(review.status === 200, 'coaching review serves', `got ${review.status}`);
+      if (!String(review.json.note ?? '').includes('Advisory only')) finding('medium', 'coaching review must state it is advisory-only', String(review.json.note).slice(0, 200));
+      const checks = review.json.checks ?? [];
+      const kinds = checks.map((c) => c.kind);
+      for (const required of ['unanswered_customer_questions', 'duplicated_questions', 'unsupported_timeframe', 'missing_acknowledgment', 'excessive_wording', 'insufficient_detail', 'internal_information_leakage', 'wrong_customer_context', 'preference_mismatch']) {
+        expect(kinds.includes(required), `coaching check ${required} present`, 'missing');
+      }
+      for (const [body, label] of [
+        [{ draft: '' }, 'empty draft 422'],
+        [{ draft: 42 }, 'numeric draft 422'],
+        [{}, 'missing draft 422'],
+        [{ draft: 'x'.repeat(20001) }, 'oversized draft 422']
+      ]) {
+        const r = await req('POST', `/api/coaching/${convId}/review`, body);
+        expect(r.status === 422, `coaching hostile: ${label}`, `got ${r.status}`);
+      }
+      // Injection-shaped draft is reviewed AS DATA (deterministic checks run, no crash).
+      const injectDraft = await req('POST', `/api/coaching/${convId}/review`, { draft: "'; DROP TABLE coaching_reviews;-- <img src=x onerror=alert(1)>" });
+      expect(injectDraft.status === 200, 'injection-shaped draft reviewed as data', `got ${injectDraft.status}`);
+      expect((await req('GET', '/api/coaching/meta')).status === 200, 'coaching meta serves', 'down');
+      // AI layer with no LM Studio running: honest 200-with-error or 503, never a fake verdict.
+      const aiReview = await req('POST', `/api/coaching/${convId}/review`, { draft: 'The fix ships Friday for sure.', includeAi: true });
+      expect([200, 503].includes(aiReview.status), 'coaching AI-unavailable stays honest', `got ${aiReview.status}`);
+      if (aiReview.status === 200 && aiReview.json.ai?.available === true) {
+        finding('medium', 'coaching claims AI availability with no model running', JSON.stringify(aiReview.json.ai).slice(0, 200));
+      }
+    }
+
+    // N5: memory red-line + lifecycle.
+    const custList = await req('GET', '/api/customers?pageSize=5');
+    const customerId = (custList.json.customers ?? [])[0]?.id;
+    if (customerId) {
+      const profile = await req('GET', `/api/memory/${customerId}`);
+      expect(profile.status === 200, 'memory profile serves', `got ${profile.status}`);
+      const memNotes = (profile.json.notes ?? []).join(' ');
+      if (!memNotes.includes('never drift')) finding('medium', 'memory profile must disclose the read-time composition', memNotes.slice(0, 200));
+      const quarantine = await req('POST', `/api/memory/${customerId}/entries`, { key: 'Personality: difficult customer', value: 'pushy in tickets', kind: 'context' });
+      expect(quarantine.status === 422, 'red-line memory write refused 422', `got ${quarantine.status}`);
+      if (!String(quarantine.json.message ?? '').includes('policy')) finding('medium', 'quarantine refusal must cite the policy', String(quarantine.json.message).slice(0, 200));
+      for (const [body, label] of [
+        [{ key: '', value: 'x' }, 'empty key 422'],
+        [{ key: 'x', value: 42 }, 'numeric value 422'],
+        [{ key: 'x', kind: 'vibes' }, 'hostile kind 422'],
+        [{ key: 'x', value: null, conversation_id: -1 }, 'negative conversation id 422']
+      ]) {
+        const r = await req('POST', `/api/memory/${customerId}/entries`, body);
+        expect(r.status === 422, `memory hostile: ${label}`, `got ${r.status}`);
+      }
+      // Injection-shaped human memory stored as data; tables intact.
+      const key = "'; DROP TABLE customer_memories;-- <script>memory()</script>";
+      const created = await req('POST', `/api/memory/${customerId}/entries`, { key, value: 'ok', kind: 'fact' });
+      expect(created.status === 200, 'injection-shaped memory key stored as data', `got ${created.status}`);
+      const after = await req('GET', `/api/memory/${customerId}`);
+      expect(after.status === 200, 'customer_memories table survives injection-shaped keys', 'profile broken');
+      const humanSection = (after.json.sections ?? []).find((s) => s.section === 'human_entries');
+      expect((humanSection?.entries ?? []).some((e) => e.title === key), 'injection-shaped key readable verbatim', 'missing');
+      const entryId = created.json.entry_id;
+      expect((await req('DELETE', `/api/memory/${customerId}/entries/${entryId}`)).status === 200, 'human memory entry deleted', 'got other');
+      // AI memory rows are immutable (403, honest message).
+      const aiSection = (after.json.sections ?? []).find((s) => s.section === 'ai_entries');
+      const aiEntry = (aiSection?.entries ?? []).find((e) => e.entry_id != null);
+      if (aiEntry) {
+        const del = await req('DELETE', `/api/memory/${customerId}/entries/${aiEntry.entry_id}`);
+        expect(del.status === 403, 'AI memory immutable 403', `got ${del.status}`);
+        if (!String(del.json.message ?? '').includes('immutable')) finding('medium', 'AI memory refusal must say immutable', String(del.json.message).slice(0, 200));
+      }
+    }
+    expect((await req('GET', '/api/memory/999999')).status === 404, 'memory unknown customer 404', 'got other');
+    expect((await req('GET', '/api/memory/abc')).status === 422, 'memory hostile id 422', 'got other');
+
+    // N6: the three new Copilot tools.
+    const tools = await req('GET', '/api/copilot/tools');
+    const names = ((tools.json.tools ?? [])).map((t) => t.function?.name ?? t.name);
+    for (const required of ['get_graph_neighbors', 'get_graph_stats', 'get_customer_memory']) {
+      expect(names.includes(required), `copilot tool ${required} registered`, 'missing');
+    }
+    // Graph notes never claim graph-database magic.
+    const nb = await req('GET', `/api/graph/neighbors/conversation/${convId}`);
+    if (nb.status === 200) {
+      const nbNotes = (nb.json.notes ?? []).join(' ');
+      if (!nbNotes.includes('never drift')) finding('medium', 'graph neighbors must disclose read-time derivation', nbNotes.slice(0, 200));
+    }
+  }
+
   console.log('\n== I. rate limiting on mutations ==');
   let last429 = 0;
   for (let i = 0; i < 320; i++) {

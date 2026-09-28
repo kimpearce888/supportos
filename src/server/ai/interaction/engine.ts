@@ -481,9 +481,22 @@ export class InteractionEngine {
    * Lazy history backfill: materialize observations for any of the customer's
    * conversations that lack them (fresh v1.1.0 install over an existing database,
    * or partial coverage). Deterministic; skips conversations already recorded.
+   *
+   * v2.2.0 perf (plan Phase 41): guarded by two cheap COUNT queries first -
+   * previously EVERY card/profile GET paid the full customer-conversation
+   * load + a DISTINCT observations scan. The heavy path now runs only when
+   * the counts actually disagree (i.e. coverage is genuinely incomplete).
    */
   private ensureHistoryBackfill(customerId: number | null): void {
     if (customerId == null) return;
+    const convCount = (this.db
+      .prepare('SELECT COUNT(*) AS n FROM conversations WHERE customer_local_id = ? AND deleted_at IS NULL')
+      .get(customerId) as { n: number }).n;
+    if (convCount === 0) return;
+    const coveredCount = (this.db
+      .prepare('SELECT COUNT(DISTINCT conversation_id) AS n FROM client_behavior_observations WHERE customer_id = ? AND conversation_id IS NOT NULL')
+      .get(customerId) as { n: number }).n;
+    if (coveredCount >= convCount) return;
     const convs = this.repo.getCustomerConversations(customerId);
     if (!convs.length) return;
     const covered = new Set(

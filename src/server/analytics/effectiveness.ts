@@ -35,6 +35,17 @@ export class ResponseEffectivenessService {
     const clamped = Math.max(1, Math.min(3650, days));
     // Outcomes joined to their conversations (bounded to the window) and
     // the reply threads of each conversation for the characteristics pass.
+    // v2.2.0 perf (plan Phase 41): bounded to the 1000 MOST RECENT in-window
+    // conversations (was an unordered LIMIT 5000 + an IN(...) thread query
+    // over all of them); when the cap binds, the report says so.
+    const totalInWindow = (this.db
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM client_support_outcomes o JOIN conversations c ON c.id = o.conversation_id
+         WHERE c.deleted_at IS NULL AND o.response_style IS NOT NULL
+           AND COALESCE(julianday(c.remote_created_at), julianday(c.local_created_at)) >= julianday('now', ?)`
+      )
+      .get(`-${clamped} days`) as { n: number }).n;
     const outcomes = (this.db
       .prepare(
         `SELECT o.conversation_id, o.response_style, o.follow_up_count, o.clarification_count,
@@ -42,7 +53,8 @@ export class ResponseEffectivenessService {
          FROM client_support_outcomes o JOIN conversations c ON c.id = o.conversation_id
          WHERE c.deleted_at IS NULL AND o.response_style IS NOT NULL
            AND COALESCE(julianday(c.remote_created_at), julianday(c.local_created_at)) >= julianday('now', ?)
-         LIMIT 5000`
+         ORDER BY COALESCE(c.remote_created_at, c.local_created_at) DESC
+         LIMIT 1000`
       )
       .all(`-${clamped} days`) as {
       conversation_id: number; response_style: string; follow_up_count: number; clarification_count: number;
@@ -136,6 +148,9 @@ export class ResponseEffectivenessService {
       'Styles come from the deterministic classifier the interaction engine already stores; characteristics (documentation link, technical explanation) are text-shape detections, not mutually exclusive categories.',
       'Small buckets carry little information: treat any row under 5 conversations as anecdotal.'
     ];
+    if (totalInWindow > outcomes.length) {
+      notes.push(`Analysis bounded to the ${outcomes.length} most recent of ${totalInWindow} in-window conversations (v2.2.0 performance bound, plan Phase 41).`);
+    }
 
     return {
       generated_at: new Date().toISOString(),

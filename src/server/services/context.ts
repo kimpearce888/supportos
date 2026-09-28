@@ -66,6 +66,9 @@ import { TranslationService } from '../ai/translation.js';
 import { ResponseEffectivenessService } from '../analytics/effectiveness.js';
 import { ReportBuilderService } from '../analytics/reportBuilder.js';
 import { SegmentSuggestService } from '../ai/segmentSuggest.js';
+import { GraphService } from '../graph/graphService.js';
+import { CoachingService } from '../coaching/coachingService.js';
+import { CustomerMemoryService } from '../memory/customerMemoryService.js';
 
 /**
  * ApplicationContext: a modular monolith (spec #163) - one process, one SQLite
@@ -142,6 +145,10 @@ export class AppContext {
   effectiveness: ResponseEffectivenessService;
   reportBuilder: ReportBuilderService;
   segmentSuggest: SegmentSuggestService;
+  // v2.2.0 (M6): support graph, agent coaching, customer memory
+  graph: GraphService;
+  coaching: CoachingService;
+  customerMemory: CustomerMemoryService;
 
   constructor(opts: { dbPath?: string; demoMode?: boolean } = {}) {
     this.config = config;
@@ -243,6 +250,13 @@ export class AppContext {
     this.effectiveness = new ResponseEffectivenessService(this.db);
     this.reportBuilder = new ReportBuilderService(this.db);
     this.segmentSuggest = new SegmentSuggestService(this.db, (opts) => this.lmStudio.chat(opts));
+    // v2.2.0 (M6): the graph is a read-time relationship layer (only human
+    // edges persist); coaching is advisory-only with an injectable local
+    // chat fn; customer memory composes at read time from existing tables.
+    this.graph = new GraphService(this.db);
+    this.coaching = new CoachingService(this.db, (opts) => this.lmStudio.chat(opts));
+    this.customerMemory = new CustomerMemoryService(this.db);
+    this.graph.refreshProducts();
     this.automation = new AutomationEngine(this.db);
     this.knowledge = new KnowledgeIngestor(this.db);
     this.backup = new BackupService(this.db, getDatabasePath(), this.settingsRepo, this.config.backupsPath);

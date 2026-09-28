@@ -389,9 +389,10 @@ export class AnalyticsService {
         });
       }
     }
-    // Escalation-heavy
+    // Escalation-heavy (v2.2.0 perf: bounded to 1000 rows - the alert only
+    // needs a count check and a 10-id sample, plan Phase 41).
     const escalated = this.db
-      .prepare("SELECT c.id FROM conversations c JOIN conversation_tags ct ON ct.conversation_id = c.id JOIN tags t ON t.id = ct.tag_local_id WHERE t.name = 'escalated' AND c.deleted_at IS NULL AND julianday(c.remote_created_at) >= julianday('now', '-30 days')")
+      .prepare("SELECT c.id FROM conversations c JOIN conversation_tags ct ON ct.conversation_id = c.id JOIN tags t ON t.id = ct.tag_local_id WHERE t.name = 'escalated' AND c.deleted_at IS NULL AND julianday(c.remote_created_at) >= julianday('now', '-30 days') LIMIT 1000")
       .all() as { id: number }[];
     if (escalated.length >= 2) {
       alerts.push({
@@ -403,9 +404,11 @@ export class AnalyticsService {
         severity: 'warning'
       });
     }
-    // Rating-correlated clusters (correlation wording only)
+    // Rating-correlated clusters (correlation wording only). v2.2.0 perf:
+    // bounded to the 2000 most recent not-good ratings (plan Phase 41) -
+    // overlap detection only needs set membership against current clusters.
     const badRatings = this.db
-      .prepare("SELECT r.conversation_id FROM ratings r WHERE r.rating = 'not-good' AND r.conversation_id IS NOT NULL")
+      .prepare("SELECT r.conversation_id FROM ratings r WHERE r.rating = 'not-good' AND r.conversation_id IS NOT NULL ORDER BY r.id DESC LIMIT 2000")
       .all() as { conversation_id: number }[];
     if (badRatings.length > 0) {
       const badIds = new Set(badRatings.map((b) => b.conversation_id));

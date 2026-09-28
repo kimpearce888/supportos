@@ -115,14 +115,17 @@ export class InteractionRepository {
       .get(customerId) as { n: number }).n;
   }
 
-  /** Recency-weighted aggregation of observations per customer (spec #23, #41). */
+  /** Recency-weighted aggregation of observations per customer (spec #23, #41).
+   *  v2.2.0 perf (plan Phase 41): bounded to the 5000 most recent rows so a
+   *  pathological database cannot turn every profile build into a full scan. */
   getObservationsForCustomer(customerId: number): { dimension: string; value: string; confidence: string; evidence_excerpt: string | null; conversation_id: number | null; thread_local_id: number | null; observed_at: string; source: string }[] {
     return (this.db
       .prepare(
         `SELECT dimension, value, confidence, evidence_excerpt, conversation_id, thread_local_id, observed_at, source
            FROM client_behavior_observations
           WHERE customer_id = ?
-          ORDER BY observed_at DESC`
+          ORDER BY observed_at DESC
+          LIMIT 5000`
       )
       .all(customerId) as { dimension: string; value: string; confidence: string; evidence_excerpt: string | null; conversation_id: number | null; thread_local_id: number | null; observed_at: string; source: string }[]);
   }

@@ -26,6 +26,9 @@ import { registerCustomObjectRoutes } from './customObjects.js';
 import { registerConnectorRoutes } from './connectors.js';
 import { registerQualityRoutes } from './quality.js';
 import { registerTranslationRoutes } from './translation.js';
+import { registerGraphRoutes } from './graph.js';
+import { registerCoachingRoutes } from './coaching.js';
+import { registerMemoryRoutes } from './memory.js';
 
 export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   // All handlers receive ctx via route options - no globals needed for tests
@@ -56,6 +59,9 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
   await registerConnectorRoutes(app, ctx);
   await registerQualityRoutes(app, ctx);
   await registerTranslationRoutes(app, ctx);
+  await registerGraphRoutes(app, ctx);
+  await registerCoachingRoutes(app, ctx);
+  await registerMemoryRoutes(app, ctx);
 }
 
 declare module 'fastify' {

@@ -2,7 +2,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Routes, Route, NavLink, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard, Inbox, Search, Users, Building2, Bot, AlertTriangle, BookOpen, BookMarked,
-  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command, Megaphone, Bell, Activity, Flame, Boxes, Plug
+  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command, Megaphone, Bell, Activity, Flame, Boxes, Plug, Network
 } from 'lucide-react';
 import { useUiStore } from './state/uiStore.js';
 import { Toasts } from './components/common/overlays.js';
@@ -28,6 +28,7 @@ import { OperationsCenterPage } from './pages/OperationsCenter.js';
 import { IncidentsPage, IncidentDetailPage } from './pages/Incidents.js';
 import { CustomObjectsPage } from './pages/CustomObjects.js';
 import { ConnectorsPage } from './pages/Connectors.js';
+import { GraphExplorerPage } from './pages/GraphExplorer.js';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './api/client.js';
 import { useUnreadNotificationCount } from './api/hooks.js';
@@ -140,6 +141,7 @@ export function App(): ReactNode {
         <NavItem to="/docs" icon={<BookMarked />} label="Docs" />
         <NavItem to="/custom-objects" icon={<Boxes />} label="Objects" />
         <NavItem to="/connectors" icon={<Plug />} label="Connectors" />
+        <NavItem to="/graph" icon={<Network />} label="Graph" />
         <div className="nav-section">Operations</div>
         <NavItem to="/operations" icon={<Activity />} label="Operations" />
         <NavItem to="/reports" icon={<BarChart3 />} label="Reports" />
@@ -174,6 +176,7 @@ export function App(): ReactNode {
           <Route path="/incidents/:id" element={<IncidentDetailPage />} />
           <Route path="/custom-objects" element={<CustomObjectsPage />} />
           <Route path="/connectors" element={<ConnectorsPage />} />
+          <Route path="/graph" element={<GraphExplorerPage />} />
           <Route path="/knowledge" element={<KnowledgePage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/reports" element={<ReportsPage />} />

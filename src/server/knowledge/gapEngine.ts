@@ -168,10 +168,20 @@ export class KnowledgeGapService {
 
   /** Grouped report of all candidates. */
   report(): KnowledgeGapReport {
+    // v2.2.0 perf (plan Phase 41): bounded to the 500 most relevant rows;
+    // totals remain exact via dedicated COUNT queries.
     const rows = (this.db
-      .prepare('SELECT * FROM knowledge_candidates ORDER BY status, occurrence_count DESC, updated_at DESC')
+      .prepare(`SELECT * FROM knowledge_candidates
+                 ORDER BY CASE status WHEN 'candidate' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, occurrence_count DESC, updated_at DESC
+                 LIMIT 500`)
       .all() as CandidateRow[])
       .map((r) => this.mapRow(r));
+    const exactTotals = (this.db
+      .prepare(`SELECT
+        (SELECT COUNT(*) FROM knowledge_candidates WHERE status = 'candidate') AS candidates,
+        (SELECT COUNT(*) FROM knowledge_candidates WHERE status = 'approved') AS approved,
+        (SELECT COUNT(*) FROM knowledge_candidates WHERE status = 'rejected') AS rejected`)
+      .get() as { candidates: number; approved: number; rejected: number });
     const kinds = KNOWLEDGE_GAP_KINDS.map((kind) => ({
       kind,
       label: KNOWLEDGE_GAP_KIND_LABELS[kind],
@@ -181,9 +191,9 @@ export class KnowledgeGapService {
       generated_at: new Date().toISOString(),
       kinds,
       totals: {
-        candidates: rows.filter((r) => r.status === 'candidate').length,
-        approved: rows.filter((r) => r.status === 'approved').length,
-        rejected: rows.filter((r) => r.status === 'rejected').length
+        candidates: exactTotals.candidates,
+        approved: exactTotals.approved,
+        rejected: exactTotals.rejected
       },
       notes: [
         'Candidates are deterministic detections; a human decides. Approving marks the candidate only - nothing is published automatically.',
