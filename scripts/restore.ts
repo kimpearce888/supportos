@@ -1,4 +1,7 @@
 /** Restore the database from a backup. The application MUST be stopped. Usage: npm run db:restore -- backups/<file>.db */
+// v2.2.1 audit fix: load .env like the server so a customized DATABASE_PATH
+// restores into the database the app actually uses (not the default path).
+import 'dotenv/config';
 import { BackupService } from '../src/server/services/backupService.js';
 import fs from 'node:fs';
 

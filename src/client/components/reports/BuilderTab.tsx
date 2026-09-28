@@ -81,7 +81,14 @@ export function BuilderTab(): ReactNode {
 
   const metricEntry = catalog.metrics.find((m) => m.key === metric);
   const dimensionEntry = catalog.dimensions.find((d) => d.key === dimension);
-  const totalOnly = metricEntry?.needsAttribute === true || ['campaign_sent', 'campaign_replies', 'campaign_reply_rate', 'avg_state_hours', 'state_changes'].includes(metric);
+  // Metrics the server refuses to group (total-only) or that require a
+  // dedicated filter instead of a dimension. Mirrors METRIC_SPECS server-side.
+  const TOTAL_ONLY_KEYS = ['campaign_sent', 'campaign_replies', 'campaign_reply_rate', 'avg_state_hours', 'state_changes'];
+  const isTotalOnly = (key: string): boolean => {
+    const entry = catalog.metrics.find((m) => m.key === key);
+    return entry?.needsAttribute === true || TOTAL_ONLY_KEYS.includes(key);
+  };
+  const totalOnly = isTotalOnly(metric);
   const result = run.data;
 
   const fmtValue = (v: number): string => {
@@ -100,7 +107,16 @@ export function BuilderTab(): ReactNode {
         <div className="builder-grid">
           <label>
             <span>Metric</span>
-            <select value={metric} onChange={(e) => { setMetric(e.target.value); if (totalOnly && e.target.value !== metric) setDimension('none'); }}>
+            <select value={metric} onChange={(e) => {
+              const next = e.target.value;
+              setMetric(next);
+              // v2.2.1 audit fix: the reset used to key off the OLD metric's
+              // totalOnly flag, so switching TO a total-only metric kept the
+              // stale dimension - the disabled Group-by select then showed a
+              // value the server rejects on every Run. Reset based on the NEW
+              // metric instead.
+              if (isTotalOnly(next)) setDimension('none');
+            }}>
               {catalog.metrics.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
             </select>
           </label>

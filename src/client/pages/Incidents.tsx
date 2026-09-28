@@ -417,7 +417,9 @@ export function IncidentDetailPage(): ReactNode {
           {data.timeline.map((ev) => (
             <div key={ev.id} className="timeline-row">
               <span className="badge">{ev.event_type.replace(/_/g, ' ')}</span>
-              <span className="text-xs muted">{ev.occurred_at?.slice(0, 19).replace('T', ' ')}</span>
+              {/* v2.2.1 audit fix: raw UTC wall time (slice of the ISO string) was
+                  shown while every other timestamp renders in local time. */}
+              <RelativeTime iso={ev.occurred_at} />
               {ev.detail ? <span className="text-xs">{(() => { try { return Object.entries(JSON.parse(ev.detail) as Record<string, unknown>).slice(0, 2).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(' · '); } catch { return ''; } })()}</span> : null}
             </div>
           ))}

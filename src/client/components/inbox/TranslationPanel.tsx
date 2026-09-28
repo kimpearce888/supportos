@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '../../api/client.js';
-import { Spinner, EmptyState } from '../common/ui.js';
+import { Spinner } from '../common/ui.js';
 import { useUiStore } from '../../state/uiStore.js';
 import type { ConversationLanguageSummary, TranslationResult } from '../../../shared/translation.js';
 import { SUPPORTED_LANGUAGES } from '../../../shared/translation.js';
@@ -31,7 +31,11 @@ export function TranslationPanel({ conversationId }: { conversationId: number })
     mutationFn: (input: { text: string; purpose: 'customer_inbound' | 'agent_draft' }) =>
       api.post<TranslationResult>('/api/translation/translate', { text: input.text, from: 'auto', to: target, purpose: input.purpose }),
     onSuccess: (r) => {
-      if (activeMessage && r.purpose === 'customer_inbound') setActiveMessage({ ...activeMessage, translated: r });
+      // v2.2.1 audit fix: a slow earlier per-message request could attach ITS
+      // result to whichever message is currently active (click A, then quickly
+      // B -> A's translation lands on B). Only apply the result if the text
+      // being translated still matches the active message.
+      if (activeMessage && r.purpose === 'customer_inbound' && r.source_text === activeMessage.text) setActiveMessage({ ...activeMessage, translated: r });
       if (r.purpose === 'agent_draft') setTranslatedDraft(r);
       if (r.cached) pushToast({ kind: 'info', message: 'Served from the local translation cache.' });
     },

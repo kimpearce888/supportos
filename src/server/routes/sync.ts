@@ -320,4 +320,68 @@ export async function registerSyncRoutes(app: FastifyInstance, ctx: AppContext):
     ctx.jobsRepo.audit({ actor: 'user', action: 'helpscout_disconnected' });
     return { ok: true, message: 'Disconnected. Local data is fully preserved.' };
   });
+
+  // v2.2.1 audit fix (completing existing functionality): the Settings page's
+  // "Authorize via browser (OAuth code flow)" button and the stored oauth_state
+  // existed, but NOTHING consumed the callback - Help Scout redirected to
+  // /oauth/callback?code=..., the SPA fallback served the app, and the
+  // authorization code was silently discarded (the flow could never connect).
+  // This handler completes the advertised flow server-side (works in dev via
+  // the Vite /oauth proxy AND in packaged builds) and finally VERIFIES the
+  // single-use state parameter, closing the OAuth CSRF hole the dead path left.
+  app.get('/oauth/callback', async (request, reply) => {
+    const q = request.query as { code?: string; state?: string; error?: string; error_description?: string };
+    const fail = (message: string): void => {
+      reply.type('text/html').send(
+        `<!doctype html><html><head><meta charset="utf-8"><title>SupportOS - connection not completed</title>` +
+          `<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;color:#1f2933}h1{font-size:1.2rem}p{line-height:1.5;color:#52606d}</style></head>` +
+          `<body><h1>Help Scout connection not completed</h1><p>${message}</p>` +
+          `<p>Return to SupportOS Settings and try again, or use "Connect with Client Credentials".</p></body></html>`
+      );
+    };
+    if (!ctx.realProvider) {
+      fail('Demo mode is active - OAuth is not needed.');
+      return;
+    }
+    if (q.error) {
+      fail(`Help Scout returned an error: ${escapeHtml(String(q.error))}${q.error_description ? ` - ${escapeHtml(String(q.error_description))}` : ''}`);
+      return;
+    }
+    if (!q.code || !q.state) {
+      fail('The callback is missing its authorization code or state parameter.');
+      return;
+    }
+    const stateRow = ctx.db.prepare("SELECT value FROM application_settings WHERE key = 'oauth_state'").get() as { value: string } | undefined;
+    let stored: string | null = null;
+    try {
+      stored = stateRow ? (JSON.parse(stateRow.value) as string) : null;
+    } catch {
+      stored = null;
+    }
+    // Single-use: clear the stored state immediately after reading it.
+    ctx.db.prepare("DELETE FROM application_settings WHERE key = 'oauth_state'").run();
+    if (!stored || stored !== q.state) {
+      fail('The state parameter did not match the authorization request (it may have expired or been reused). For safety the code was not exchanged.');
+      return;
+    }
+    try {
+      const tokens = await ctx.realProvider.auth.exchangeCode(q.code);
+      ctx.realProvider.auth.saveTokens(tokens);
+      const me = await ctx.realProvider.getMe();
+      ctx.db.prepare("INSERT OR REPLACE INTO application_settings (key, value, updated_at) VALUES ('me_remote_id', ?, datetime('now'))").run(JSON.stringify(me.remoteId));
+      ctx.jobsRepo.audit({ actor: 'user', action: 'helpscout_connected', remote_operation: 'GET /oauth/callback (code exchange)' });
+      reply.type('text/html').send(
+        `<!doctype html><html><head><meta charset="utf-8"><title>SupportOS - connected</title>` +
+          `<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;color:#1f2933}h1{font-size:1.2rem}p{line-height:1.5;color:#52606d}</style></head>` +
+          `<body><h1>Connected to Help Scout</h1><p>Connected as ${escapeHtml(`${me.firstName} ${me.lastName}`.trim())}${me.email ? ` (${escapeHtml(me.email)})` : ''}.</p>` +
+          `<p>You can close this tab and return to SupportOS. Reload the Settings page to see the connection status.</p></body></html>`
+      );
+    } catch (e) {
+      fail(`Exchanging the authorization code failed: ${escapeHtml(e instanceof Error ? e.message : String(e))}`);
+    }
+  });
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

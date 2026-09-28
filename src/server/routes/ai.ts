@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify';
+import type { FastifyReply } from 'fastify';
 import type { AppContext } from '../services/context.js';
 import { LmStudioError } from '../integrations/lmstudio/lmStudioClient.js';
 import { z } from 'zod';
 import { clampListParam } from './helpers.js';
+import { isQuarantined } from '../../shared/memory.js';
 
 // v1.6.0 audit fix: these POST bodies used to be trusted as `{...}` casts, so
 // a missing body or wrong-typed fields crashed with 500s. They are proper zod
@@ -12,6 +14,18 @@ const rewriteSchema = z.object({ instruction: z.enum(['shorten', 'expand', 'warm
 const feedbackSchema = z.object({ action: z.enum(['accept', 'reject', 'edit']), finalText: z.string().optional() });
 const memorySchema = z.object({ key: z.string().min(1).max(200), value: z.string().max(5000) });
 const clusterSchema = z.object({ days: z.number().int().min(1).max(3650).optional() }).default({});
+
+/** Route params are strings: a non-integer id is a 422 client error, never a
+ *  provider-shaped 503 (v2.2.1 audit fix - `Number('abc')` is NaN and used to
+ *  surface as "Conversation not found" 503s). */
+function intParam(params: Record<string, string>, name: string, reply: FastifyReply): number | null {
+  const n = Number(params[name]);
+  if (!Number.isInteger(n) || n <= 0) {
+    reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: `${name} must be a positive integer.` });
+    return null;
+  }
+  return n;
+}
 
 export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const pipeline = () => ctx.aiPipeline;
@@ -38,7 +52,8 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
 
   // Trigger/refresh ticket analysis
   app.post('/api/ai/analyze/:conversationId', async (request, reply) => {
-    const conversationId = Number((request.params as { conversationId: string }).conversationId);
+    const conversationId = intParam(request.params as Record<string, string>, 'conversationId', reply);
+    if (conversationId == null) return;
     const body = (request.body ?? {}) as { force?: boolean };
     try {
       const result = await pipeline().analyzeTicket(conversationId, { force: body.force });
@@ -51,7 +66,8 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
 
   // Generate a customer-safe draft (+ verification)
   app.post('/api/ai/draft/:conversationId', async (request, reply) => {
-    const conversationId = Number((request.params as { conversationId: string }).conversationId);
+    const conversationId = intParam(request.params as Record<string, string>, 'conversationId', reply);
+    if (conversationId == null) return;
     const body = draftGenerateSchema.parse(request.body ?? {});
     try {
       const result = await pipeline().generateDraft(conversationId, { mode: body.mode ?? 'verified_answer', force: body.force });
@@ -119,14 +135,33 @@ export async function registerAiRoutes(app: FastifyInstance, ctx: AppContext): P
   });
 
   // Customer memories
-  app.get('/api/ai/memory/:customerId', async (request) => {
-    const customerId = Number((request.params as { customerId: string }).customerId);
-    return { memories: ctx.aiRepo.getMemories(customerId) };
+  app.get('/api/ai/memory/:customerId', async (request, reply) => {
+    const customerId = intParam(request.params as Record<string, string>, 'customerId', reply);
+    if (customerId == null) return;
+    // Red-line parity with the M6 memory routes: quarantined entries are never
+    // returned as usable memory through the legacy surface either.
+    return { memories: ctx.aiRepo.getMemories(customerId).filter((m) => !isQuarantined(m.key, m.value)) };
   });
-  app.post('/api/ai/memory/:customerId', async (request) => {
-    const customerId = Number((request.params as { customerId: string }).customerId);
+  app.post('/api/ai/memory/:customerId', async (request, reply) => {
+    const customerId = intParam(request.params as Record<string, string>, 'customerId', reply);
+    if (customerId == null) return;
     const body = memorySchema.parse(request.body ?? {});
-    ctx.aiRepo.upsertMemory(customerId, body.key, body.value, { source: 'human', origin: 'manual', confidence: 'high' });
+    // v2.2.1 audit fix: delegate to the memory service so this legacy surface
+    // enforces the same personality red-line refusal, customer-existence check
+    // (was a raw FK 500) and honest source labeling as /api/memory.
+    const result = ctx.customerMemory.upsertHumanEntry(customerId, { key: body.key, value: body.value, kind: 'fact', conversation_id: null });
+    if (!result.ok) {
+      if (result.code === 'quarantine') {
+        reply.code(422).send({
+          statusCode: 422,
+          error: 'ValidationError',
+          message: 'SupportOS policy: psychological/personality judgments are never stored as customer memory. Rephrase as an observable fact.'
+        });
+        return;
+      }
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Customer not found.' });
+      return;
+    }
     ctx.jobsRepo.audit({ actor: 'user', action: 'memory_added', ai_involvement: false });
     return { ok: true, message: 'Memory saved (human-entered).' };
   });

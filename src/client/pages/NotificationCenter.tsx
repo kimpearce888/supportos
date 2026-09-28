@@ -195,6 +195,20 @@ function NotificationRowView({ n, onToggleRead }: { n: NotificationRow; onToggle
 
 function MentionsQueue(): ReactNode {
   const { data, isLoading, isError, error } = useMentionQueue();
+  const pushToast = useUiStore((s) => s.pushToast);
+  const qc = useQueryClient();
+  // v2.2.1 audit fix: the mention rows rendered the same mark-read affordance
+  // as the main list but its handler was a literal no-op - the check button
+  // did nothing. It posts to the same endpoint the main list uses.
+  const markRead = useMutation({
+    mutationFn: (input: { id: number; read: boolean }) => api.post<{ unread: number }>(`/api/notifications/${input.id}/read`, { read: input.read }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['notifications'] });
+      void qc.invalidateQueries({ queryKey: ['notification-unread'] });
+      void qc.invalidateQueries({ queryKey: ['mention-queue'] });
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
   if (isLoading) return <Spinner label="Loading mentions" />;
   if (isError) return <ErrorState message="Could not load the mentions queue." detail={(error as Error | null)?.message} />;
   const noteMentions = data?.notifications ?? [];
@@ -210,7 +224,7 @@ function MentionsQueue(): ReactNode {
           <h3 className="card-title"><AtSign size={14} /> In internal notes</h3>
           <div className="notification-list">
             {noteMentions.map((n) => (
-              <NotificationRowView key={`n-${n.id}`} n={n} onToggleRead={() => undefined} />
+              <NotificationRowView key={`n-${n.id}`} n={n} onToggleRead={(read) => markRead.mutate({ id: n.id, read })} />
             ))}
           </div>
         </div>

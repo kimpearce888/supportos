@@ -166,6 +166,9 @@ export async function registerConnectorRoutes(app: FastifyInstance, ctx: AppCont
     if (problem) {
       return { ok: false, message: problem };
     }
-    return { ok: true, message: 'Configuration is valid and the source is reachable.' };
+    // v2.2.1 audit fix: honesty - validateConfig checks URL shape + DNS
+    // resolution (and file existence), it does NOT fetch the source. The old
+    // "source is reachable" wording claimed more than the check performs.
+    return { ok: true, message: 'Configuration is valid and the source host resolves. Full reachability is verified on the next refresh.' };
   });
 }

@@ -63,6 +63,30 @@ async function main(): Promise<void> {
     demo_mode: ctx.provider.kind === 'fake',
     frontend: hasClient
   });
+
+  // v2.2.1 audit fix: no signal handlers existed - Ctrl-C / service stop killed
+  // the process mid-tick, leaving worker timers running until exit and
+  // in-flight jobs marked 'running' (recoverable only by the NEXT restart's
+  // boot recovery). Stop the workers and close the server gracefully so the
+  // process exits on its own terms; interrupted jobs keep their existing
+  // crash-recovery semantics ("jobs survive restarts").
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`Received ${signal} - shutting down gracefully`, { service: 'shutdown', operation: 'signal', signal });
+    try {
+      ctx.workers.stop();
+    } catch {
+      /* never block shutdown */
+    }
+    void app
+      .close()
+      .catch(() => undefined)
+      .finally(() => process.exit(0));
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 main().catch((e) => {

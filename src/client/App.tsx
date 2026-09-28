@@ -187,7 +187,9 @@ export function App(): ReactNode {
           <Route path="/sync-health" element={<SyncHealthPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/onboarding" element={<OnboardingPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* v2.2.1 audit fix: unknown URLs used to redirect silently to the
+              dashboard. A proper 404 keeps typos and broken bookmarks honest. */}
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </div>
       <Toasts />
@@ -198,6 +200,20 @@ export function App(): ReactNode {
         <span><span className="kbd">/</span> quick search</span>
         <span><span className="kbd">g</span><span className="kbd">i</span> inbox</span>
         <span><span className="kbd">g</span><span className="kbd">d</span> dashboard</span>
+      </div>
+    </div>
+  );
+}
+
+/** v2.2.1 audit fix: honest 404 for unknown routes (was: silent redirect to
+ *  the dashboard, which hid typos and broken bookmarks). */
+function NotFoundPage(): ReactNode {
+  return (
+    <div className="page">
+      <div className="card" style={{ maxWidth: 520, margin: '48px auto', textAlign: 'center' }}>
+        <h1 className="page-title" style={{ fontSize: 40, margin: 0 }}>404</h1>
+        <p className="muted" style={{ margin: '8px 0 16px' }}>This page does not exist. The URL may be mistyped or outdated.</p>
+        <a className="btn primary" href="/">Back to the dashboard</a>
       </div>
     </div>
   );

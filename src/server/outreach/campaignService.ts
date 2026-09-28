@@ -326,11 +326,25 @@ export class CampaignService {
     const remaining = this.outreach.countRemaining(campaignId);
     if (remaining > 0) {
       this.jobsRepo.enqueue('outreach', 'outreach_send_batch', { campaignId }, 1, 5);
-    } else if (stillUnknown === 0 && resolvedSent >= 0) {
+    } else {
+      // v2.2.1 audit fix: the guard used to be `stillUnknown === 0 && resolvedSent >= 0`
+      // - the second clause is a tautology (resolvedSent starts at 0), so a
+      // campaign whose unknown-outcome recipients exhausted their attempts (or
+      // hit per-recipient reconcile errors) was never marked completed and
+      // stayed 'sending' forever. With nothing left to send or reconcile, the
+      // campaign is terminal regardless of unknown outcomes; the completion
+      // event discloses them instead of hiding the state.
       const campaign = this.outreach.getCampaign(campaignId);
       if (campaign && campaign.status !== 'completed' && campaign.status !== 'cancelled' && campaign.status !== 'paused') {
         this.outreach.updateCampaignStatus(campaignId, 'completed');
-        this.outreach.logEvent(campaignId, null, 'campaign_completed', `${campaign.sent} sent, ${campaign.failed} failed, ${campaign.skipped} skipped`);
+        this.outreach.logEvent(
+          campaignId,
+          null,
+          'campaign_completed',
+          stillUnknown > 0
+            ? `${campaign.sent} sent, ${campaign.failed} failed, ${campaign.skipped} skipped, ${stillUnknown} recipients left with unknown delivery outcomes (attempts exhausted)`
+            : `${campaign.sent} sent, ${campaign.failed} failed, ${campaign.skipped} skipped`
+        );
       }
     }
     this.emitProgress(campaignId);

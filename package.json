@@ -1,6 +1,6 @@
 {
   "name": "supportos",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "SupportOS - local-first AI-powered support operating system for Help Scout",
   "type": "module",
   "private": true,
@@ -19,8 +19,8 @@
     "test:integration": "vitest run --project integration",
     "test:e2e": "vitest run --project e2e",
     "test:all": "vitest run",
-    "lint": "eslint \"src/**/*.{ts,tsx}\" \"tests/**/*.ts\"",
-    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"tests/**/*.ts\" \"vitest.config.ts\" \"vite.config.ts\"",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.config.json --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:backup": "tsx scripts/backup.ts",
     "db:restore": "tsx scripts/restore.ts",

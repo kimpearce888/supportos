@@ -25,7 +25,19 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, ctx: AppCont
       reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Document not found.' });
       return;
     }
-    const relatedTickets = ctx.search.searchKnowledge(doc.title).length;
+    // v2.2.1 audit fix: this used to be a knowledge-base FTS hit count for the
+    // document's own title (a DOCUMENT count that included self-matches) - not
+    // tickets. The honest number for a "related tickets" estimate is the
+    // distinct conversations whose AI analysis actually cited this document.
+    const relatedTickets = (
+      ctx.db
+        .prepare(
+          `SELECT COUNT(DISTINCT r.conversation_id) AS n
+             FROM ai_sources s JOIN ai_runs r ON r.id = s.run_id
+            WHERE s.source_type = 'knowledge_document' AND s.source_id = ? AND r.conversation_id IS NOT NULL`
+        )
+        .get(id) as { n: number }
+    ).n;
     return {
       document: doc,
       related_ticket_estimate: relatedTickets,

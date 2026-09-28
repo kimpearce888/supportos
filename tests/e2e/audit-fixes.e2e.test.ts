@@ -9,7 +9,7 @@ import type { FastifyInstance } from 'fastify';
 // PORT must be set BEFORE the config module evaluates (it reads env at import
 // time, exactly like production startup) so the CORS allowlist includes this port.
 vi.hoisted(() => {
-  process.env.PORT = '3113';
+  process.env.PORT = '3127'; // v2.2.1 audit fix: was 3113 - collided with realtime_docs.e2e when files ran in parallel
 });
 
 /**
@@ -28,8 +28,8 @@ beforeAll(async () => {
   process.env.LOCAL_DEMO_MODE = 'true';
   const ctx = getContext({ dbPath: path.join(tmpDir, 'audit.db'), demoMode: true, fresh: true });
   app = await buildApp(ctx);
-  await app.listen({ port: 3113, host: '127.0.0.1' });
-  baseUrl = 'http://127.0.0.1:3113';
+  await app.listen({ port: 3127, host: '127.0.0.1' });
+  baseUrl = 'http://127.0.0.1:3127';
   await ctx.coordinator.initialSync();
   ctx.workers.start();
   const list = (await (await fetch(`${baseUrl}/api/conversations`)).json()) as { conversations: { id: number }[] };
@@ -73,12 +73,15 @@ describe('audit fixes (v1.2.0): HTTP hardening', () => {
   });
 
   it('CORS allows the configured custom port origin (audit: hardcoded 3000/5173 broke custom PORTs)', async () => {
+    // v2.2.1: the suite now runs on port 3127 (was 3113, which collided with
+    // realtime_docs.e2e under file parallelism); the CORS allowlist is derived
+    // from the CONFIGURED port, so the probed origin follows it.
     const res = await fetch(`${baseUrl}/api/conversations`, {
       method: 'OPTIONS',
-      headers: { Origin: 'http://localhost:3113', 'Access-Control-Request-Method': 'POST' }
+      headers: { Origin: 'http://localhost:3127', 'Access-Control-Request-Method': 'POST' }
     });
     expect(res.status).toBeLessThan(500);
-    expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:3113');
+    expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:3127');
   });
 
   it('CORS cleanly denies foreign origins without an error (audit: 500 instead of deny)', async () => {

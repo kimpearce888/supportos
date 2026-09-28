@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react';
-import { AlertTriangle, Inbox, Search, BookOpen, Bot, Sparkles, Megaphone, Shield, Users } from 'lucide-react';
+import { AlertTriangle, Inbox, Search, BookOpen, Bot, Sparkles, Megaphone, Shield, Users, Clock, Flame, Boxes, Plug, Bell, AtSign, MessageSquare } from 'lucide-react';
 
 export function Spinner({ label }: { label?: string }): ReactNode {
   return (
@@ -21,7 +21,19 @@ export function EmptyState({ icon, title, hint, action }: { icon?: string; title
     // states but missing from the map - the icons silently rendered as nothing.
     megaphone: <Megaphone />,
     shield: <Shield />,
-    users: <Users />
+    users: <Users />,
+    // v2.2.1 audit fix: same class of bug - bot/clock/flame/boxes/plug/bell/
+    // at/messages were referenced by AiCenter, Knowledge, WorkspaceSections,
+    // Incidents, CustomObjects, Connectors, NotificationCenter and SideThreads
+    // but were never in the map, so those empty states rendered without icons.
+    bot: <Bot />,
+    clock: <Clock />,
+    flame: <Flame />,
+    boxes: <Boxes />,
+    plug: <Plug />,
+    bell: <Bell />,
+    at: <AtSign />,
+    messages: <MessageSquare />
   };
   return (
     <div className="empty-state">

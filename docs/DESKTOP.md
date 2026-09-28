@@ -80,4 +80,4 @@ curl http://127.0.0.1:8791/health        # → {"status":"ok",...}
 curl -N http://127.0.0.1:8791/api/events # → SSE hello frame
 ```
 
-This is the same verification CI performs implicitly on every release: if health, the SPA, the docs API and the SSE stream respond on the bundled runtime, the package is sound.
+This mirrors the health/SPA/docs/SSE probes CI runs against the plain `dist/server` build on every push; the tag-triggered desktop workflow assembles and builds the installers from the same artifacts (the bundled-runtime boot probe above is the manual verification recipe for a finished package).

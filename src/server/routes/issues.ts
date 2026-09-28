@@ -63,13 +63,25 @@ export async function registerIssueRoutes(app: FastifyInstance, ctx: AppContext)
   });
 
   app.patch('/api/issues/known/:id', async (request) => {
-    const raw = (request.body ?? {}) as Record<string, unknown>;
+    // v2.2.1 audit fix: this route used a loose cast + String(v) coercion, so
+    // {"status": 123} was stored as "123" and the closed status vocabulary
+    // could be silently corrupted. Same zod schema family as POST, partial.
+    const body = z
+      .object({
+        title: z.string().min(1).max(300).optional(),
+        symptoms: z.string().max(5000).optional(),
+        product: z.string().max(200).nullable().optional(),
+        feature: z.string().max(200).nullable().optional(),
+        known_cause: z.string().max(10000).nullable().optional(),
+        workaround: z.string().max(10000).nullable().optional(),
+        customer_safe_explanation: z.string().max(10000).nullable().optional(),
+        internal_explanation: z.string().max(20000).nullable().optional(),
+        status: z.enum(['open', 'investigating', 'identified', 'monitoring', 'resolved']).optional()
+      })
+      .parse(request.body ?? {});
     const patch: Partial<{ title: string; symptoms: string; product: string | null; feature: string | null; known_cause: string | null; workaround: string | null; customer_safe_explanation: string | null; internal_explanation: string | null; status: string }> = {};
-    for (const key of ['title', 'symptoms', 'product', 'feature', 'known_cause', 'workaround', 'customer_safe_explanation', 'internal_explanation', 'status']) {
-      if (key in raw) {
-        const v = raw[key];
-        (patch as Record<string, unknown>)[key] = typeof v === 'string' ? v : v == null ? null : String(v);
-      }
+    for (const [key, v] of Object.entries(body)) {
+      if (v !== undefined) (patch as Record<string, unknown>)[key] = v;
     }
     ctx.issueRepo.updateKnownIssue(Number((request.params as { id: string }).id), patch);
     ctx.jobsRepo.audit({ actor: 'user', action: 'known_issue_updated', before_state: { id: Number((request.params as { id: string }).id) } });

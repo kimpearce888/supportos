@@ -21,3 +21,4 @@ See `docs/ARCHITECTURE.md` for the full model.
 | Version | Supported |
 |---------|-----------|
 | 1.x     | yes       |
+| 2.x     | yes       |

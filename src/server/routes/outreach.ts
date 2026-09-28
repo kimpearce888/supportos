@@ -230,7 +230,13 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
       return;
     }
 
-    const preview = ctx.segmentEngine.preview(tree, 1, 100000);
+    // v2.2.1 audit fix (performance): this used to evaluate a page of 100,000
+    // matched customers in one request - buildRows runs ~6-10 queries per
+    // customer, so a large segment froze the request (and the single-threaded
+    // local UI). The snapshot is bounded now (same guard class as the v2.2.0
+    // performance work); truncation is disclosed in the response, never silent.
+    const SNAPSHOT_LIMIT = 5000;
+    const preview = ctx.segmentEngine.preview(tree, 1, SNAPSHOT_LIMIT);
     const selectedIds = Array.isArray(body.customer_ids) && body.customer_ids.length > 0 ? body.customer_ids.map(Number).filter(Number.isInteger) : preview.rows.map((r) => r.customer_local_id);
     const selectedSet = new Set(selectedIds);
     const rows = preview.rows.filter((r) => selectedSet.has(r.customer_local_id));
@@ -238,6 +244,8 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
       reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: 'No recipients selected.' });
       return;
     }
+    const snapshotRowIds = new Set(preview.rows.map((r) => r.customer_local_id));
+    const droppedSelected = selectedIds.filter((id) => !snapshotRowIds.has(id)).length;
     const campaignId = ctx.outreachRepo.createCampaign({
       name: body.name.trim(),
       subject: body.subject,
@@ -256,7 +264,15 @@ export async function registerOutreachRoutes(app: FastifyInstance, ctx: AppConte
       }))
     });
     ctx.jobsRepo.audit({ actor: 'user', action: 'campaign_created', after_state: { id: campaignId, name: body.name, recipients: rows.length } });
-    return { ok: true, id: campaignId, recipients: rows.length, message: `Campaign created with ${rows.length} recipients. Recipients are a static snapshot - later segment changes will not alter this campaign.` };
+    const truncated = preview.matched > preview.rows.length || droppedSelected > 0;
+    return {
+      ok: true,
+      id: campaignId,
+      recipients: rows.length,
+      message: truncated
+        ? `Campaign created with ${rows.length} recipients (segment matched ${preview.matched}; the recipient snapshot is capped at ${SNAPSHOT_LIMIT}${droppedSelected > 0 ? `, ${droppedSelected} explicitly-selected customer(s) beyond the cap were not included` : ''}). Recipients are a static snapshot - later segment changes will not alter this campaign.`
+        : `Campaign created with ${rows.length} recipients. Recipients are a static snapshot - later segment changes will not alter this campaign.`
+    };
   });
 
   app.get('/api/outreach/campaigns', async () => ({ campaigns: ctx.outreachRepo.listCampaigns() }));

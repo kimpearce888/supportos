@@ -135,6 +135,14 @@ export const MEMORY_QUARANTINE_PATTERNS: RegExp[] = [
   /\bIQ\b/
 ];
 
+/** True when the key or value matches the quarantine red-line patterns.
+ *  Shared by the memory service, the M6 memory routes and the legacy
+ *  /api/ai/memory surface so every read/write path applies the SAME rule. */
+export function isQuarantined(key: string, value: string | null): boolean {
+  const text = value == null ? key : `${key} ${value}`;
+  return MEMORY_QUARANTINE_PATTERNS.some((re) => re.test(key) || re.test(text));
+}
+
 /** Freshness thresholds (days since last_seen_at; honest unknown when null). */
 export const MEMORY_FRESH_DAYS = 90;
 export const MEMORY_AGING_DAYS = 270;

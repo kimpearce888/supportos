@@ -1,7 +1,7 @@
 import type { DB } from '../database/connection.js';
 import {
   MEMORY_ENTRY_KINDS, MEMORY_SECTION_LABELS, MEMORY_SECTIONS,
-  MEMORY_QUARANTINE_PATTERNS, MEMORY_FRESH_DAYS, MEMORY_AGING_DAYS,
+  MEMORY_FRESH_DAYS, MEMORY_AGING_DAYS, isQuarantined,
   type CustomerMemoryProfile, type MemoryEntry, type MemoryEvidence, type MemoryFreshness, type MemoryQuarantinedEntry, type MemoryEntryKind
 } from '../../shared/memory.js';
 
@@ -34,10 +34,9 @@ function freshnessFrom(lastSeen: string | null): MemoryFreshness {
   return 'stale';
 }
 
-function isQuarantined(key: string, value: string | null): boolean {
-  const text = value == null ? key : `${key} ${value}`;
-  return MEMORY_QUARANTINE_PATTERNS.some((re) => re.test(key) || re.test(text));
-}
+// isQuarantined now lives in shared/memory.js - one implementation shared by
+// the memory service, the M6 /api/memory routes and the legacy /api/ai/memory
+// surface, so every read/write path applies the SAME red line.
 
 export class CustomerMemoryService {
   constructor(private db: DB) {}

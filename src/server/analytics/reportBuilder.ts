@@ -59,7 +59,14 @@ function attributeUnknownExpr(): string {
 const METRIC_SPECS: Record<string, MetricSpec> = {
   conversations: { anchor: 'conversations', from: 'conversations c', dateExpr: 'c.remote_created_at', valueExpr: 'COUNT(*)' },
   unique_customers: { anchor: 'conversations', from: 'conversations c', dateExpr: 'c.remote_created_at', valueExpr: 'COUNT(DISTINCT c.customer_local_id)' },
-  organizations: { anchor: 'conversations', from: 'conversations c', dateExpr: 'c.remote_created_at', valueExpr: 'COUNT(DISTINCT c.organization_id)' },
+  organizations: {
+    anchor: 'conversations',
+    from: 'conversations c',
+    dateExpr: 'c.remote_created_at',
+    // organizations live on customers, not conversations: resolve through the
+    // conversation's customer so DISTINCT counts distinct customer orgs.
+    valueExpr: 'COUNT(DISTINCT (SELECT cu.organization_id FROM customers cu WHERE cu.id = c.customer_local_id))'
+  },
   first_responses: { anchor: 'conversations', from: 'conversations c', dateExpr: 'c.first_response_at', valueExpr: 'COUNT(*)', extraWhere: ['c.first_response_at IS NOT NULL'] },
   agent_replies: { anchor: 'threads', from: 'threads t JOIN conversations c ON c.id = t.conversation_id', dateExpr: 't.remote_created_at', valueExpr: 'COUNT(*)', extraWhere: ["t.type = 'reply'", "t.deleted_at IS NULL", "t.state = 'published'"] },
   customer_replies: { anchor: 'threads', from: 'threads t JOIN conversations c ON c.id = t.conversation_id', dateExpr: 't.remote_created_at', valueExpr: 'COUNT(*)', extraWhere: ["t.type = 'customer'", 't.deleted_at IS NULL', "t.state = 'published'"] },
@@ -311,48 +318,19 @@ export class ReportBuilderService {
     const conversationAnchored = spec.anchor === 'conversations' || spec.anchor === 'threads' || spec.anchor === 'outcomes';
     const f = config.filters ?? {};
     if (conversationAnchored && spec.anchor !== 'outcomes') {
-      if (Array.isArray(f.mailboxLocalIds) && f.mailboxLocalIds.length > 0) {
-        where.push(`c.mailbox_local_id IN (${f.mailboxLocalIds.map(() => '?').join(',')})`);
-        params.push(...f.mailboxLocalIds.filter((n) => Number.isInteger(n) && n > 0));
-      }
-      if (typeof f.channel === 'string' && f.channel.trim() !== '') {
-        where.push(`LOWER(COALESCE(c.source_type, '')) = LOWER(?)`);
-        params.push(f.channel.trim());
-      }
-      if (Array.isArray(f.tagsAny) && f.tagsAny.filter(Boolean).length > 0) {
-        const tags = f.tagsAny.filter(Boolean);
-        where.push(`EXISTS (SELECT 1 FROM conversation_tags ct2 JOIN tags tg2 ON tg2.id = ct2.tag_local_id WHERE ct2.conversation_id = c.id AND LOWER(tg2.name) IN (${tags.map(() => '?').join(',')}))`);
-        params.push(...tags.map((t) => t.toLowerCase()));
-      }
-      if (Array.isArray(f.tagsNone) && f.tagsNone.filter(Boolean).length > 0) {
-        const tags = f.tagsNone.filter(Boolean);
-        where.push(`NOT EXISTS (SELECT 1 FROM conversation_tags ct2 JOIN tags tg2 ON tg2.id = ct2.tag_local_id WHERE ct2.conversation_id = c.id AND LOWER(tg2.name) IN (${tags.map(() => '?').join(',')}))`);
-        params.push(...tags.map((t) => t.toLowerCase()));
-      }
-      if (Array.isArray(f.statuses) && f.statuses.filter(Boolean).length > 0) {
-        where.push(`c.status IN (${f.statuses.map(() => '?').join(',')})`);
-        params.push(...f.statuses.filter(Boolean));
-      }
-      if (Array.isArray(f.assigneeLocalIds) && f.assigneeLocalIds.length > 0) {
-        where.push(`c.assignee_local_id IN (${f.assigneeLocalIds.map(() => '?').join(',')})`);
-        params.push(...f.assigneeLocalIds.filter((n) => Number.isInteger(n)));
-      }
-      if (f.minPriority && PRIORITY_RANK[f.minPriority] != null) {
-        where.push(`CASE c.supportos_priority WHEN 'low' THEN 1 WHEN 'normal' THEN 2 WHEN 'high' THEN 3 WHEN 'urgent' THEN 4 ELSE 0 END >= ?`);
-        params.push(PRIORITY_RANK[f.minPriority]);
-      }
+      this.applyConversationFilters(f, where, params);
     }
 
     // NOTE: sample conversations are fetched with a separate bounded query
     // per row (cleaner than contorting the aggregate query).
     const sql = `
-      SELECT ${dimExpr} AS dv, ${valueExpr} AS v
+      SELECT ${dimExpr} AS dv, ${groupExpr} AS gk, ${valueExpr} AS v
       FROM ${spec.from}
       ${joins.join(' ')}
       WHERE ${where.join(' AND ')}
       GROUP BY ${groupExpr}
     `;
-    const raw = this.db.prepare(safeSql(sql)).all(...params.filter((p) => p !== undefined)) as { dv: string; v: number | null }[];
+    const raw = this.db.prepare(safeSql(sql)).all(...params.filter((p) => p !== undefined)) as { dv: string; gk: unknown; v: number | null }[];
     let rows: ReportRow[] = raw.map((r) => ({
       dimension_value: String(r.dv),
       dimension_label: dimSpec.label ? dimSpec.label(String(r.dv)) : String(r.dv),
@@ -360,13 +338,16 @@ export class ReportBuilderService {
       sample_conversation_ids: []
     }));
 
-    // Sample conversations for count metrics (bounded to 3 per row).
+    // Sample conversations for count metrics (bounded to 3 per row). Samples
+    // bind the RAW group key (gk) - the groupBy expression's own value - never
+    // the display label (mailbox/assignee/team/state/issue labels would never
+    // match their id columns).
     if (conversationAnchored && spec.valueExpr === 'COUNT(*)' && config.dimension !== 'none') {
-      for (const row of rows.slice(0, 20)) {
-        row.sample_conversation_ids = this.sampleConversations(config, spec, dimSpec, row.dimension_value);
-      }
+      rows.slice(0, 20).forEach((row, i) => {
+        row.sample_conversation_ids = this.sampleConversations(config, spec, dimSpec, raw[i]?.gk);
+      });
     } else if (conversationAnchored && spec.valueExpr === 'COUNT(*)') {
-      rows = rows.map((row) => ({ ...row, sample_conversation_ids: this.sampleConversations(config, spec, dimSpec, null) }));
+      rows = rows.map((row) => ({ ...row, sample_conversation_ids: this.sampleConversations(config, spec, dimSpec, undefined) }));
     }
 
     const limit = config.limit == null ? 50 : Math.max(1, Math.min(200, Math.trunc(config.limit)));
@@ -383,7 +364,55 @@ export class ReportBuilderService {
     return rows.slice(0, limit);
   }
 
-  private sampleConversations(config: ReportConfig, spec: MetricSpec, dimSpec: DimensionSpec, dimensionValue: string | null): number[] {
+  /**
+   * Shared conversation-level filters - applied identically by the aggregate
+   * query and the sample-conversation query so samples always respect the
+   * same filters as the numbers they illustrate. Arrays are filtered FIRST so
+   * placeholder count always equals the number of bound params.
+   */
+  private applyConversationFilters(f: NonNullable<ReportConfig['filters']>, where: string[], params: unknown[]): void {
+    if (Array.isArray(f.mailboxLocalIds) && f.mailboxLocalIds.length > 0) {
+      const ids = f.mailboxLocalIds.filter((n) => Number.isInteger(n) && n > 0);
+      if (ids.length > 0) {
+        where.push(`c.mailbox_local_id IN (${ids.map(() => '?').join(',')})`);
+        params.push(...ids);
+      }
+    }
+    if (typeof f.channel === 'string' && f.channel.trim() !== '') {
+      where.push(`LOWER(COALESCE(c.source_type, '')) = LOWER(?)`);
+      params.push(f.channel.trim());
+    }
+    if (Array.isArray(f.tagsAny) && f.tagsAny.filter(Boolean).length > 0) {
+      const tags = f.tagsAny.filter(Boolean);
+      where.push(`EXISTS (SELECT 1 FROM conversation_tags ct2 JOIN tags tg2 ON tg2.id = ct2.tag_local_id WHERE ct2.conversation_id = c.id AND LOWER(tg2.name) IN (${tags.map(() => '?').join(',')}))`);
+      params.push(...tags.map((t) => t.toLowerCase()));
+    }
+    if (Array.isArray(f.tagsNone) && f.tagsNone.filter(Boolean).length > 0) {
+      const tags = f.tagsNone.filter(Boolean);
+      where.push(`NOT EXISTS (SELECT 1 FROM conversation_tags ct2 JOIN tags tg2 ON tg2.id = ct2.tag_local_id WHERE ct2.conversation_id = c.id AND LOWER(tg2.name) IN (${tags.map(() => '?').join(',')}))`);
+      params.push(...tags.map((t) => t.toLowerCase()));
+    }
+    if (Array.isArray(f.statuses) && f.statuses.length > 0) {
+      const statuses = f.statuses.filter(Boolean);
+      if (statuses.length > 0) {
+        where.push(`c.status IN (${statuses.map(() => '?').join(',')})`);
+        params.push(...statuses);
+      }
+    }
+    if (Array.isArray(f.assigneeLocalIds) && f.assigneeLocalIds.length > 0) {
+      const ids = f.assigneeLocalIds.filter((n) => Number.isInteger(n));
+      if (ids.length > 0) {
+        where.push(`c.assignee_local_id IN (${ids.map(() => '?').join(',')})`);
+        params.push(...ids);
+      }
+    }
+    if (f.minPriority && PRIORITY_RANK[f.minPriority] != null) {
+      where.push(`CASE c.supportos_priority WHEN 'low' THEN 1 WHEN 'normal' THEN 2 WHEN 'high' THEN 3 WHEN 'urgent' THEN 4 ELSE 0 END >= ?`);
+      params.push(PRIORITY_RANK[f.minPriority]);
+    }
+  }
+
+  private sampleConversations(config: ReportConfig, spec: MetricSpec, dimSpec: DimensionSpec, groupKey: unknown): number[] {
     const params: unknown[] = [config.dateFrom, config.dateTo];
     const where: string[] = [
       `COALESCE(julianday(${spec.dateExpr}), julianday('2000-01-01')) >= julianday(?)`,
@@ -394,13 +423,17 @@ export class ReportBuilderService {
       where.push(w);
     }
     const f = config.filters ?? {};
-    if (Array.isArray(f.mailboxLocalIds) && f.mailboxLocalIds.length > 0) {
-      where.push(`c.mailbox_local_id IN (${f.mailboxLocalIds.map(() => '?').join(',')})`);
-      params.push(...f.mailboxLocalIds.filter((n) => Number.isInteger(n) && n > 0));
-    }
-    if (dimensionValue != null) {
-      where.push(`${dimSpec.groupBy.replace(/\{DATE\}/g, spec.dateExpr)} = ?`);
-      params.push(dimSpec.expr.startsWith('strftime') ? dimensionValue : dimensionValue);
+    this.applyConversationFilters(f, where, params);
+    if (groupKey !== undefined) {
+      const gkExpr = dimSpec.groupBy.replace(/\{DATE\}/g, spec.dateExpr);
+      if (groupKey === null) {
+        // A NULL group key ('(unassigned)', '(no mailbox)'...) matches IS NULL,
+        // never '= value'.
+        where.push(`${gkExpr} IS NULL`);
+      } else {
+        where.push(`${gkExpr} = ?`);
+        params.push(groupKey);
+      }
     }
     const joins = (dimSpec.joins ?? []).join(' ');
     try {

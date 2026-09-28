@@ -36,6 +36,11 @@ export function OutreachPage(): ReactNode {
   const [wizardStep, setWizardStep] = useState<WizardStep>('audience');
   const [definition, setDefinition] = useState<SegmentDefinition>(EMPTY_DEF);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [loadingRecipients, setLoadingRecipients] = useState(false);
+  // v2.2.1 audit fix: ALL loaded recipient rows (every page), not just the
+  // preview's page 1 - the recipients step and its Select all / Invert
+  // controls must operate on the same set the campaign will snapshot.
+  const [recipientRows, setRecipientRows] = useState<SegmentPreviewResult['rows']>([]);
   const [savedSegmentId, setSavedSegmentId] = useState<number | null>(null);
   const [draft, setDraft] = useState({ name: '', subject: '', body: '', mailbox_local_id: 0, tags: '' });
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
@@ -91,8 +96,38 @@ export function OutreachPage(): ReactNode {
   });
 
   const goRecipients = (): void => {
-    setSelectedIds((preview?.rows ?? []).filter((r) => !r.excluded && r.chosen_email).map((r) => r.customer_local_id));
-    setWizardStep('recipients');
+    // v2.2.1 audit fix: the audience-step button advertises preview.matched
+    // recipients, but the preview query only fetched page 1 (100 rows) - with
+    // more matches, recipients 101+ were silently unreachable and silently
+    // excluded from the campaign. Load every remaining page (bounded to the
+    // server's 5000-recipient campaign snapshot cap) before selecting, with a
+    // visible busy state and an honest warning if any page fails.
+    const rows: SegmentPreviewResult['rows'] = [...(preview?.rows ?? [])];
+    const matched = preview?.matched ?? 0;
+    const loadAll = async (): Promise<void> => {
+      setLoadingRecipients(true);
+      try {
+        if (preview && matched > rows.length) {
+          const pages = Math.ceil(Math.min(matched, 5000) / 100);
+          for (let p = 2; p <= pages; p++) {
+            const next = await api.post<SegmentPreviewResult & { page: number }>('/api/outreach/segments/preview', { ...debouncedDefinition, page: p, pageSize: 100 });
+            if (next.rows.length === 0) break;
+            rows.push(...next.rows);
+          }
+        }
+        if (rows.length < matched) {
+          pushToast({ kind: 'warning', message: `Loaded ${rows.length} of ${matched} matching recipients (the rest failed to load) - continue only if that is intended.` });
+        }
+        setSelectedIds(rows.filter((r) => !r.excluded && r.chosen_email).map((r) => r.customer_local_id));
+        setRecipientRows(rows);
+        setWizardStep('recipients');
+      } catch (e) {
+        pushToast({ kind: 'error', message: e instanceof Error ? e.message : 'Could not load all matching recipients.' });
+      } finally {
+        setLoadingRecipients(false);
+      }
+    };
+    void loadAll();
   };
 
   return (
@@ -142,12 +177,13 @@ export function OutreachPage(): ReactNode {
               savedSegmentId={savedSegmentId}
               setSavedSegmentId={setSavedSegmentId}
               onNext={goRecipients}
+              loadingRecipients={loadingRecipients}
             />
           ) : null}
 
           {wizardStep === 'recipients' ? (
             <RecipientsStep
-              preview={preview}
+              rows={recipientRows}
               selectedIds={selectedIds}
               setSelectedIds={setSelectedIds}
               onBack={(): void => setWizardStep('audience')}
@@ -205,7 +241,8 @@ function AudienceStep({
   segments,
   savedSegmentId,
   setSavedSegmentId,
-  onNext
+  onNext,
+  loadingRecipients
 }: {
   meta: OutreachMeta | undefined;
   definition: SegmentDefinition;
@@ -218,6 +255,7 @@ function AudienceStep({
   savedSegmentId: number | null;
   setSavedSegmentId: (id: number | null) => void;
   onNext: () => void;
+  loadingRecipients: boolean;
 }): ReactNode {
   const pushToast = useUiStore((s) => s.pushToast);
   const [saveName, setSaveName] = useState('');
@@ -373,8 +411,8 @@ function AudienceStep({
               {preview.rows.length > 20 ? <p className="text-xs muted">…and {preview.rows.length - 20} more (full list in the next step)</p> : null}
               {preview.rows.length === 0 ? <EmptyState icon="users" title="No customers match" hint="Loosen a condition or check the honest notes above." /> : null}
             </div>
-            <button className="btn mt-16" disabled={preview.matched === 0} onClick={onNext}>
-              Review {preview.matched} recipients →
+            <button className="btn mt-16" disabled={preview.matched === 0 || loadingRecipients} onClick={onNext}>
+              {loadingRecipients ? 'Loading all matching recipients…' : `Review ${preview.matched} recipients →`}
             </button>
           </>
         ) : null}
@@ -409,19 +447,19 @@ function AudienceStep({
 // =================== Step 2: recipients ===================
 
 function RecipientsStep({
-  preview,
+  rows: matchedRows,
   selectedIds,
   setSelectedIds,
   onBack,
   onNext
 }: {
-  preview: (SegmentPreviewResult & { page: number }) | undefined;
+  rows: SegmentPreviewResult['rows'];
   selectedIds: number[];
   setSelectedIds: (ids: number[]) => void;
   onBack: () => void;
   onNext: () => void;
 }): ReactNode {
-  const rows = preview?.rows ?? [];
+  const rows = matchedRows;
   const allIds = rows.filter((r) => !r.excluded && r.chosen_email).map((r) => r.customer_local_id);
   const [expanded, setExpanded] = useState<number | null>(null);
   return (

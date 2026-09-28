@@ -191,14 +191,23 @@ export class AiRepository {
 
   // ---------------- Customer memories ----------------
   upsertMemory(customerId: number, key: string, value: string, opts: { source?: 'ai' | 'human'; origin?: 'conversation' | 'manual'; conversationId?: number | null; confidence?: OperationalConfidence } = {}): void {
+    const source = opts.source ?? 'ai';
+    // Source-aware conflict handling: a row must never be MISLABELED. Without
+    // updating source/provenance, an AI extraction landing on a human-written
+    // key would silently swap the human's value while still claiming
+    // source='human'. AI writes are additionally refused outright when the
+    // existing row is human-authored (human judgment is never overwritten by
+    // the model); human writes always win and relabel the row honestly.
     this.db
       .prepare(
         `INSERT INTO customer_memories (customer_id, key, value, source, origin, conversation_id, first_seen_at, last_seen_at, confidence, provenance)
          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?)
          ON CONFLICT(customer_id, key) DO UPDATE SET value=excluded.value, last_seen_at=datetime('now'),
-           confidence=excluded.confidence, origin=excluded.origin, conversation_id=COALESCE(excluded.conversation_id, conversation_id)`
+           confidence=excluded.confidence, origin=excluded.origin, conversation_id=COALESCE(excluded.conversation_id, conversation_id),
+           source=excluded.source, provenance=excluded.provenance
+         WHERE customer_memories.source != 'human' OR excluded.source = 'human'`
       )
-      .run(customerId, key, value, opts.source ?? 'ai', opts.origin ?? 'conversation', opts.conversationId ?? null, opts.confidence ?? 'unknown', opts.source === 'human' ? 'human_local' : 'ai_generated');
+      .run(customerId, key, value, source, opts.origin ?? 'conversation', opts.conversationId ?? null, opts.confidence ?? 'unknown', source === 'human' ? 'human_local' : 'ai_generated');
   }
 
   getMemories(customerId: number): CustomerMemory[] {

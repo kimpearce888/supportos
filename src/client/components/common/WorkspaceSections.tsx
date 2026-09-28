@@ -2,7 +2,7 @@ import { type ReactNode, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, qs } from '../../api/client.js';
-import { Spinner, EmptyState } from './ui.js';
+import { Spinner, EmptyState, RelativeTime } from './ui.js';
 import type { SupportHealthReport } from '../../../shared/workspace.js';
 
 /**
@@ -86,7 +86,9 @@ export function CustomerTimelineSection({ subjectKind, subjectId }: { subjectKin
               <div className="grow">
                 <div className="flex-between">
                   <span className="text-sm">{ev.title}</span>
-                  <span className="text-xs muted">{ev.occurred_at ? ev.occurred_at.slice(0, 16).replace('T', ' ') : ''}</span>
+                  {/* v2.2.1 audit fix: raw UTC wall time was shown here while the
+                      rest of the app renders local relative time. */}
+                  <RelativeTime iso={ev.occurred_at} />
                 </div>
                 {ev.detail && ev.detail.conversation_id ? (
                   <Link className="text-xs" to={`/inbox/conversation/${ev.detail.conversation_id}`}>open conversation</Link>

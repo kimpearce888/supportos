@@ -8,7 +8,7 @@ Thanks for your interest in contributing!
 git clone https://github.com/kimpearce888/supportos.git
 cd supportos
 npm install
-cp .env.example .env        # LOCAL_DEMO_MODE=true → no credentials needed
+cp .env.example .env        # then set LOCAL_DEMO_MODE=true in .env → no credentials needed
 npm run dev                 # Vite (5173) + Fastify (3000) with hot reload
 ```
 
@@ -22,10 +22,10 @@ npm run dev                 # Vite (5173) + Fastify (3000) with hot reload
 ## Before opening a PR
 
 ```bash
-npm run lint         # 0 errors, 0 warnings
-npm run typecheck    # strict TS, server + client
-npm run test:all     # 108 tests must pass
-npm run build        # must produce dist/client + dist/server
+npm run lint         # 0 errors, 0 warnings (src, tests, and the config files)
+npm run typecheck    # strict TS, server + client + config files
+npm run build        # must produce dist/client + dist/server (e2e needs the built SPA)
+npm run test:all     # 672 tests must pass
 ```
 
 CI runs the same gates on every push and PR.

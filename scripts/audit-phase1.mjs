@@ -9,6 +9,7 @@
  * shapes and anything that smells like a leak, a crash or a lie.
  */
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1007,6 +1008,83 @@ async function main() {
       const nbNotes = (nb.json.notes ?? []).join(' ');
       if (!nbNotes.includes('never drift')) finding('medium', 'graph neighbors must disclose read-time derivation', nbNotes.slice(0, 200));
     }
+  }
+
+  console.log('\n== O. v2.2.1 audit fixes — black-box ==');
+  {
+    // O1. DNS-rebinding guard: fetch() cannot forge Host (forbidden header),
+    // so send raw HTTP where the Host header is fully attacker-controlled.
+    const rawHost = (host) =>
+      new Promise((resolve) => {
+        const socket = net.connect(PORT, '127.0.0.1', () => {
+          socket.write(`GET /api/settings HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`);
+        });
+        let data = '';
+        socket.on('data', (d) => (data += d.toString()));
+        socket.on('end', () => resolve({ status: parseInt(data.slice(0, 20).split(' ')[1] ?? '0', 10), body: data }));
+        socket.on('error', () => resolve({ status: 0, body: '' }));
+        setTimeout(() => { socket.destroy(); resolve({ status: -1, body: data }); }, 3000);
+      });
+    checks++;
+    const rebinding = await rawHost('rebind.attacker.example');
+    if (rebinding.status !== 403) finding('medium', 'DNS-rebinding guard must refuse non-loopback Host', `got ${rebinding.status}`);
+    checks++;
+    const loopback = await rawHost('127.0.0.1:3177');
+    if (loopback.status !== 200) finding('medium', 'guard must still allow loopback Host', `got ${loopback.status}`);
+
+    // O2. unconditional API 404 envelope
+    const nf = await req('GET', '/api/definitely/not/a/route');
+    expect(nf.status === 404 && nf.json?.error === 'NotFound', 'unknown API endpoint returns the JSON 404 envelope', `got ${nf.status} ${nf.text.slice(0, 80)}`);
+
+    // O3. legacy memory surface parity with the personality red line
+    const redline = await req('POST', '/api/ai/memory/1', { key: 'personality', value: 'seems neurotic' });
+    expect(redline.status === 422 && /policy/i.test(redline.json?.message ?? ''), 'legacy /api/ai/memory refuses red-line writes', `got ${redline.status}`);
+    const ghost = await req('POST', '/api/ai/memory/999999', { key: 'plan', value: 'team' });
+    expect(ghost.status === 404, 'legacy /api/ai/memory 404s unknown customers (was raw FK 500)', `got ${ghost.status}`);
+
+    // O4. known-issue PATCH closed vocabulary
+    const ki = await req('POST', '/api/issues/known', { title: 'audit-o4 probe' });
+    if (ki.status === 200) {
+      const bad = await req('PATCH', `/api/issues/known/${ki.json.id}`, { status: 123 });
+      expect(bad.status === 422, 'known-issue PATCH rejects numeric status', `got ${bad.status}`);
+      const bad2 = await req('PATCH', `/api/issues/known/${ki.json.id}`, { status: 'made-up-status' });
+      expect(bad2.status === 422, 'known-issue PATCH rejects out-of-vocabulary status', `got ${bad2.status}`);
+    }
+
+    // O5. release-events validation
+    const re1 = await req('POST', '/api/reports/release-events', { name: 42, occurredAt: '2026-09-01' });
+    expect(re1.status === 422, 'release-events rejects non-string name', `got ${re1.status}`);
+    const re2 = await req('POST', '/api/reports/release-events', { name: 'x'.repeat(5000), occurredAt: '2026-09-01' });
+    expect(re2.status === 422, 'release-events enforces length caps', `got ${re2.status}`);
+    const re3 = await req('POST', '/api/reports/release-events', { name: 'probe', occurredAt: 'not-a-date' });
+    expect(re3.status === 422, 'release-events rejects malformed dates', `got ${re3.status}`);
+
+    // O6. GET rebuild parity: the trigger is gone but the report still serves
+    const gaps = await req('GET', '/api/knowledge/gaps?rebuild=1');
+    expect(gaps.status === 200, 'gap report still served on GET', `got ${gaps.status}`);
+    const fr = await req('GET', '/api/friction/overview?rebuild=1');
+    expect(fr.status === 200, 'friction overview still served on GET', `got ${fr.status}`);
+
+    // O7. completed OAuth callback surface (HTML, never the SPA)
+    const oa = await req('GET', '/oauth/callback?code=x&state=y');
+    expect(oa.status === 200 && /^<!doctype html/i.test(oa.text.trim()) && !/id="root"/.test(oa.text), 'OAuth callback answers with HTML, not the SPA', `got ${oa.status} ${oa.text.slice(0, 60)}`);
+
+    // O8. the organizations metric (previously 422 on every run)
+    const org = await req('POST', '/api/reports/builder/run', { metric: 'organizations', dimension: 'none', dateFrom: '2000-01-01', dateTo: '2099-01-01' });
+    expect(org.status === 200 && Number.isFinite(org.json?.rows?.[0]?.value), 'organizations metric computes', `got ${org.status}`);
+
+    // O9. report samples respect filters + bind group keys (non-empty samples)
+    const grouped = await req('POST', '/api/reports/builder/run', { metric: 'conversations', dimension: 'mailbox', dateFrom: '2000-01-01', dateTo: '2099-01-01' });
+    if (grouped.status === 200) {
+      const withSamples = (grouped.json.rows ?? []).filter((r) => (r.sample_conversation_ids ?? []).length > 0);
+      expect(withSamples.length > 0, 'mailbox-grouped report resolves sample conversations', 'all sample ids empty');
+    } else {
+      finding('medium', 'mailbox-grouped conversations report failed', `got ${grouped.status}`);
+    }
+
+    // O10. AI integer params are 422, not provider-shaped 503s
+    const aiBad = await req('POST', '/api/ai/analyze/abc', {});
+    expect(aiBad.status === 422, 'AI analyze rejects non-integer ids as 422', `got ${aiBad.status}`);
   }
 
   console.log('\n== I. rate limiting on mutations ==');

@@ -228,6 +228,27 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--font-size
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 @media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
 
+/* ---------- v2.2.1 audit fix: missing layout utilities ----------
+   The M5/M6 panels and report tabs referenced utility classes that were never
+   defined anywhere (`.col`, `.between`, the gap-4/8/12 + mt/mb/ml-4/12 scale
+   steps, `.btn.tiny`, `table.compact`, `.page-head`, `.text-left`,
+   `.filter-bar`). Every `flex col` container silently laid out as a
+   horizontal ROW, and `flex between` headers never spread apart. */
+.col { flex-direction: column; align-items: stretch; }
+.between { justify-content: space-between; }
+.align-center { align-items: center; }
+.gap-4 { gap: 4px; } .gap-8 { gap: 8px; } .gap-12 { gap: 12px; }
+.mt-4 { margin-top: 4px; } .mt-12 { margin-top: 12px; }
+.mb-0 { margin-bottom: 0; } .mb-4 { margin-bottom: 4px; } .mb-12 { margin-bottom: 12px; }
+.ml-4 { margin-left: 4px; }
+.text-left { text-align: left; }
+.btn.tiny { padding: 2px 7px; font-size: var(--font-size-xs); border-radius: var(--radius); }
+.table.compact th, .table.compact td { padding: 4px 6px; font-size: var(--font-size-sm); }
+.page-head { margin-bottom: 16px; }
+.page-head h1 { font-size: var(--font-size-xl); font-weight: 700; margin: 0 0 4px 0; }
+.page-head p { margin: 0; }
+.filter-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
 /* ---------- Inbox layout ---------- */
 .inbox-layout { display: flex; height: 100%; overflow: hidden; }
 .conversation-list-pane { width: 360px; flex-shrink: 0; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-raised); }

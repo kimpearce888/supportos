@@ -202,7 +202,7 @@ function DocReader({ id, onClose }: { id: number; onClose: () => void }): ReactN
           </div>
           <div className="doc-content">{data.document.content}</div>
           <div className="mt-16 text-sm">
-            <strong>Related:</strong> ~{data.related_ticket_estimate} matching searches ·{' '}
+            <strong>Related:</strong> cited by AI analysis in {data.related_ticket_estimate} conversation{data.related_ticket_estimate === 1 ? '' : 's'} ·{' '}
             {data.related_known_issues.map((ki) => (
               <span key={ki.id} className="source-chip">{ki.title}</span>
             ))}

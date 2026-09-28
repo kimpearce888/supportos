@@ -96,8 +96,16 @@ export async function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppCont
   });
 
   app.post('/api/reports/release-events', async (request) => {
-    const body = request.body as { name: string; version: string; occurredAt: string; notes?: string };
-    if (!body.name || !body.occurredAt) return { ok: false, message: 'name and occurredAt are required.' };
+    // v2.2.1 audit fix: unvalidated cast - non-string values crashed SQLite
+    // binding with a 500 and strings were unbounded. zod now (ISO date, caps).
+    const body = z
+      .object({
+        name: z.string().min(1).max(200),
+        version: z.string().max(100).optional(),
+        occurredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/),
+        notes: z.string().max(2000).optional()
+      })
+      .parse(request.body ?? {});
     ctx.analyticsRepo.addReleaseEvent(body.name, body.version ?? '', body.occurredAt, body.notes);
     return { ok: true, message: 'Release event recorded.' };
   });
@@ -176,7 +184,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppCont
 
   app.get('/api/reports/builder/saved', async () => ({ saved: ctx.reportBuilder.listSaved() }));
 
-  app.post('/api/reports/builder/saved', async (request, reply) => {
+  app.post('/api/reports/builder/saved', async (request) => {
     const body = z
       .object({ name: z.string().min(1).max(120) })
       .and(reportConfigSchema)

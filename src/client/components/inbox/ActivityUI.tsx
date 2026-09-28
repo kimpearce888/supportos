@@ -129,7 +129,10 @@ export function ActivityTimeline({ conversationId, historyComplete }: { conversa
   return (
     <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-raised)' }}>
       <button className="btn ghost small" style={{ width: '100%', justifyContent: 'center' }} onClick={() => setOpen(!open)}>
-        {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />} Activity timeline ({count})
+        {/* v2.2.1 audit fix: events load only when expanded, so the collapsed
+            toggle always claimed "Activity timeline (0)" - a wrong number. The
+            count is shown only once actually known (open). */}
+        {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />} Activity timeline{open ? ` (${count})` : ''}
       </button>
       {open ? (
         <div style={{ maxHeight: 300, overflowY: 'auto', padding: '8px 16px' }}>

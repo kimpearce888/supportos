@@ -90,6 +90,20 @@ export class WorkerManager {
     // Maintenance: backup + cluster trends + cleanup every 6h
     const maintenanceTimer = setInterval(() => void this.maintenance(), 6 * 3600_000);
     this.timers.push(maintenanceTimer);
+    // v2.2.1 audit fix: stale-job sweep. recoverStaleJobs() runs only once at
+    // boot, so a job claimed right before a restart stayed 'running' for the
+    // whole process lifetime (claimNext only claims 'queued'). The same
+    // conservative 30-minute rule now also fires periodically: a stuck job
+    // heals within ~40 minutes instead of never.
+    const staleJobTimer = setInterval(() => {
+      try {
+        const n = this.ctx.jobsRepo.requeueStaleRunningJobs(30);
+        if (n > 0) this.logger.warn(`Re-queued ${n} stale running job(s) (running longer than 30 minutes)`, { operation: 'stale_job_sweep', count: n });
+      } catch {
+        /* the sweep must never take the worker loop down */
+      }
+    }, 10 * 60_000);
+    this.timers.push(staleJobTimer);
     // v1.8.0: notification sweep - the single producer of Notification Center
     // rows (customer replies, assignments, mentions, SLA, jobs, campaigns...).
     // Light + idempotent (dedup keys); a malformed stored interval collapses

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, Send, Sparkles, Trash2, Copy, ShieldCheck } from 'lucide-react';
 import { api } from '../../api/client.js';
@@ -178,6 +179,10 @@ function CopilotMessageView({ message }: { message: CopilotMessage }): ReactNode
 
 function CitationList({ citations }: { citations: CopilotCitation[] }): ReactNode {
   const pushToast = useUiStore((s) => s.pushToast);
+  // v2.2.1 audit fix: this component used to dispatch a 'sos:navigate' custom
+  // event that NOTHING in the app listens to - the citation "open" link was a
+  // dead control. Use the router directly.
+  const navigate = useNavigate();
   return (
     <div className="copilot-citations">
       <div className="text-xs muted">Sources (from tools the server actually executed):</div>
@@ -186,7 +191,7 @@ function CitationList({ citations }: { citations: CopilotCitation[] }): ReactNod
           <span className="cite-index">[{c.index}]</span>
           <span className="text-xs">{c.label}</span>
           {c.conversation_id != null ? (
-            <a className="text-xs" href={`#/inbox/conversation/${c.conversation_id}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('sos:navigate', { detail: `/inbox/conversation/${c.conversation_id}` })); }}>
+            <a className="text-xs" href={`/inbox/conversation/${c.conversation_id}`} onClick={(e) => { e.preventDefault(); navigate(`/inbox/conversation/${c.conversation_id}`); }}>
               open
             </a>
           ) : null}

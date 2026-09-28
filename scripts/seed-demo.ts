@@ -3,6 +3,9 @@
  * sample AI analyses) into a DEMO database. Refuses to touch non-demo data.
  * Usage: LOCAL_DEMO_MODE=true npm run db:seed
  */
+// v2.2.1 audit fix: load .env like the server (DATABASE_PATH and
+// LOCAL_DEMO_MODE now work from .env, not only shell env).
+import 'dotenv/config';
 import { openDatabase } from '../src/server/database/connection.js';
 import { applyMigrations } from '../src/server/database/migrations/index.js';
 import { seedDemoData } from '../src/server/services/demoSeed.js';

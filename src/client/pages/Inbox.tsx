@@ -120,9 +120,14 @@ export function InboxPage(): ReactNode {
       // v1.6.0 audit fix: bulk tag/assign/close changed server state but the
       // list (and nav badge counts) kept showing the pre-bulk state until a
       // manual refresh. Invalidate the conversation-shaped queries.
+      // v2.2.1 audit fix: the OPEN conversation detail also showed pre-bulk
+      // status/tags - invalidate it too when the selection includes it.
       if (r.ok) {
         void queryClient.invalidateQueries({ queryKey: ['conversations'] });
         void queryClient.invalidateQueries({ queryKey: ['nav-counts'] });
+        if (selectedId != null && selection.includes(selectedId)) {
+          void queryClient.invalidateQueries({ queryKey: ['conversation', selectedId] });
+        }
       }
     },
     onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
@@ -237,7 +242,11 @@ export function InboxPage(): ReactNode {
           </div>
         ) : null}
       </div>
-      <div className="conversation-pane">{selectedId ? <ConversationDetail id={selectedId} /> : <EmptyState icon="inbox" title="Select a conversation" hint="Choose a conversation from the list to view its thread, customer context and AI analysis." />}</div>
+      {/* v2.2.1 audit fix: key by conversation id - without it, React reused the
+          same ConversationDetail instance across conversations and the composer
+          kept the PREVIOUS conversation's typed reply / AI draft / panel state,
+          making it one click away from being sent to the wrong customer. */}
+      <div className="conversation-pane">{selectedId ? <ConversationDetail key={selectedId} id={selectedId} /> : <EmptyState icon="inbox" title="Select a conversation" hint="Choose a conversation from the list to view its thread, customer context and AI analysis." />}</div>
       {bulkAction ? (
         <BulkActionModal
           action={bulkAction}
@@ -253,10 +262,9 @@ export function InboxPage(): ReactNode {
 function BulkActionModal({ action, count, onClose, onConfirm }: { action: string; count: number; onClose: () => void; onConfirm: (params: Record<string, string | number | null>) => void }): ReactNode {
   const [tag, setTag] = useState('');
   const [assignee, setAssignee] = useState('');
-  const { data: users } = useReference().tags;
-  const usersQ = api;
-  void users;
-  void usersQ;
+  // v2.2.1 audit fix: removed leftover dead destructuring
+  // (`const { data: users } = useReference().tags` voided immediately below) -
+  // the assign picker fetches its own reference data.
   return (
     <Modal
       title={`Bulk ${action}`}
@@ -603,8 +611,22 @@ function FieldEditor({ conversationId, fields, inboxFields, onClose, onSaved }: 
   );
 }
 
+/** v2.2.1 audit fix: format an instant as the LOCAL wall-clock string a
+ *  datetime-local input expects. The old code sliced the UTC ISO string, so
+ *  the default snooze fired hours off local "tomorrow" and a stored UTC snooze
+ *  pre-filled the field with UTC wall time (or nothing, Z-suffix inputs
+ *  reject). Saving already parsed the input as local - only display was wrong. */
+function toLocalDatetimeInput(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function SnoozeModal({ conversationId, snoozed, onClose, onSaved }: { conversationId: number; snoozed: string | null; onClose: () => void; onSaved: () => void }): ReactNode {
-  const [until, setUntil] = useState(snoozed ?? new Date(Date.now() + 86400000).toISOString().slice(0, 16));
+  const snoozedMs = snoozed ? Date.parse(snoozed) : NaN;
+  const [until, setUntil] = useState(
+    Number.isFinite(snoozedMs) ? toLocalDatetimeInput(snoozedMs) : toLocalDatetimeInput(Date.now() + 86400000)
+  );
   const pushToast = useUiStore((s) => s.pushToast);
   const act = useMutation({
     mutationFn: (body: { snoozedUntil: string; unsnoozeOnCustomerReply: boolean }) => api.post<{ ok: boolean; message: string }>(`/api/conversations/${conversationId}/snooze`, body),
@@ -966,6 +988,10 @@ function Composer({ conversationId, customerId: _customerId, customerEmail, draf
           onChange={(text) => setState((s) => ({ ...s, text }))}
           placeholder="Internal note (never sent to the customer)… @mention a teammate or team to notify them"
           rows={3}
+          onSubmit={() => {
+            // v2.2.1 consistency fix: side threads already send with Cmd/Ctrl+Enter.
+            if (state.text.trim() && !addNote.isPending) addNote.mutate();
+          }}
         />
       ) : (
         <textarea
@@ -974,6 +1000,15 @@ function Composer({ conversationId, customerId: _customerId, customerEmail, draf
           placeholder={`Reply to ${customerEmail ?? 'customer'}…`}
           value={state.text}
           onChange={(e) => setState((s) => ({ ...s, text: e.target.value }))}
+          onKeyDown={(e) => {
+            // v2.2.1 consistency fix: side threads already send with Cmd/Ctrl+Enter;
+            // the main composer was mouse-only. Opens the SAME confirmation
+            // dialog the Send button opens - never bypasses it.
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && state.text.trim() && !send.isPending) {
+              e.preventDefault();
+              setConfirmSend(true);
+            }
+          }}
           aria-label="Reply text"
         />
       )}
@@ -1007,7 +1042,7 @@ function Composer({ conversationId, customerId: _customerId, customerEmail, draf
             <StickyNote size={12} /> Add note
           </button>
         )}
-        <span className="save-hint">Your text is preserved across AI actions and network failures.</span>
+        <span className="save-hint">Cmd/Ctrl+Enter sends · Your text is preserved across AI actions and network failures.</span>
       </div>
       {confirmSend ? (
         <ConfirmDialog
@@ -1104,7 +1139,11 @@ function AiSidebar({ data, onRefresh }: { data: NonNullable<ReturnType<typeof us
           <div className="text-sm">
             <div className="mb-8"><strong>Intent:</strong> {analysis.analysis.intent ?? '—'} <ConfidenceBadge level={analysis.analysis.confidence} /></div>
             <div className="mb-8"><strong>Main question:</strong> {analysis.analysis.primary_question ?? '—'}</div>
-            {analysis.analysis.secondary_questions.length ? <div className="mb-8"><strong>Other questions:</strong> {analysis.analysis.secondary_questions.join(' | ')}</div> : null}
+            {/* v2.2.1 audit fix: secondary_questions and missing_information are
+                OPTIONAL in the stored analysis JSON (demo-seeded and older rows
+                may lack them) - bare .length crashed the whole detail render
+                with "Cannot read properties of undefined". */}
+            {(analysis.analysis.secondary_questions ?? []).length ? <div className="mb-8"><strong>Other questions:</strong> {analysis.analysis.secondary_questions.join(' | ')}</div> : null}
             {analysis.analysis.customer_goal ? <div className="mb-8"><strong>Goal:</strong> {analysis.analysis.customer_goal}</div> : null}
             <div className="flex wrap mb-8" style={{ gap: 4 }}>
               {analysis.analysis.product ? <span className="badge">{analysis.analysis.product}</span> : null}
@@ -1113,7 +1152,7 @@ function AiSidebar({ data, onRefresh }: { data: NonNullable<ReturnType<typeof us
               {analysis.analysis.sentiment ? <span className="badge">sentiment: {analysis.analysis.sentiment}</span> : null}
             </div>
             {analysis.analysis.summary ? <p style={{ margin: 0 }}>{analysis.analysis.summary}</p> : null}
-            {analysis.analysis.missing_information.length ? (
+            {(analysis.analysis.missing_information ?? []).length ? (
               <div className="alert warn mt-8" style={{ marginBottom: 0 }}>Missing: {analysis.analysis.missing_information.join('; ')}</div>
             ) : null}
             <p className="text-xs muted mt-8">AI-generated locally · {analysis.run.model ?? 'model?'} · <RelativeTime iso={analysis.run.created_at} /></p>

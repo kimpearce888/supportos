@@ -17,19 +17,30 @@ export function CommandPalette(): ReactNode {
     inputRef.current?.focus();
   }, []);
 
+  // v2.2.1 audit fix: out-of-order responses - a slow EARLIER query could
+  // overwrite the results of a newer one (debounce alone does not sequence
+  // in-flight requests). Ignore any response that no longer matches the
+  // current query.
+  const currentQuery = useRef(query);
+  currentQuery.current = query;
   useEffect(() => {
     if (!query.trim()) {
       setResults([]);
       return;
     }
     const t = setTimeout(() => {
+      const q = query;
       api
-        .post<SearchResponse>('/api/search', { query, scope: 'all' })
+        .post<SearchResponse>('/api/search', { query: q, scope: 'all' })
         .then((r) => {
+          if (currentQuery.current !== q) return;
           setResults(r.hits.slice(0, 12));
           setSelected(0);
         })
-        .catch(() => setResults([]));
+        .catch(() => {
+          if (currentQuery.current !== q) return;
+          setResults([]);
+        });
     }, 200);
     return () => clearTimeout(t);
   }, [query]);

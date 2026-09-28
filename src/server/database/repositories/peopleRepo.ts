@@ -145,10 +145,14 @@ export class PeopleRepository {
   }
 
   listCustomers(page = 1, pageSize = 50, query = ''): { customers: CustomerSummary[]; total: number } {
+    // v2.2.1 audit fix: escape LIKE wildcards in the user's search text (the
+    // same rule the search engine applies) so '50%' or 'a_b' match literally
+    // instead of acting as a pattern.
+    const likeQ = `%${escapeLikeQuery(query)}%`;
     const where = query
-      ? `WHERE (c.first_name LIKE @q OR c.last_name LIKE @q OR EXISTS (SELECT 1 FROM customer_emails ce WHERE ce.customer_id = c.id AND ce.value LIKE @q)) AND c.deleted_at IS NULL`
+      ? `WHERE (c.first_name LIKE @q ESCAPE '\\' OR c.last_name LIKE @q ESCAPE '\\' OR EXISTS (SELECT 1 FROM customer_emails ce WHERE ce.customer_id = c.id AND ce.value LIKE @q ESCAPE '\\')) AND c.deleted_at IS NULL`
       : 'WHERE c.deleted_at IS NULL';
-    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM customers c ${where}`).get({ q: `%${query}%` }) as { n: number }).n;
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM customers c ${where}`).get({ q: likeQ }) as { n: number }).n;
     const customers = this.db
       .prepare(
         `SELECT c.id, c.remote_id, c.first_name, c.last_name, c.photo_url, c.job_title,
@@ -166,7 +170,7 @@ export class PeopleRepository {
          ORDER BY c.last_name, c.first_name
          LIMIT @limit OFFSET @offset`
       )
-      .all({ q: `%${query}%`, limit: pageSize, offset: (page - 1) * pageSize }) as (CustomerSummary & { emails: string | null; phones: string | null })[];
+      .all({ q: likeQ, limit: pageSize, offset: (page - 1) * pageSize }) as (CustomerSummary & { emails: string | null; phones: string | null })[];
     return { customers: customers.map(normalizeCustomer), total };
   }
 
@@ -305,8 +309,9 @@ export class PeopleRepository {
   }
 
   listOrganizations(page = 1, pageSize = 50, query = ''): { organizations: OrganizationSummary[]; total: number } {
-    const where = query ? 'WHERE o.name LIKE @q AND o.deleted_at IS NULL' : 'WHERE o.deleted_at IS NULL';
-    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM organizations o ${where}`).get({ q: `%${query}%` }) as { n: number }).n;
+    const likeQ = `%${escapeLikeQuery(query)}%`;
+    const where = query ? "WHERE o.name LIKE @q ESCAPE '\\' AND o.deleted_at IS NULL" : 'WHERE o.deleted_at IS NULL';
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM organizations o ${where}`).get({ q: likeQ }) as { n: number }).n;
     const organizations = this.db
       .prepare(
         `SELECT o.id, o.remote_id, o.name, o.domains,
@@ -315,7 +320,7 @@ export class PeopleRepository {
            o.remote_created_at
          FROM organizations o ${where} ORDER BY o.name LIMIT @limit OFFSET @offset`
       )
-      .all({ q: `%${query}%`, limit: pageSize, offset: (page - 1) * pageSize }) as (OrganizationSummary & { domains: string })[];
+      .all({ q: likeQ, limit: pageSize, offset: (page - 1) * pageSize }) as (OrganizationSummary & { domains: string })[];
     return { organizations: organizations.map((o) => ({ ...o, domains: JSON.parse(o.domains || '[]') })), total };
   }
 
@@ -392,6 +397,15 @@ export class PeopleRepository {
       .prepare('SELECT rating, comments, remote_created_at AS created_at, conversation_id FROM ratings WHERE customer_local_id = ? ORDER BY remote_created_at DESC LIMIT 50')
       .all(customerLocalId) as { rating: string; comments: string | null; created_at: string | null; conversation_id: number | null }[];
   }
+}
+
+/**
+ * v2.2.1 audit fix: escape LIKE wildcards in user-supplied search text (the
+ * same rule the search engine applies) so '50%' or 'a_b' match literally
+ * instead of acting as a pattern. Must be paired with ESCAPE '\' in SQL.
+ */
+function escapeLikeQuery(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
 /**

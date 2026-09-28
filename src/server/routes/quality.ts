@@ -16,11 +16,11 @@ export async function registerQualityRoutes(app: FastifyInstance, ctx: AppContex
 
   // ---------------- Phase 26: knowledge gap engine ----------------
 
-  app.get('/api/knowledge/gaps', async (request) => {
-    const q = request.query as Record<string, string>;
-    const days = clampDaysParam(q.days, 90, 1, 3650);
-    const wantsFresh = q.rebuild === '1';
-    if (wantsFresh) ctx.knowledgeGaps.rebuild(days);
+  app.get('/api/knowledge/gaps', async () => {
+    // v2.2.1 audit fix: GET no longer triggers a synchronous rebuild
+    // (?rebuild=1 made heavy SQLite work fireable cross-site via <img> tags
+    // since GETs are unmetered). Rebuilds go through the POST sibling, which
+    // the UI already uses.
     return ctx.knowledgeGaps.report();
   });
 
@@ -146,8 +146,7 @@ export async function registerQualityRoutes(app: FastifyInstance, ctx: AppContex
   app.get('/api/friction/overview', async (request) => {
     const q = request.query as Record<string, string>;
     const days = clampDaysParam(q.days, 30, 1, 3650);
-    const wantsFresh = q.rebuild === '1';
-    if (wantsFresh) ctx.friction.rebuild();
+    // v2.2.1 audit fix: same as /api/knowledge/gaps - rebuild via POST only.
     return ctx.friction.overview(days);
   });
 

@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Search } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { api, qs } from '../api/client.js';
 import { Spinner, EmptyState, ErrorState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
 import { CustomerTimelineSection, SupportHealthSection } from '../components/common/WorkspaceSections.js';
@@ -10,9 +10,13 @@ import type { OrganizationSummary } from '../../shared/types.js';
 export function OrganizationsPage(): ReactNode {
   const navigate = useNavigate();
   const [q, setQ] = useState('');
+  // v2.2.1 audit fix: the server pages organizations at 50/page but the page
+  // never passed or displayed a page - orgs beyond the first 50 were silently
+  // invisible while the subtitle showed the true total. Same pager as Customers.
+  const [page, setPage] = useState(1);
   const { data, isLoading, error } = useQuery({
-    queryKey: ['organizations', q],
-    queryFn: () => api.get<{ organizations: OrganizationSummary[]; total: number }>(`/api/organizations${qs({ q })}`)
+    queryKey: ['organizations', q, page],
+    queryFn: () => api.get<{ organizations: OrganizationSummary[]; total: number }>(`/api/organizations${qs({ q, page })}`)
   });
   return (
     <div className="page">
@@ -51,6 +55,13 @@ export function OrganizationsPage(): ReactNode {
         </table>
       </div>
       {data && data.organizations.length === 0 && !isLoading ? <EmptyState title="No organizations found" /> : null}
+      {data && data.total > 50 ? (
+        <div className="flex mt-16" style={{ justifyContent: 'center', gap: 8 }}>
+          <button className="btn small" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft size={12} /> Previous</button>
+          <span className="text-xs muted" style={{ alignSelf: 'center' }}>page {page}</span>
+          <button className="btn small" disabled={data.organizations.length < 50} onClick={() => setPage(page + 1)}>Next <ChevronRight size={12} /></button>
+        </div>
+      ) : null}
     </div>
   );
 }

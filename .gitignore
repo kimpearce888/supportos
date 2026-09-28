@@ -19,6 +19,11 @@ src-tauri/target/
 # never committed - CI regenerates them per platform before `tauri build`.
 src-tauri/resources/
 src-tauri/gen/
-screenshots/
+# v2.2.1 audit fix: this pattern was UNANCHORED, so it also swallowed
+# docs/screenshots/ - 44 README gallery images (v1.9.0 through v2.2.0) were
+# silently kept out of git while the README linked them (same bug class as the
+# v2.0.0 'connectors/' fix). Anchored to the repo root: it now only ignores an
+# ad-hoc root-level screenshots/ dir; the docs gallery is versioned.
+/screenshots/
 # v2.0.0 (M4): connector data jail (local files, runtime-generated)
 /connectors/

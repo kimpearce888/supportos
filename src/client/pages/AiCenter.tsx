@@ -28,6 +28,7 @@ export function AiCenterPage(): ReactNode {
   // (missed in the v1.2 fix wave that covered status/analytics).
   const { data: jobs, refetch: refetchJobs, isError: jobsIsError, error: jobsError } = useQuery({ queryKey: ['ai-jobs'], queryFn: () => api.get<{ jobs: { id: number; type: string; status: string; conversation_id: number | null; model: string | null; error: string | null; created_at: string; latency_ms: number | null }[] }>('/api/ai/jobs') });
   const { data: evaluation, isError: evaluationIsError, error: evaluationError } = useQuery({ queryKey: ['ai-evaluation'], queryFn: () => api.get<{ tests: { name: string; category: string; payload: { subject: string; body: string } }[]; evaluation_mode: boolean }>('/api/ai/evaluation') });
+  const queryClient = useQueryClient();
 
   const cluster = useMutation({
     mutationFn: () => api.post<{ ok: boolean; clusters: unknown[]; error?: string }>('/api/ai/cluster-issues', { days: 60 }),
@@ -37,7 +38,12 @@ export function AiCenterPage(): ReactNode {
 
   const toggleEval = useMutation({
     mutationFn: (on: boolean) => api.patch<{ ok: boolean }>('/api/settings', { ai_evaluation_mode: on }),
-    onSuccess: () => pushToast({ kind: 'success', message: 'AI evaluation mode updated.' })
+    // v2.2.1 audit fix: the driving query was never invalidated, so the
+    // checkbox snapped back to the stale value after a successful PATCH.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['ai-evaluation'] });
+      pushToast({ kind: 'success', message: 'AI evaluation mode updated.' });
+    }
   });
 
   return (

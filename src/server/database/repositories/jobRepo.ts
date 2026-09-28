@@ -149,6 +149,20 @@ export class JobRepository {
     return r.changes;
   }
 
+  /**
+   * v2.2.1 audit fix: recoverStaleJobs() only ran once at boot with a
+   * 30-minute threshold, so a job claimed moments before a restart stayed
+   * 'running' for the ENTIRE process lifetime (claimNext only claims
+   * 'queued'). The same conservative 30-minute rule now also runs as a
+   * periodic sweep, healing stuck rows without waiting for a restart.
+   */
+  requeueStaleRunningJobs(thresholdMinutes = 30): number {
+    const r = this.db
+      .prepare("UPDATE jobs SET status='queued', error='Re-queued by maintenance sweep: running longer than threshold' WHERE status='running' AND started_at < datetime('now', ?)")
+      .run(`-${thresholdMinutes} minutes`);
+    return r.changes;
+  }
+
   // ---------------- Outbound (remote write) jobs ----------------
   createOutboundJob(kind: string, payload: Record<string, unknown>, opts: { conversationId?: number | null; threadId?: number | null; idempotencyKey?: string; requiresConfirmation?: boolean; maxAttempts?: number } = {}): number {
     const r = this.db

@@ -47,6 +47,29 @@ function rateLimitKey(request: FastifyRequest): string {
   return request.socket.remoteAddress ?? 'local';
 }
 
+/**
+ * v2.2.1 audit fix (DNS-rebinding guard): this app is local-first by design,
+ * but nothing validated the Host header. A attacker-controlled page at
+ * http://attacker.com that re-resolves to 127.0.0.1 is SAME-ORIGIN from the
+ * browser's viewpoint (the origin is the attacker's NAME), so CORS - even a
+ * perfect allowlist - enforces nothing against it, and Firefox/Safari happily
+ * let such pages read AND write localhost APIs. Fastify performs no Host
+ * check of its own. We now refuse any request whose Host is not a loopback
+ * name. Deliberately skipped when HOST is explicitly bound non-loopback (that
+ * is the documented, loudly-warned network-exposure mode).
+ */
+function isLoopbackHostHeader(host: string | undefined): boolean {
+  if (host == null || host === '') return true; // HTTP/1.0-style / injected requests carry no Host - nothing to forge
+  let h = host.toLowerCase();
+  // Strip an optional :port without breaking IPv6 literals ([::1]:3000).
+  if (!h.endsWith(']')) {
+    const idx = h.lastIndexOf(':');
+    if (idx > -1 && /^\d+$/.test(h.slice(idx + 1))) h = h.slice(0, idx);
+  }
+  h = h.replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '::ffff:127.0.0.1';
+}
+
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
     logger: false,
@@ -54,6 +77,22 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     trustProxy: false // localhost app: do not trust spoofable proxy headers
   });
   const logger = createLogger(ctx.config.logLevel).child({ service: 'http' });
+
+  // v2.2.1 audit fix: DNS-rebinding guard (see isLoopbackHostHeader). Only
+  // enforced in the default loopback bind mode - an explicit non-loopback
+  // HOST is the documented network-exposure mode and keeps working.
+  const loopbackBindMode = ctx.config.host === '127.0.0.1' || ctx.config.host === 'localhost' || ctx.config.host === '::1';
+  if (loopbackBindMode) {
+    app.addHook('onRequest', async (request, reply) => {
+      if (!isLoopbackHostHeader(request.headers.host)) {
+        reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'SupportOS is a local application: requests with non-loopback Host headers are refused (DNS-rebinding guard).'
+        });
+      }
+    });
+  }
 
   // Localhost-only CORS + CSRF posture: same-origin by default; explicit localhost origins allowed
   const origins = allowedOrigins(ctx.config.port);
@@ -156,19 +195,29 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const clientDir = process.env.SUPPORTOS_CLIENT_DIST
     ? path.resolve(process.env.SUPPORTOS_CLIENT_DIST)
     : path.resolve(process.cwd(), 'dist', 'client');
-  if (fs.existsSync(clientDir)) {
+  const hasClient = fs.existsSync(clientDir);
+  if (hasClient) {
     await app.register((await import('@fastify/static')).default, {
       root: clientDir,
       prefix: '/'
     });
-    app.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith('/api/')) {
-        reply.status(404).send({ statusCode: 404, error: 'NotFound', message: 'Unknown API endpoint.' });
-        return;
-      }
-      reply.sendFile('index.html');
-    });
   }
+  // v2.2.1 audit fix: the JSON 404 envelope for unknown /api/* paths used to
+  // be registered ONLY when a client build existed - dev runs (no dist/client)
+  // returned Fastify's default "Route GET:/... not found" shape, so the API
+  // error envelope differed between dev and packaged builds. Registered
+  // unconditionally now; the SPA fallback applies only when the build exists.
+  app.setNotFoundHandler((request, reply) => {
+    if (request.url.startsWith('/api/') || request.url === '/api') {
+      reply.status(404).send({ statusCode: 404, error: 'NotFound', message: 'Unknown API endpoint.' });
+      return;
+    }
+    if (hasClient) {
+      reply.sendFile('index.html');
+      return;
+    }
+    reply.status(404).send({ statusCode: 404, error: 'NotFound', message: 'Not found.' });
+  });
 
   return app;
 }

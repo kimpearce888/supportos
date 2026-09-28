@@ -178,10 +178,17 @@ export class ConversationOperations {
     try {
       await this.provider.updateConversation(conv.remote_id, { status });
       this.jobs.setOutboundStatus(jobId, 'confirmed');
-      this.conv.updateLocalStatus(conversationId, status);
-      if (status === 'closed' && !conv.closed_at) {
-        this.db.prepare("UPDATE conversations SET closed_at = datetime('now') WHERE id = ?").run(conversationId);
-      }
+      // v2.2.1 audit fix: status write + closed_at stamp were two separate
+      // statements - a crash between them left a 'closed' conversation with a
+      // NULL closed_at (breaking closure-dated reports until the next sync).
+      // Atomic now.
+      const applyStatus = this.db.transaction(() => {
+        this.conv.updateLocalStatus(conversationId, status);
+        if (status === 'closed' && !conv.closed_at) {
+          this.db.prepare("UPDATE conversations SET closed_at = datetime('now') WHERE id = ?").run(conversationId);
+        }
+      });
+      applyStatus();
       this.jobs.audit({ actor: 'user', action: 'status_changed', conversation_id: conversationId, before_state: { status: before }, after_state: { status }, remote_operation: `PATCH /v2/conversations/${conv.remote_id}`, job_id: jobId });
       return { ok: true, message: `Status changed to ${status}.` };
     } catch (e) {

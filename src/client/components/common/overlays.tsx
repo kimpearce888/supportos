@@ -35,15 +35,27 @@ export function Toasts(): ReactNode {
   );
 }
 
+// v2.2.1 audit fix: every mounted Modal used to register its own window-level
+// Escape listener, so a single keypress dismissed ALL stacked dialogs (e.g.
+// Tags editor open on top of the send confirmation). A module-level mount
+// stack lets only the topmost dialog respond.
+const modalStack: symbol[] = [];
+
 export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }): ReactNode {
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const idRef = useRef<symbol>(Symbol('modal'));
 
   useEffect(() => {
+    modalStack.push(idRef.current);
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && modalStack[modalStack.length - 1] === idRef.current) onClose();
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      const idx = modalStack.indexOf(idRef.current);
+      if (idx > -1) modalStack.splice(idx, 1);
+      window.removeEventListener('keydown', onKey);
+    };
   }, [onClose]);
 
   // Move focus into the dialog when it opens so keyboard/screen-reader users land inside it.
