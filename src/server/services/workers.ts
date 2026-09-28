@@ -26,6 +26,8 @@ export class WorkerManager {
   private stopped = false;
   private refreshingRatings = false;
   private sweepingNotifications = false;
+  private sweepingCustomerEvents = false;
+  private refreshingConnectors = false;
   private lastAiHealthCheck: { at: string; connected: boolean } | null = null;
 
   constructor(private ctx: AppContext) {
@@ -98,7 +100,22 @@ export class WorkerManager {
     this.timers.push(sweepTimer);
     // Catch-up sweep at boot (a fresh database initializes its cursor silently).
     this.notificationSweepTick();
-    this.logger.info('Background workers started', { operation: 'start', sync_interval_minutes: syncMinutes, ratings_refresh_seconds: ratingsSeconds, notification_sweep_seconds: sweepSeconds });
+    // v2.0.0 (M4): customer event timeline sweep - derives observable events
+    // (conversations, first messages, campaigns, ratings, incident exposure,
+    // custom object links) from the settled mirror. Idempotent by dedup keys;
+    // stays silent while the first sync is still populating.
+    const rawTimelineSeconds = Number(this.ctx.settingsRepo.get('customer_event_sweep_seconds', 60));
+    const timelineSeconds = Number.isFinite(rawTimelineSeconds) ? Math.min(3600, Math.max(15, rawTimelineSeconds)) : 60;
+    const timelineTimer = setInterval(() => this.customerEventSweepTick(), timelineSeconds * 1000);
+    this.timers.push(timelineTimer);
+    this.customerEventSweepTick();
+    // v2.0.0 (M4): connector interval refresh - each enabled interval
+    // connector refreshes on its own schedule (min 60s); a shared tick checks
+    // every 30s and refreshes whatever is due. Failures land in health, never
+    // in an unhandled rejection.
+    const connectorTimer = setInterval(() => void this.connectorRefreshTick(), 30_000);
+    this.timers.push(connectorTimer);
+    this.logger.info('Background workers started', { operation: 'start', sync_interval_minutes: syncMinutes, ratings_refresh_seconds: ratingsSeconds, notification_sweep_seconds: sweepSeconds, customer_event_sweep_seconds: timelineSeconds });
   }
 
   stop(): void {
@@ -214,6 +231,41 @@ export class WorkerManager {
       this.logger.warn('Notification sweep failed', { operation: 'notification_sweep', error: String(e) });
     } finally {
       this.sweepingNotifications = false;
+    }
+  }
+
+  /** v2.0.0 (M4): one customer event sweep pass (guarded, never throws out). */
+  private customerEventSweepTick(): void {
+    if (this.stopped || this.sweepingCustomerEvents) return;
+    this.sweepingCustomerEvents = true;
+    try {
+      const result = this.ctx.customerEventSweep.sweep();
+      if (result.created > 0) {
+        this.logger.debug('Customer event sweep derived events', { operation: 'customer_event_sweep', created: result.created });
+      }
+    } catch (e) {
+      this.logger.warn('Customer event sweep failed', { operation: 'customer_event_sweep', error: String(e) });
+    } finally {
+      this.sweepingCustomerEvents = false;
+    }
+  }
+
+  /** v2.0.0 (M4): refresh every due interval connector (guarded, failures -> health). */
+  private async connectorRefreshTick(): Promise<void> {
+    if (this.stopped || this.refreshingConnectors) return;
+    this.refreshingConnectors = true;
+    try {
+      const due = this.ctx.connectors.repository.dueForRefresh(Date.now());
+      for (const c of due) {
+        const result = await this.ctx.connectors.refresh(c.id);
+        if (!result.ok) {
+          this.logger.warn('Connector refresh failed', { operation: 'connector_refresh', connector: c.name, error: result.error ?? 'unknown' });
+        }
+      }
+    } catch (e) {
+      this.logger.warn('Connector refresh tick failed', { operation: 'connector_refresh', error: String(e) });
+    } finally {
+      this.refreshingConnectors = false;
     }
   }
 

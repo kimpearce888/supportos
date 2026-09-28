@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Search } from 'lucide-react';
 import { api, qs } from '../api/client.js';
 import { Spinner, EmptyState, ErrorState, StatusBadge, RelativeTime, KV } from '../components/common/ui.js';
+import { CustomerTimelineSection, SupportHealthSection } from '../components/common/WorkspaceSections.js';
 import type { OrganizationSummary } from '../../shared/types.js';
 
 export function OrganizationsPage(): ReactNode {
@@ -122,6 +123,9 @@ export function OrganizationDetailPage(): ReactNode {
         </table>
         {data.conversations.length === 0 ? <EmptyState title="No conversations for this organization" /> : null}
       </div>
+      {/* v2.0.0 (M4): operational support health + the org-wide event timeline */}
+      <SupportHealthSection subjectKind="organization" subjectId={Number(id)} />
+      <CustomerTimelineSection subjectKind="organization" subjectId={Number(id)} />
     </div>
   );
 }

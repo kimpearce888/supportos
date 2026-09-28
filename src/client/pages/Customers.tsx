@@ -5,6 +5,7 @@ import { Search } from 'lucide-react';
 import { api, qs } from '../api/client.js';
 import { Spinner, EmptyState, ErrorState, StatusBadge, RelativeTime, KV, safeExternalHref } from '../components/common/ui.js';
 import { InteractionProfileSection } from '../components/common/InteractionProfile.js';
+import { CustomerTimelineSection, SupportHealthSection } from '../components/common/WorkspaceSections.js';
 import type { CustomerSummary } from '../../shared/types.js';
 
 export function CustomersPage(): ReactNode {
@@ -143,6 +144,9 @@ export function CustomerDetailPage(): ReactNode {
         </div>
       </div>
       <InteractionProfileSection customerId={c.id} />
+      {/* v2.0.0 (M4): operational support health + the broader event timeline */}
+      <SupportHealthSection subjectKind="customer" subjectId={c.id} />
+      <CustomerTimelineSection subjectKind="customer" subjectId={c.id} />
       <div className="card mt-16">
         <h3 className="card-title">Conversations</h3>
         <table className="table">

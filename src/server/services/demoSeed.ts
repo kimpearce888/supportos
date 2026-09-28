@@ -1,7 +1,14 @@
 import type { Database } from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
 import { KnowledgeRepository } from '../database/repositories/knowledgeRepo.js';
 import { IssueRepository } from '../database/repositories/issueRepo.js';
 import { AiRepository } from '../database/repositories/aiRepo.js';
+import { IncidentRepository } from '../database/repositories/incidentRepo.js';
+import { CustomObjectRepository } from '../customobjects/customObjectsRepo.js';
+import { ConnectorService } from '../connectors/connectorService.js';
+import { CustomerEventRepository } from '../database/repositories/customerEventsRepo.js';
+import { CustomerEventSweep } from '../timeline/customerEventSweep.js';
 
 function docIdByTitle(db: Database, title: string): number {
   const row = db.prepare('SELECT id FROM knowledge_documents WHERE title = ?').get(title) as { id: number } | undefined;
@@ -233,6 +240,187 @@ export function seedDemoData(db: import('better-sqlite3').Database): void {
     });
   }
   console.log('Seeded support case.');
+
+  // ---------------- v2.0.0 (M4): incidents, custom objects, connector, timeline ----------------
+  const incidents = new IncidentRepository(db);
+  const slackConvs = conversations.filter((c) => (c.subject ?? '').match(/slack/i)).map((c) => c.id);
+  const tzConvsAll = conversations.filter((c) => (c.subject ?? '').match(/timezone|hour|reminder|schedule/i)).map((c) => c.id);
+  let incidentCount = 0;
+  if (slackConvs.length > 0) {
+    const inc = incidents.create({
+      title: 'Slack integration stops posting after token rotation',
+      severity: 'sev2',
+      status: 'identified',
+      product: 'Integrations',
+      feature: 'Slack',
+      description: 'Workspaces connected before the Slack token-rotation policy change report the integration stopped posting updates (repeated 401s in integration logs).',
+      internalExplanation: 'ENG-4471 tracks the automatic re-auth flow. Refresh tokens were invalidated for older connections; disconnect/reconnect restores service.',
+      customerSafeExplanation: 'An authentication change on Slack\u2019s side is affecting some workspaces. Reconnecting the integration restores updates; historical data is unaffected.',
+      knownCause: 'Slack token rotation policy invalidated refresh tokens for older connections.',
+      workaround: 'Disconnect and reconnect the integration; historical data is preserved.',
+      source: 'known_issue',
+      conversationIds: slackConvs
+    });
+    incidents.addRelated(inc.id, 'known_issue', ki2, 'Declared from this known issue', null);
+    incidents.addRef(inc.id, { system: 'linear', reference: 'ENG-4471', title: 'Slack auto re-auth', status: 'in progress', url: 'https://linear.app/example/issue/ENG-4471' });
+    incidents.addRelease(inc.id, {
+      versionLabel: 'v4.12.0',
+      releasedAt: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10),
+      notes: 'Slack app permissions scope change rolled out server-side by Slack.',
+      correlation: 'First 401 reports appeared within days of this window - a temporal association, not a causal claim.'
+    });
+    incidents.addNote(inc.id, 'Confirmed with three affected workspaces: disconnect/reconnect restores posting immediately.', null);
+    incidentCount++;
+  }
+  if (tzConvsAll.length > 0) {
+    const inc = incidents.create({
+      title: 'Scheduled reports drift one hour after DST changes',
+      severity: 'sev3',
+      status: 'fix_in_progress',
+      product: 'Reports',
+      feature: 'Schedules',
+      description: 'Scheduled reports fire one hour off after daylight-saving changes until the schedule is re-saved.',
+      internalExplanation: 'ENG-4472: re-anchor job scheduled for next release; schedule store keeps absolute UTC offsets.',
+      customerSafeExplanation: 'A known issue affects scheduled items around daylight-saving changes: times can be off by one hour until the schedule is re-saved.',
+      knownCause: 'Stored schedule times anchor to the UTC offset at save time.',
+      workaround: 'Open each schedule and re-save it once after the DST change.',
+      source: 'known_issue',
+      conversationIds: tzConvsAll
+    });
+    incidents.addRelated(inc.id, 'known_issue', ki1, 'Declared from this known issue', null);
+    incidents.addRef(inc.id, { system: 'linear', reference: 'ENG-4472', title: 'Re-anchor schedules after DST', status: 'in progress' });
+    incidentCount++;
+  }
+  console.log(`Seeded ${incidentCount} incidents (master issues) with refs, releases and notes.`);
+
+  // Custom object types: Account + Deployment (the plan's examples).
+  const customObjects = new CustomObjectRepository(db);
+  let accountType: { id: number } | null = null;
+  let deploymentType: { id: number } | null = null;
+  try {
+    const created = customObjects.createType({
+      name: 'Account',
+      description: 'Commercial account record for a customer organization.',
+      fields: [
+        { key: 'plan_tier', label: 'Plan tier', fieldType: 'select', required: true, options: ['free', 'starter', 'growth', 'enterprise'] },
+        { key: 'mrr', label: 'MRR (USD)', fieldType: 'number', required: false },
+        { key: 'renewal_date', label: 'Renewal date', fieldType: 'date', required: false },
+        { key: 'csm', label: 'Customer success manager', fieldType: 'text', required: false }
+      ]
+    });
+    accountType = { id: created.id };
+  } catch { /* type already exists from a previous demo seed */ }
+  const existingAccountType = accountType ?? customObjects.getTypeBySlug('account');
+  if (existingAccountType) accountType = { id: existingAccountType.id };
+  try {
+    const created = customObjects.createType({
+      name: 'Deployment',
+      description: 'A product deployment/release record.',
+      fields: [
+        { key: 'version', label: 'Version', fieldType: 'text', required: true },
+        { key: 'environment', label: 'Environment', fieldType: 'select', required: true, options: ['production', 'staging'] },
+        { key: 'deployed_at', label: 'Deployed at', fieldType: 'date', required: true },
+        { key: 'status', label: 'Status', fieldType: 'select', required: false, options: ['healthy', 'degraded', 'rolled_back'] }
+      ]
+    });
+    deploymentType = { id: created.id };
+  } catch { /* type already exists */ }
+  const existingDeploymentType = deploymentType ?? customObjects.getTypeBySlug('deployment');
+  if (existingDeploymentType) deploymentType = { id: existingDeploymentType.id };
+
+  const orgIdByName = (name: string): number | null => (db.prepare('SELECT id FROM organizations WHERE name = ?').get(name) as { id: number } | undefined)?.id ?? null;
+  const customerOfConversation = (n: number): number | null => byNumber(n)?.customer_local_id ?? null;
+  let objectCount = 0;
+  if (accountType && (customObjects.listObjects({ typeId: accountType.id }).total === 0)) {
+    const andesOrg = orgIdByName('Andes Logistics');
+    const andesCustomer = customerOfConversation(5001);
+    const brightPathCustomer = customerOfConversation(5004);
+    const harborCustomer = customerOfConversation(5005);
+    const candidates: { title: string; properties: Record<string, unknown>; org: number | null; customer: number | null }[] = [
+      { title: 'Andes Logistics', properties: { plan_tier: 'enterprise', mrr: 4800, renewal_date: '2026-03-01', csm: 'Priya Nair' }, org: andesOrg, customer: andesCustomer },
+      { title: 'Bright Path Education', properties: { plan_tier: 'starter', mrr: 240, renewal_date: '2025-12-15', csm: 'Marcus Chen' }, org: orgIdByName('Bright Path Education'), customer: brightPathCustomer },
+      { title: 'Harbor Fitness', properties: { plan_tier: 'growth', mrr: 990, renewal_date: '2026-01-10', csm: 'Sofia Reyes' }, org: orgIdByName('Harbor Fitness'), customer: harborCustomer }
+    ];
+    for (const cand of candidates) {
+      if (!cand.customer && !cand.org) continue;
+      try {
+        customObjects.createObject({
+          typeId: accountType.id,
+          title: cand.title,
+          properties: cand.properties,
+          links: [
+            ...(cand.customer ? [{ targetKind: 'customer' as const, targetLocalId: cand.customer }] : []),
+            ...(cand.org ? [{ targetKind: 'organization' as const, targetLocalId: cand.org }] : [])
+          ]
+        });
+        objectCount++;
+      } catch { /* demo data tolerant */ }
+    }
+  }
+  if (deploymentType && (customObjects.listObjects({ typeId: deploymentType.id }).total === 0)) {
+    const slackIncident = db.prepare("SELECT id FROM incidents WHERE code = 'INC-001'").get() as { id: number } | undefined;
+    const releases = [
+      { title: 'v4.12.0 production', properties: { version: 'v4.12.0', environment: 'production', deployed_at: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10), status: 'degraded' }, incident: slackIncident?.id ?? null },
+      { title: 'v4.11.2 production', properties: { version: 'v4.11.2', environment: 'production', deployed_at: new Date(Date.now() - 34 * 86_400_000).toISOString().slice(0, 10), status: 'healthy' }, incident: null }
+    ];
+    for (const rel of releases) {
+      try {
+        customObjects.createObject({
+          typeId: deploymentType.id,
+          title: rel.title,
+          properties: rel.properties,
+          links: rel.incident ? [{ targetKind: 'incident' as const, targetLocalId: rel.incident }] : []
+        });
+        objectCount++;
+      } catch { /* demo data tolerant */ }
+    }
+  }
+  console.log(`Seeded ${objectCount} custom objects (accounts + deployments).`);
+
+  // Sample local JSON connector (AI-visible, the plan's "Product releases" idea).
+  const connectors = new ConnectorService(db);
+  connectors.ensureConnectorsDir();
+  const releaseFile = path.join(connectors.connectorsDir(), 'product-releases.json');
+  try {
+    fs.writeFileSync(releaseFile, JSON.stringify([
+      { version: 'v4.12.0', channel: 'production', released_at: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10), notes: 'Slack scopes change window' },
+      { version: 'v4.11.2', channel: 'production', released_at: new Date(Date.now() - 34 * 86_400_000).toISOString().slice(0, 10), notes: 'Scheduling engine patch' },
+      { version: 'v4.10.0', channel: 'production', released_at: new Date(Date.now() - 62 * 86_400_000).toISOString().slice(0, 10), notes: 'Billing retry backoff fix' }
+    ], null, 2));
+    if (!connectors.repository.getByName('Product releases')) {
+      const connector = connectors.repository.create({
+        name: 'Product releases',
+        kind: 'local_json',
+        config: { kind: 'local_json', file: 'product-releases.json', keyColumn: 'version' },
+        auth: { mode: 'none' },
+        refreshMethod: 'manual',
+        refreshSeconds: 3600,
+        allowedAi: true
+      });
+      void connectors.refresh(connector.id).then((r) => {
+        if (!r.ok) console.log(`Demo connector refresh failed: ${r.error}`);
+      });
+    }
+    console.log('Seeded 1 local JSON connector (Product releases, AI-visible).');
+  } catch (e) {
+    console.log(`Demo connector seed skipped: ${(e as Error).message}`);
+  }
+
+  // Knowledge freshness: give two docs human review/verify stamps so the
+  // freshness view shows variety (others stay honestly unstamped).
+  try {
+    const docA = docIdByTitle(db, 'Inviting teammates');
+    const docB = docIdByTitle(db, 'Viewer role capabilities');
+    if (docA) db.prepare("UPDATE knowledge_documents SET last_reviewed_at = datetime('now', '-12 days') WHERE id = ?").run(docA);
+    if (docB) db.prepare("UPDATE knowledge_documents SET last_verified_at = datetime('now', '-40 days'), last_reviewed_at = datetime('now', '-40 days') WHERE id = ?").run(docB);
+  } catch { /* freshness columns always exist post-migration */ }
+
+  // Derive the customer event timeline once (same idempotent SQL as the
+  // migration backfill + incident/custom-object derivations).
+  const events = new CustomerEventRepository(db);
+  const sweep = new CustomerEventSweep(db, events);
+  const derived = sweep.rebuild();
+  console.log(`Derived ${derived.created} customer timeline events.`);
 
   console.log('Demo seed complete.');
   console.log('NOTE: all seeded AI content is marked ai_generated; demo data never mixes with production data.');

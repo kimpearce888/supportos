@@ -423,6 +423,157 @@ export class AnalyticsService {
         }
       }
     }
+    // ---------------- v2.0.0 (M4, plan Phase 20): radar extensions ----------------
+    alerts.push(...this.radarExtensions(clusters));
+    return alerts;
+  }
+
+  /**
+   * v2.0.0 (M4, plan Phase 20) radar extensions. Every alert is an
+   * association with evidence links - the wording never claims causation
+   * ("Never claim causation from correlation alone").
+   */
+  private radarExtensions(clusters: (import('../../shared/types.js').IssueCluster & { conversation_ids: number[] })[]): IssueRadarAlert[] {
+    const alerts: IssueRadarAlert[] = [];
+    if (clusters.length === 0) return alerts;
+    const ids = clusters.flatMap((c) => c.conversation_ids);
+    if (ids.length === 0) return alerts;
+
+    // One pass over all cluster-member conversations (bounded, indexed),
+    // with julian days computed once in SQL (no per-row prepares).
+    const convStmt = this.db.prepare(
+      `SELECT c.id, c.customer_local_id, c.mailbox_local_id, c.remote_created_at, julianday(c.remote_created_at) AS jd, julianday('now') AS now_jd
+       FROM conversations c WHERE c.id IN (${ids.map(() => '?').join(',')}) AND c.deleted_at IS NULL`
+    );
+    interface ConvFacts { id: number; customer_local_id: number | null; mailbox_local_id: number | null; remote_created_at: string | null; jd: number | null; now_jd: number }
+    const convById = new Map<number, ConvFacts>();
+    for (const row of convStmt.all(...ids) as ConvFacts[]) {
+      convById.set(row.id, row);
+    }
+    const nowJd = (this.db.prepare("SELECT julianday('now') AS j").get() as { j: number }).j;
+
+    for (const c of clusters) {
+      const convs = c.conversation_ids.map((id) => convById.get(id)).filter((x): x is ConvFacts => x != null);
+      if (convs.length < 2) continue;
+      const convIds = convs.map((v) => v.id);
+
+      // Reappearing: activity in both the recent 30d and the 60-30d window.
+      const recentCount = convs.filter((v) => v.jd != null && nowJd - v.jd <= 30).length;
+      const olderCount = convs.filter((v) => v.jd != null && nowJd - v.jd > 30 && nowJd - v.jd <= 60).length;
+      if (recentCount >= 2 && olderCount >= 2) {
+        alerts.push({
+          kind: 'reappearing_issue',
+          title: `Reappearing issue: ${c.title}`,
+          detail: `${olderCount} conversations 30-60 days ago and ${recentCount} in the last 30 days - the topic went quiet and came back. ${c.summary}`,
+          conversation_ids: convIds.slice(0, 10),
+          cluster_id: c.id,
+          severity: 'warning'
+        });
+      }
+
+      // Customer concentration: few customers, many tickets.
+      const customers = new Set(convs.map((v) => v.customer_local_id).filter((x): x is number => x != null));
+      if (convs.length >= 4 && customers.size > 0 && customers.size <= convs.length / 2) {
+        alerts.push({
+          kind: 'customer_concentration',
+          title: `Customer concentration: ${c.title}`,
+          detail: `${convs.length} conversations from only ${customers.size} distinct customers - a small group hitting the same problem repeatedly (an association, not a causal claim). ${c.summary}`,
+          conversation_ids: convIds.slice(0, 10),
+          cluster_id: c.id,
+          severity: 'info'
+        });
+      }
+
+      // Inbox concentration: one mailbox dominates the cluster.
+      const mailboxCounts = new Map<number, number>();
+      for (const v of convs) {
+        if (v.mailbox_local_id == null) continue;
+        mailboxCounts.set(v.mailbox_local_id, (mailboxCounts.get(v.mailbox_local_id) ?? 0) + 1);
+      }
+      const dominant = [...mailboxCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (dominant && convs.length >= 4 && dominant[1] / convs.length >= 0.7) {
+        const mailboxName = (this.db.prepare('SELECT name FROM mailboxes WHERE id = ?').get(dominant[0]) as { name: string } | undefined)?.name ?? `mailbox #${dominant[0]}`;
+        alerts.push({
+          kind: 'inbox_concentration',
+          title: `Inbox concentration: ${c.title}`,
+          detail: `${dominant[1]} of ${convs.length} conversations arrived in "${mailboxName}" - the issue is concentrated in one channel. ${c.summary}`,
+          conversation_ids: convIds.slice(0, 10),
+          cluster_id: c.id,
+          severity: 'info'
+        });
+      }
+
+      // Release correlation: a 7-day burst window containing >= 60% of the
+      // cluster (temporal clustering); releases recorded inside the window
+      // are mentioned as associations. Pure julian-day arithmetic in JS.
+      const jds = convs.map((v) => v.jd).filter((x): x is number => x != null).sort((a, b) => a - b);
+      const dateByJd = new Map<number, string>();
+      for (const v of convs) if (v.jd != null && v.remote_created_at != null) dateByJd.set(v.jd, v.remote_created_at);
+      if (jds.length >= 4) {
+        let bestStart: number | null = null;
+        let bestCount = 0;
+        for (const start of jds) {
+          const inWindow = jds.filter((d) => d >= start && d < start + 7).length;
+          if (inWindow > bestCount) { bestCount = inWindow; bestStart = start; }
+        }
+        if (bestStart != null && bestCount / jds.length >= 0.6) {
+          const startDate = dateByJd.get(bestStart) ?? '';
+          const releases = (this.db
+            .prepare("SELECT version_label, released_at FROM incident_releases WHERE released_at IS NOT NULL AND julianday(released_at) >= ? AND julianday(released_at) < ? LIMIT 3")
+            .all(bestStart, bestStart + 7) as { version_label: string; released_at: string }[]);
+          const releaseNote = releases.length > 0
+            ? ` Releases recorded in this window: ${releases.map((r) => r.version_label).join(', ')} (association only).`
+            : '';
+          alerts.push({
+            kind: 'release_correlation',
+            title: `Temporal burst: ${c.title}`,
+            detail: `${bestCount} of ${jds.length} conversations started within one 7-day window starting ${startDate.slice(0, 10)}. Temporal clustering suggests something changed - possibly a release - but this is an association, not a causal claim.${releaseNote} ${c.summary}`,
+            conversation_ids: convIds.slice(0, 10),
+            cluster_id: c.id,
+            severity: 'warning'
+          });
+        }
+      }
+
+      // Repeated unresolved pattern: one customer hitting the same cluster
+      // repeatedly over a >= 14 day span.
+      const byCustomer = new Map<number, { count: number; first: number; last: number; ids: number[] }>();
+      for (const v of convs) {
+        if (v.customer_local_id == null || v.jd == null) continue;
+        const entry = byCustomer.get(v.customer_local_id) ?? { count: 0, first: v.jd, last: v.jd, ids: [] };
+        entry.count += 1;
+        entry.first = Math.min(entry.first, v.jd);
+        entry.last = Math.max(entry.last, v.jd);
+        entry.ids.push(v.id);
+        byCustomer.set(v.customer_local_id, entry);
+      }
+      const repeated = [...byCustomer.entries()].filter(([, e]) => e.count >= 2 && e.last - e.first >= 14);
+      if (repeated.length > 0) {
+        alerts.push({
+          kind: 'repeated_unresolved',
+          title: `Repeated unresolved pattern: ${c.title}`,
+          detail: `${repeated.length} customer(s) wrote in ${repeated.map(([, e]) => e.count).join(', ')} times about this cluster across 14+ day spans - the underlying problem may not be resolved. ${c.summary}`,
+          conversation_ids: repeated.flatMap(([, e]) => e.ids).slice(0, 10),
+          cluster_id: c.id,
+          severity: 'warning'
+        });
+      }
+    }
+
+    // Unusual support volume (global): last 7d vs previous 7d.
+    const recent7 = (this.db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE deleted_at IS NULL AND julianday(remote_created_at) >= julianday('now', '-7 days')").get() as { n: number }).n;
+    const prev7 = (this.db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE deleted_at IS NULL AND julianday(remote_created_at) >= julianday('now', '-14 days') AND julianday(remote_created_at) < julianday('now', '-7 days')").get() as { n: number }).n;
+    if (recent7 >= 10 && prev7 > 0 && recent7 / prev7 >= 1.4) {
+      const sample = (this.db.prepare("SELECT id FROM conversations WHERE deleted_at IS NULL AND julianday(remote_created_at) >= julianday('now', '-7 days') ORDER BY remote_created_at DESC LIMIT 10").all() as { id: number }[]).map((r) => r.id);
+      alerts.push({
+        kind: 'volume_spike',
+        title: `Unusual support volume: ${recent7} conversations in the last 7 days`,
+        detail: `${recent7} conversations in the last 7 days vs ${prev7} in the previous 7 (a ${Math.round((recent7 / prev7 - 1) * 100)}% increase). An association with a change somewhere - not a causal claim.`,
+        conversation_ids: sample,
+        cluster_id: null,
+        severity: recent7 / prev7 >= 2 ? 'critical' : 'warning'
+      });
+    }
     return alerts;
   }
 

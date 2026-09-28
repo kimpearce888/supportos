@@ -371,7 +371,7 @@ export interface KnownIssue {
 }
 
 export interface IssueRadarAlert {
-  kind: 'new_cluster' | 'volume_spike' | 'recurring_issue' | 'reappearing_issue' | 'high_volume_question' | 'doc_gap' | 'escalation_heavy' | 'rating_correlated';
+  kind: 'new_cluster' | 'volume_spike' | 'recurring_issue' | 'reappearing_issue' | 'high_volume_question' | 'doc_gap' | 'escalation_heavy' | 'rating_correlated' | 'customer_concentration' | 'inbox_concentration' | 'release_correlation' | 'repeated_unresolved';
   title: string;
   detail: string;
   conversation_ids: number[];

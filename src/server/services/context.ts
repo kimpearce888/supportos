@@ -50,6 +50,15 @@ import { WorkloadService } from '../operations/workloadService.js';
 import { SideThreadService } from '../collaboration/sideThreadService.js';
 import { AiAttributeService } from '../ai/attributes.js';
 import { CopilotService } from '../ai/copilot.js';
+import { IncidentRepository } from '../database/repositories/incidentRepo.js';
+import { IncidentService } from '../issues/incidentService.js';
+import { IssueImpactService } from '../issues/impact.js';
+import { CustomObjectRepository } from '../customobjects/customObjectsRepo.js';
+import { ConnectorService } from '../connectors/connectorService.js';
+import { CustomerEventRepository } from '../database/repositories/customerEventsRepo.js';
+import { CustomerEventSweep } from '../timeline/customerEventSweep.js';
+import { SupportHealthService } from '../analytics/supportHealth.js';
+import { KnowledgeFreshnessService } from '../knowledge/freshness.js';
 
 /**
  * ApplicationContext: a modular monolith (spec #163) - one process, one SQLite
@@ -106,6 +115,17 @@ export class AppContext {
   // v1.9.0 (M3): AI attribute layer + Local Copilot
   attributes: AiAttributeService;
   copilot: CopilotService;
+  // v2.0.0 (M4): incident workspace, issue impact, custom objects,
+  // connectors, customer timeline, support health, knowledge freshness
+  incidents: IncidentRepository;
+  incidentService: IncidentService;
+  issueImpact: IssueImpactService;
+  customObjects: CustomObjectRepository;
+  connectors: ConnectorService;
+  customerEvents: CustomerEventRepository;
+  customerEventSweep: CustomerEventSweep;
+  supportHealth: SupportHealthService;
+  knowledgeFreshness: KnowledgeFreshnessService;
 
   constructor(opts: { dbPath?: string; demoMode?: boolean } = {}) {
     this.config = config;
@@ -185,6 +205,20 @@ export class AppContext {
     // deterministic fake).
     this.attributes = new AiAttributeService(this.db, this.aiProvider);
     this.copilot = new CopilotService(this.db, this.toolRegistry, (opts) => this.lmStudio.chat(opts));
+    // v2.0.0 (M4): the intelligence workspace layer. IncidentService needs
+    // the notification sweep (single-funnel notify); freshness needs the
+    // settings repo (stale threshold); everything else is pure SQL over the
+    // migrated schema. The connector service owns the SSRF-guarded refresh
+    // pipeline and the explicit AI-visibility gate.
+    this.incidents = new IncidentRepository(this.db);
+    this.issueImpact = new IssueImpactService(this.db);
+    this.customObjects = new CustomObjectRepository(this.db);
+    this.connectors = new ConnectorService(this.db);
+    this.customerEvents = new CustomerEventRepository(this.db);
+    this.customerEventSweep = new CustomerEventSweep(this.db, this.customerEvents);
+    this.supportHealth = new SupportHealthService(this.db);
+    this.knowledgeFreshness = new KnowledgeFreshnessService(this.db, this.settingsRepo);
+    this.incidentService = new IncidentService(this.db, this.notificationSweep);
     this.automation = new AutomationEngine(this.db);
     this.knowledge = new KnowledgeIngestor(this.db);
     this.backup = new BackupService(this.db, getDatabasePath(), this.settingsRepo, this.config.backupsPath);

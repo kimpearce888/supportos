@@ -80,4 +80,57 @@ export async function registerPeopleRoutes(app: FastifyInstance, ctx: AppContext
     const properties = ctx.peopleRepo.getOrganizationProperties(id);
     return { organization: org, customers, conversations, properties };
   });
+
+  // ---------------- v2.0.0 (M4, plan Phase 23-24): timeline + support health ----------------
+
+  app.get('/api/customers/:id/timeline', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const customer = ctx.peopleRepo.getCustomerByLocalId(id);
+    if (!customer) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Customer not found.' });
+      return;
+    }
+    const q = request.query as Record<string, string>;
+    const result = ctx.customerEvents.listForCustomer(id, (q.kind ?? '').slice(0, 40) || null, clampListParam(q.pageSize, 100, 1, 200), (clampListParam(q.page, 1, 1, 100000) - 1) * clampListParam(q.pageSize, 100, 1, 200));
+    return { events: result.events, total: result.total, kind_counts: ctx.customerEvents.kindCounts(id) };
+  });
+
+  app.get('/api/customers/:id/support-health', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const report = ctx.supportHealth.forCustomer(id);
+    if (!report) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Customer not found.' });
+      return;
+    }
+    return { report };
+  });
+
+  app.get('/api/organizations/:id/timeline', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const org = ctx.peopleRepo.getOrganizationDetail(id);
+    if (!org) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Organization not found.' });
+      return;
+    }
+    const q = request.query as Record<string, string>;
+    const result = ctx.customerEvents.listForOrganization(id, (q.kind ?? '').slice(0, 40) || null, clampListParam(q.pageSize, 100, 1, 200), (clampListParam(q.page, 1, 1, 100000) - 1) * clampListParam(q.pageSize, 100, 1, 200));
+    return { events: result.events, total: result.total };
+  });
+
+  app.get('/api/organizations/:id/support-health', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const report = ctx.supportHealth.forOrganization(id);
+    if (!report) {
+      reply.code(404).send({ statusCode: 404, error: 'NotFound', message: 'Organization not found.' });
+      return;
+    }
+    return { report };
+  });
+
+  /** Full timeline re-derivation (maintenance path; idempotent by dedup keys). */
+  app.post('/api/timeline/rebuild', async () => {
+    const result = ctx.customerEventSweep.rebuild();
+    ctx.jobsRepo.audit({ actor: 'user', action: 'customer_events_rebuilt', after_state: { created: result.created } });
+    return { ok: true, created: result.created, message: `Timeline rebuilt; ${result.created} new event(s) derived.` };
+  });
 }

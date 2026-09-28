@@ -21,6 +21,9 @@ import { registerNotificationRoutes } from './notifications.js';
 import { registerCollaborationRoutes } from './collaboration.js';
 import { registerCopilotRoutes } from './copilot.js';
 import { registerAttributeRoutes } from './attributes.js';
+import { registerIncidentRoutes } from './incidents.js';
+import { registerCustomObjectRoutes } from './customObjects.js';
+import { registerConnectorRoutes } from './connectors.js';
 
 export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   // All handlers receive ctx via route options - no globals needed for tests
@@ -46,6 +49,9 @@ export async function registerRoutes(app: FastifyInstance, ctx: AppContext): Pro
   await registerCollaborationRoutes(app, ctx);
   await registerCopilotRoutes(app, ctx);
   await registerAttributeRoutes(app, ctx);
+  await registerIncidentRoutes(app, ctx);
+  await registerCustomObjectRoutes(app, ctx);
+  await registerConnectorRoutes(app, ctx);
 }
 
 declare module 'fastify' {

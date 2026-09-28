@@ -421,3 +421,27 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--font-size
 
 .attr-bar { height: 6px; background: var(--bg-sunken); border-radius: 3px; overflow: hidden; border: 1px solid var(--border); }
 .attr-bar-fill { height: 100%; background: var(--ai); }
+
+/* ---------------------------------------------------------------- v2.0.0 (M4): intelligence workspace */
+
+.chip { border: 1px solid var(--border); background: var(--bg-raised); color: var(--text-secondary); border-radius: 999px; padding: 2px 10px; font-size: var(--font-size-xs); cursor: pointer; }
+.chip:hover { border-color: var(--accent); color: var(--text-primary); }
+.chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+.impact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 10px 0 14px; }
+.impact-stat { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 8px; text-align: center; }
+.impact-value { display: block; font-size: 20px; font-weight: 700; line-height: 1.1; }
+.impact-label { display: block; font-size: var(--font-size-xs); color: var(--text-secondary); margin-top: 2px; }
+
+.timeline { display: flex; flex-direction: column; gap: 0; margin-top: 8px; }
+.timeline-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.timeline-item:last-child { border-bottom: none; }
+.timeline-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--border); flex-wrap: wrap; }
+.timeline-row:last-child { border-bottom: none; }
+
+.table-scroll { overflow-x: auto; }
+.table tr.selected { background: var(--accent-soft); }
+
+.form-grid { display: grid; grid-template-columns: 160px 1fr; gap: 8px 10px; align-items: center; }
+.form-grid .label { font-size: var(--font-size-xs); color: var(--text-secondary); font-weight: 600; }
+@media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } .form-grid .label { margin-bottom: 0; } }

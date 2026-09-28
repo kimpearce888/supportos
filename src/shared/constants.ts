@@ -1,7 +1,7 @@
 /** Shared constants */
 
 export const APP_NAME = 'SupportOS';
-export const APP_VERSION = '1.9.0';
+export const APP_VERSION = '2.0.0';
 
 /** Help Scout API bases (documented, current) */
 export const HS_API_BASE = 'https://api.helpscout.net';

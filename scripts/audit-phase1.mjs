@@ -513,6 +513,178 @@ async function main() {
   r = await req('GET', '/api/attributes/report');
   if (r.status !== 200 || !Array.isArray(r.json?.distributions)) finding('high', 'attribute report broken after K-section probes', `status ${r.status}`);
 
+  // ================= v2.0.0 (M4) =================
+  console.log('\n== L. v2.0.0 intelligence workspace — black-box ==');
+  // L1. Incident surface: hostile shapes everywhere.
+  {
+    const badCreates = [
+      [{ title: '' }, 'empty title must 400'],
+      [{ title: 'x', status: 'exploded' }, 'unknown status must 400'],
+      [{ title: 'x', severity: 'sev0' }, 'unknown severity must 400'],
+      [{ title: 'x', startedAt: 'not-a-date' }, 'garbage startedAt must 400'],
+      [{ title: 'x'.repeat(500) }, 'oversized title must 400']
+    ];
+    for (const [body, label] of badCreates) {
+      const r = await req('POST', '/api/incidents', body);
+      expect(r.status === 400, `incident create rejects: ${label}`, `got ${r.status}`);
+    }
+    // XSS-shaped incident title/note (must be stored, sanitized at render).
+    const xss = await req('POST', '/api/incidents', { title: '"><script>alert(1)</script>' });
+    expect(xss.status === 200, 'XSS-shaped incident title accepted as data', `got ${xss.status}`);
+    if (xss.status === 200) {
+      const detail = await req('GET', `/api/incidents/${xss.json.incident.id}`);
+      expect((detail.json.incident.title ?? '').includes('<script>') === true, 'XSS title stored verbatim (sanitize at render only)', 'title mutated server-side?');
+      const note = await req('POST', `/api/incidents/${xss.json.incident.id}/notes`, { body: '<img src=x onerror=alert(1)>' });
+      expect(note.status === 200, 'XSS-shaped note accepted as data', `got ${note.status}`);
+    }
+    // Hostile link/ref/related payloads.
+    const inc = (await req('POST', '/api/incidents', { title: 'audit incident' })).json.incident;
+    for (const [p, body, want, label] of [
+      [`/api/incidents/${inc.id}/conversations/999999`, {}, 404, 'unknown conversation link 404'],
+      [`/api/incidents/${inc.id}/related`, { targetKind: 'drop table', targetLocalId: 1 }, 400, 'unknown related kind 400'],
+      [`/api/incidents/${inc.id}/related`, { targetKind: 'known_issue', targetLocalId: 999999 }, 422, 'unknown related id 422'],
+      [`/api/incidents/${inc.id}/refs`, { system: 'x; DROP TABLE incidents', reference: 'y' }, 200, 'ref stored as data (parameterized)'],
+      [`/api/incidents/${inc.id}/releases`, { versionLabel: '' }, 400, 'empty version label 400'],
+      [`/api/incidents/${inc.id}/notes`, {}, 400, 'note without body 400'],
+      [`/api/incidents/abc/impact`, undefined, 404, 'non-numeric incident id 404']
+    ]) {
+      const r = await req('POST', p, body);
+      expect(r.status === want, `incident hostile: ${label}`, `got ${r.status}`);
+      if (label.includes('DROP') && r.status === 200) {
+        const still = await req('GET', '/api/incidents?pageSize=1');
+        expect(still.status === 200, 'incidents table survives SQL-shaped ref text', 'table dropped?!' + still.status);
+      }
+    }
+    // Impact parity: list counts == detail impact counts for one incident.
+    const listOne = await req('GET', `/api/incidents?open=true&pageSize=5`);
+    if ((listOne.json.incidents ?? []).length > 0) {
+      const first = listOne.json.incidents[0];
+      const det = await req('GET', `/api/incidents/${first.id}`);
+      expect(det.json.impact.affected_conversations === first.conversation_count, 'list conversation_count == impact conversations', `${det.json.impact.affected_conversations} vs ${first.conversation_count}`);
+      expect(det.json.impact.affected_customers <= det.json.impact.affected_conversations, 'customer count never exceeds ticket count (distinct subset)', 'customers > tickets');
+    }
+    // Known-issue impact parity.
+    const known = await req('GET', '/api/issues/known');
+    if ((known.json.known_issues ?? []).length > 0) {
+      const kiImpact = await req('GET', `/api/issues/known/${known.json.known_issues[0].id}/impact`);
+      expect(kiImpact.status === 200, 'known-issue impact served', `got ${kiImpact.status}`);
+      expect(String(kiImpact.json.impact.note).includes('never ticket counts'), 'impact note states the distinct-count rule', 'note missing');
+    }
+  }
+
+  // L2. Custom objects: injection-shaped everything.
+  {
+    const badTypes = [
+      [{ name: 'T', fields: [] }, 400, 'empty fields 400'],
+      [{ name: 'T', fields: [{ key: 'DROP TABLE', label: 'x', fieldType: 'text' }] }, 400, 'hostile field key 400'],
+      [{ name: 'T', fields: [{ key: 'ok', label: 'x', fieldType: 'json' }] }, 400, 'unknown field type 400'],
+      [{ name: 'T', fields: [{ key: 'ok', label: 'x', fieldType: 'select' }] }, 400, 'select without options 400']
+    ];
+    for (const [body, want, label] of badTypes) {
+      const r = await req('POST', '/api/custom-objects/types', body);
+      expect(r.status === want, `custom type hostile: ${label}`, `got ${r.status}`);
+    }
+    // Property values are JSON data, never SQL.
+    const type = (await req('POST', '/api/custom-objects/types', { name: `Audit ${Date.now()}`, fields: [{ key: 'note', label: 'Note', fieldType: 'text' }] })).json.type;
+    const inj = await req('POST', '/api/custom-objects', { typeId: type.id, title: "Robert'); DROP TABLE custom_objects;--", properties: { note: "x' OR '1'='1" } });
+    expect(inj.status === 200, 'SQL-shaped object data accepted as data', `got ${inj.status}`);
+    const survivors = await req('GET', '/api/custom-objects?pageSize=5');
+    expect(survivors.status === 200, 'custom_objects survives SQL-shaped values', 'table gone');
+    // FTS injection probes.
+    for (const q of ['" * ( ) OR', 'note* AND 1=1', 'DROP']) {
+      const r = await req('GET', `/api/custom-objects?q=${encodeURIComponent(q)}`);
+      expect(r.status === 200, `custom object FTS hostile query ok: ${q}`, `got ${r.status}`);
+    }
+    // Link hardening: closed vocabulary + existence + non-numeric ids.
+    for (const [body, want, label] of [
+      [{ targetKind: 'customers', targetLocalId: 1 }, 400, 'plural target kind 400'],
+      [{ targetKind: 'customer', targetLocalId: 'abc' }, 400, 'non-numeric target id 400'],
+      [{ targetKind: 'customer', targetLocalId: 999999 }, 422, 'unknown customer 422']
+    ]) {
+      const r = await req('POST', `/api/custom-objects/${inj.json.object.id}/links`, { links: [body] });
+      expect(r.status === want, `custom object link hostile: ${label}`, `got ${r.status}`);
+    }
+    expect((await req('GET', '/api/custom-objects/for/rogue/1')).status === 400, 'reverse lookup closed vocabulary', 'not 400');
+    expect((await req('GET', '/api/custom-objects/report')).status === 200, 'report endpoint live', 'not 200');
+  }
+
+  // L3. Connectors: SSRF probes, jail escapes, auth redaction, AI gate.
+  {
+    for (const url of ['http://127.0.0.1:3177/api/health', 'http://localhost/anything', 'http://169.254.169.254/latest/meta-data/', 'http://10.1.2.3/x', 'http://[::1]/x', 'http://0x7f000001/x', 'file:///etc/passwd']) {
+      const r = await req('POST', '/api/connectors', { name: `ssrf ${url}`, config: { kind: 'http', url } });
+      expect(r.status === 422, `connector SSRF refused: ${url}`, `got ${r.status}`);
+    }
+    // Path-jail escapes through the config schema.
+    for (const file of ['/etc/passwd', '../data/supportos.db', 'C:\\\\Windows\\\\win.ini']) {
+      const r = await req('POST', '/api/connectors', { name: `jail ${file}`, config: { kind: 'local_json', file } });
+      expect(r.status === 400, `connector jail escape refused: ${file}`, `got ${r.status}`);
+    }
+    // Auth redaction on create + read.
+    const authed = await req('POST', '/api/connectors', {
+      name: 'authed audit', config: { kind: 'local_json', file: 'nothing.json' },
+      auth: { mode: 'header', headerName: 'X-Key', headerValue: 'sekrit-value-123' }
+    });
+    expect(authed.status === 422, 'connector with missing file refused at create (honest error)', `got ${authed.status}`);
+    // Create a REAL file via the demo seed's connector + hostile row filter.
+    const list = await req('GET', '/api/connectors');
+    const seeded = (list.json.connectors ?? []).find((c) => c.name === 'Product releases');
+    expect(seeded != null, 'demo connector seeded', 'seed missing');
+    if (seeded) {
+      expect(JSON.stringify(seeded).includes('sekrit') === false, 'no auth secrets in list responses', 'secret leaked');
+      expect(seeded.auth.mode === 'none' || seeded.auth.token === '••••••' || seeded.auth.headerValue === '••••••', 'auth material redacted', JSON.stringify(seeded.auth));
+      const rows = await req('GET', `/api/connectors/${seeded.id}/rows?q=${encodeURIComponent("v4.12' OR 1=1")}`);
+      expect(rows.status === 200, 'connector row filter is parameterized LIKE', `got ${rows.status}`);
+      expect((await req('GET', `/api/connectors/${seeded.id}/rows?pageSize=abc&page=0`)).status === 200, 'connector rows clamps hostile paging', 'not 200');
+    }
+    // Unknown connector 404s, refresh of unknown 404s.
+    expect((await req('GET', '/api/connectors/999999')).status === 404, 'unknown connector 404', 'not 404');
+    expect((await req('POST', '/api/connectors/999999/refresh')).status === 404, 'unknown refresh 404', 'not 404');
+    expect((await req('POST', '/api/connectors/999999/test')).status === 404, 'unknown test 404', 'not 404');
+  }
+
+  // L4. Timeline + support health + freshness hostile probes.
+  {
+    const cust = await req('GET', '/api/customers?pageSize=1');
+    const cid = cust.json.customers[0].id;
+    for (const qs of ['?kind=<script>', '?kind=unknown_kind', '?pageSize=99999&page=abc', '?kind=' + 'x'.repeat(500)]) {
+      const r = await req('GET', `/api/customers/${cid}/timeline${qs}`);
+      expect(r.status === 200 || r.status === 404, `timeline hostile query ok: ${qs.slice(0, 30)}`, `got ${r.status}`);
+    }
+    expect((await req('GET', '/api/customers/999999/timeline')).status === 404, 'unknown customer timeline 404', 'not 404');
+    expect((await req('GET', '/api/customers/999999/support-health')).status === 404, 'unknown customer health 404', 'not 404');
+    const health = await req('GET', `/api/customers/${cid}/support-health`);
+    expect(health.status === 200 && Array.isArray(health.json.report.metrics), 'support health served', `got ${health.status}`);
+    if (health.status === 200) {
+      expect(!('score' in health.json.report), 'no aggregate health score (plan Phase 24)', 'score field present');
+      expect(String(health.json.report.note).includes('No psychological'), 'health note forbids judgments', 'note missing');
+    }
+    const fresh = await req('GET', '/api/knowledge/freshness');
+    expect(fresh.status === 200 && Array.isArray(fresh.json.documents), 'freshness report served', `got ${fresh.status}`);
+    expect((await req('POST', '/api/knowledge/documents/999999/review')).status === 404, 'unknown doc review 404', 'not 404');
+    expect((await req('POST', '/api/knowledge/documents/999999/verify')).status === 404, 'unknown doc verify 404', 'not 404');
+    expect((await req('POST', '/api/timeline/rebuild')).status === 200, 'timeline rebuild idempotent endpoint', 'not 200');
+    const before = (await req('GET', `/api/customers/${cid}/timeline?pageSize=200`)).json.total;
+    await req('POST', '/api/timeline/rebuild');
+    const after = (await req('GET', `/api/customers/${cid}/timeline?pageSize=200`)).json.total;
+    expect(before === after, 'timeline rebuild creates zero duplicates', `${before} -> ${after}`);
+  }
+
+  // L5. Radar extension honesty: new alert kinds carry evidence + association wording.
+  {
+    const radar = await req('GET', '/api/reports/issue-radar');
+    expect(radar.status === 200, 'issue radar served', `got ${radar.status}`);
+    const alerts = radar.json.alerts ?? [];
+    for (const a of alerts) {
+      if (['customer_concentration', 'inbox_concentration', 'release_correlation', 'repeated_unresolved', 'reappearing_issue', 'volume_spike'].includes(a.kind)) {
+        expect(Array.isArray(a.conversation_ids) && a.conversation_ids.length > 0, `radar alert carries evidence: ${a.kind} ${a.title}`, 'no evidence links');
+        const d = String(a.detail).toLowerCase();
+        if (d.includes('caused') || d.includes('proves')) {
+          finding('medium', `radar alert claims causation: ${a.kind}`, a.detail);
+        }
+      }
+    }
+  }
+
   console.log('\n== I. rate limiting on mutations ==');
   let last429 = 0;
   for (let i = 0; i < 320; i++) {
@@ -528,7 +700,10 @@ async function main() {
   const logs = serverLogs.join('');
   if (/stack trace|at .*\(.+\)/i.test(logs) && !/warn/.test(logs)) finding('low', 'stack traces visible in server logs during audit', 'review error handler');
   const fatalCount = (logs.match(/"level":"error"/g) ?? []).length;
-  if (fatalCount > 0) finding('medium', `${fatalCount} error-level log entries during audit traffic`, 'inspect server.log output');
+  if (fatalCount > 0) {
+    const errLines = logs.split('\n').filter((l) => l.includes('"level":"error"')).slice(0, 3);
+    finding('medium', `${fatalCount} error-level log entries during audit traffic`, errLines.join(' | ').slice(0, 400));
+  }
 
   server.kill();
   fs.rmSync(tmpDir, { recursive: true, force: true });

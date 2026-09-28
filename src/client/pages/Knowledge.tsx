@@ -1,16 +1,17 @@
 import { type ReactNode, useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
-import { BookOpen, FilePlus2, Trash2, RefreshCw, FileText } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { BookOpen, FilePlus2, Trash2, RefreshCw, FileText, Clock, CheckCheck, Eye } from 'lucide-react';
 import { api } from '../api/client.js';
 import { Spinner, EmptyState, ErrorState, RelativeTime, KV } from '../components/common/ui.js';
 import { Modal } from '../components/common/overlays.js';
 import { useUiStore } from '../state/uiStore.js';
+import type { KnowledgeFreshnessRow } from '../../shared/workspace.js';
 
 interface KnowledgeDoc { id: number; source_id: number; title: string; visibility: string; version: number; content_preview: string; chunk_count: number; created_at: string; updated_at: string }
 
 export function KnowledgePage(): ReactNode {
-  const [tab, setTab] = useState<'documents' | 'sources'>('documents');
+  const [tab, setTab] = useState<'documents' | 'sources' | 'freshness'>('documents');
   const [importing, setImporting] = useState(false);
   // Deep links: /knowledge?doc=N opens that document's reader (used by search
   // results and the AI evidence chips - previously this link was dead).
@@ -89,6 +90,7 @@ export function KnowledgePage(): ReactNode {
       <div className="tabs">
         <button className={`tab ${tab === 'documents' ? 'active' : ''}`} onClick={() => setTab('documents')}>Documents</button>
         <button className={`tab ${tab === 'sources' ? 'active' : ''}`} onClick={() => setTab('sources')}>Sources</button>
+        <button className={`tab ${tab === 'freshness' ? 'active' : ''}`} onClick={() => setTab('freshness')}><Clock size={12} style={{ display: 'inline', verticalAlign: 'middle' }} /> Freshness</button>
       </div>
 
       {tab === 'documents' ? (
@@ -120,7 +122,9 @@ export function KnowledgePage(): ReactNode {
             </table>
           </div>
         </>
-      ) : (
+      ) : null}
+      {tab === 'freshness' ? <FreshnessTab /> : null}
+      {tab === 'sources' ? (
         <div className="card">
           <h3 className="card-title">Knowledge sources</h3>
           {(sources?.sources ?? []).map((s) => (
@@ -128,7 +132,7 @@ export function KnowledgePage(): ReactNode {
           ))}
           {(sources?.sources ?? []).length === 0 ? <EmptyState title="No sources yet" /> : null}
         </div>
-      )}
+      ) : null}
 
       {importing ? (
         <Modal title="Import knowledge" onClose={() => setImporting(false)} wide>
@@ -203,5 +207,107 @@ function DocReader({ id, onClose }: { id: number; onClose: () => void }): ReactN
         </>
       )}
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------- v2.0.0 Freshness
+
+/**
+ * Knowledge freshness (plan Phase 25): lifecycle observability for the local
+ * knowledge base. Flags are deterministic associations - stale age, review
+ * gaps, title-overlap conflict candidates, low local search usage, articles
+ * followed by support tickets (temporal/topic association only) and articles
+ * associated with recurring questions. Review/verify are HUMAN actions that
+ * stamp timestamps; nothing is published automatically.
+ */
+function FreshnessTab(): ReactNode {
+  const pushToast = useUiStore((s) => s.pushToast);
+  const qc = useQueryClient();
+  const [flagFilter, setFlagFilter] = useState('');
+  const { data, isLoading, error } = useQuery({ queryKey: ['knowledge-freshness'], queryFn: () => api.get<{ documents: KnowledgeFreshnessRow[] }>('/api/knowledge/freshness') });
+
+  const mark = useMutation({
+    mutationFn: (input: { id: number; action: 'review' | 'verify' }) => api.post<{ ok: boolean; message: string }>(`/api/knowledge/documents/${input.id}/${input.action}`),
+    onSuccess: (r) => {
+      pushToast({ kind: r.ok ? 'success' : 'error', message: r.message });
+      void qc.invalidateQueries({ queryKey: ['knowledge-freshness'] });
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
+
+  if (isLoading) return <Spinner />;
+  if (error) return <ErrorState message="Could not load the freshness report" detail={error instanceof Error ? error.message : undefined} />;
+  const docs = data?.documents ?? [];
+  const filtered = flagFilter
+    ? docs.filter((d) => {
+        const f = d.flags as unknown as Record<string, boolean>;
+        return f[flagFilter] === true;
+      })
+    : docs;
+  const countWith = (key: string): number => docs.filter((d) => (d.flags as unknown as Record<string, boolean>)[key] === true).length;
+
+  return (
+    <>
+      <div className="flex wrap mb-16" style={{ gap: 6 }}>
+        <button className={`chip ${flagFilter === '' ? 'active' : ''}`} onClick={() => setFlagFilter('')}>all ({docs.length})</button>
+        <button className={`chip ${flagFilter === 'stale' ? 'active' : ''}`} onClick={() => setFlagFilter('stale')}>stale ({countWith('stale')})</button>
+        <button className={`chip ${flagFilter === 'unreviewed_long' ? 'active' : ''}`} onClick={() => setFlagFilter('unreviewed_long')}>needs review ({countWith('unreviewed_long')})</button>
+        <button className={`chip ${flagFilter === 'conflict_candidate' ? 'active' : ''}`} onClick={() => setFlagFilter('conflict_candidate')}>possible conflicts ({countWith('conflict_candidate')})</button>
+        <button className={`chip ${flagFilter === 'low_usage' ? 'active' : ''}`} onClick={() => setFlagFilter('low_usage')}>low usage ({countWith('low_usage')})</button>
+        <button className={`chip ${flagFilter === 'followed_by_tickets' ? 'active' : ''}`} onClick={() => setFlagFilter('followed_by_tickets')}>followed by tickets ({countWith('followed_by_tickets')})</button>
+        <button className={`chip ${flagFilter === 'fails_common_questions' ? 'active' : ''}`} onClick={() => setFlagFilter('fails_common_questions')}>recurring questions ({countWith('fails_common_questions')})</button>
+      </div>
+      {filtered.length === 0 ? <EmptyState icon="clock" title="Nothing flagged in this view" hint="Flags appear as documents age, go unreviewed, overlap in content, go unused, or keep being followed by support tickets." /> : null}
+      <div className="card" style={{ padding: 0 }}>
+        <table className="table">
+          <thead>
+            <tr><th>Document</th><th>Version</th><th>Updated</th><th>Reviewed</th><th>Verified</th><th>Usage</th><th>Flags</th><th></th></tr>
+          </thead>
+          <tbody>
+            {filtered.map((d) => (
+              <tr key={d.document_id}>
+                <td><strong className="text-sm">{d.title}</strong><div className="text-xs muted">{d.source_name ?? '—'} · {d.visibility === 'customer_safe' ? 'customer-safe' : 'internal-only'}</div></td>
+                <td className="text-sm">v{d.version}</td>
+                <td className="text-xs">{d.days_since_update != null ? `${d.days_since_update}d ago` : '—'}</td>
+                <td className="text-xs">{d.last_reviewed_at ? `${d.days_since_review ?? '—'}d ago` : <span className="muted">never</span>}</td>
+                <td className="text-xs">{d.last_verified_at ? <RelativeTime iso={d.last_verified_at} /> : <span className="muted">never</span>}</td>
+                <td className="text-xs">{d.search_hits} search hits</td>
+                <td>
+                  <div className="flex wrap" style={{ gap: 3 }}>
+                    {d.flags.stale ? <span className="badge err">stale</span> : null}
+                    {d.flags.unreviewed_long ? <span className="badge warn">needs review</span> : null}
+                    {d.flags.conflict_candidate ? <span className="badge warn" title={d.conflict_candidates.map((c) => c.title).join('; ')}>possible conflict</span> : null}
+                    {d.flags.low_usage ? <span className="badge">low usage</span> : null}
+                    {d.flags.followed_by_tickets ? <span className="badge warn" title="Conversations started within 14 days after the last update match this document's topic - a temporal association">followed by {d.followed_by_ticket_count} tickets</span> : null}
+                    {d.flags.fails_common_questions ? <span className="badge warn">recurring questions</span> : null}
+                  </div>
+                </td>
+                <td className="flex" style={{ gap: 4 }}>
+                  <button className="btn small" title="Mark reviewed (human action; nothing is published)" onClick={() => mark.mutate({ id: d.document_id, action: 'review' })}><Eye size={11} /> Review</button>
+                  <button className="btn small" title="Mark verified (human action; nothing is published)" onClick={() => mark.mutate({ id: d.document_id, action: 'verify' })}><CheckCheck size={11} /> Verify</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {filtered.some((d) => d.associated_questions.length > 0) ? (
+        <div className="card mt-16">
+          <h3 className="card-title">Recurring questions associated with flagged documents</h3>
+          <p className="text-xs muted" style={{ marginTop: 0 }}>Questions that keep coming back (2+ analyzed tickets in 90 days) where knowledge search matches these documents - the question recurring is the signal, not proof the article failed.</p>
+          {filtered.filter((d) => d.associated_questions.length > 0).map((d) => (
+            <div key={d.document_id} className="mb-8">
+              <strong className="text-sm">{d.title}</strong>
+              {d.associated_questions.map((q, i) => (
+                <div key={i} className="text-xs muted" style={{ padding: '2px 0' }}>
+                  <span className="badge">{q.conversation_count} tickets</span> <span className={`badge ${q.coverage === 'ambiguous' ? 'warn' : ''}`}>{q.coverage}</span> {q.question.slice(0, 120)}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <p className="text-xs muted mt-8">Review and verify are human-only timestamps - SupportOS never edits or publishes knowledge automatically. Conflict flags come from title-term overlap and need a human read.</p>
+    </>
   );
 }

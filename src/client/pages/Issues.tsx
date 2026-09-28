@@ -1,7 +1,7 @@
 import { type ReactNode, useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Radar, Layers, BookPlus, Trash2, Link2 } from 'lucide-react';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
+import { AlertTriangle, Radar, Layers, BookPlus, Trash2, Link2, Flame } from 'lucide-react';
 import { api } from '../api/client.js';
 import { Spinner, EmptyState, ErrorState, RelativeTime, safeExternalHref } from '../components/common/ui.js';
 import { Modal, ConfirmDialog } from '../components/common/overlays.js';
@@ -159,6 +159,20 @@ function Clusters(): ReactNode {
   const { data, error, refetch, isFetching } = useQuery({ queryKey: ['clusters'], queryFn: () => api.get<{ clusters: Cluster[] }>('/api/issues/clusters') });
   const [deleting, setDeleting] = useState<number | null>(null);
   const del = useMutation({ mutationFn: (id: number) => api.delete(`/api/issues/clusters/${id}`), onSuccess: () => void refetch() });
+  const pushToast = useUiStore((s) => s.pushToast);
+  const navigate = useNavigate();
+  // v2.0.0 (M4): declare an incident FROM a cluster - pre-fills the workspace
+  // and links every member conversation in one action.
+  const declareIncident = useMutation({
+    mutationFn: (clusterId: number) => api.post<{ ok: boolean; incident: { id: number }; linked_conversations: number }>(`/api/incidents/from-cluster/${clusterId}`),
+    onSuccess: (r) => {
+      if (r.ok) {
+        pushToast({ kind: 'success', message: `Incident declared from the cluster - ${r.linked_conversations} conversation(s) linked.` });
+        navigate(`/incidents/${r.incident.id}`);
+      }
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
   if (error) return <ErrorState message="Could not load issue clusters" detail={error instanceof Error ? error.message : 'The request failed. Retry or check the logs.'} />;
   if (isFetching && !data) return <Spinner />;
   if (!data || data.clusters.length === 0) return <EmptyState icon="sparkles" title="No issue clusters yet" hint="Run 'Run issue clustering' in the AI Center - clusters are discovered from actual ticket data, not hard-coded categories." />;
@@ -174,6 +188,7 @@ function Clusters(): ReactNode {
             <div className="flex" style={{ gap: 6 }}>
               <span className="badge">{c.conversation_count} tickets</span>
               <span className="badge">{c.customer_count} customers</span>
+              <button className="btn small" title="Create a master-issue incident from this cluster and link its conversations" onClick={() => declareIncident.mutate(c.id)} disabled={declareIncident.isPending}><Flame size={11} /> Declare incident</button>
               <button className="btn ghost small" onClick={() => setDeleting(c.id)} aria-label="Delete cluster"><Trash2 size={12} /></button>
             </div>
           </div>
@@ -197,6 +212,19 @@ function KnownIssues(): ReactNode {
   const { data, error, refetch } = useQuery({ queryKey: ['known-issues'], queryFn: () => api.get<{ known_issues: KnownIssue[] }>('/api/issues/known') });
   const [creating, setCreating] = useState(false);
   const pushToast = useUiStore((s) => s.pushToast);
+  const navigate = useNavigate();
+  // v2.0.0 (M4): declare an incident FROM a known issue - carries the
+  // explanations over and links its conversations.
+  const declareIncident = useMutation({
+    mutationFn: (knownIssueId: number) => api.post<{ ok: boolean; incident: { id: number }; linked_conversations: number }>(`/api/incidents/from-known-issue/${knownIssueId}`),
+    onSuccess: (r) => {
+      if (r.ok) {
+        pushToast({ kind: 'success', message: `Incident declared from the known issue - ${r.linked_conversations} conversation(s) linked.` });
+        navigate(`/incidents/${r.incident.id}`);
+      }
+    },
+    onError: (e: Error) => pushToast({ kind: 'error', message: e.message })
+  });
   const create = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.post<{ ok: boolean; message: string }>('/api/issues/known', body),
     onSuccess: (r) => {
@@ -223,7 +251,10 @@ function KnownIssues(): ReactNode {
               <span className="badge">{ki.provenance === 'human_local' ? 'human-verified' : 'AI-generated candidate'}</span>
               {ki.known_cause ? <div className="text-sm muted" style={{ marginTop: 2 }}>Cause: {ki.known_cause}</div> : null}
             </div>
-            <span className="badge">{ki.conversation_count} linked tickets</span>
+            <div className="flex" style={{ gap: 6 }}>
+              <span className="badge">{ki.conversation_count} linked tickets</span>
+              <button className="btn small" title="Create a master-issue incident from this known issue" onClick={() => declareIncident.mutate(ki.id)} disabled={declareIncident.isPending}><Flame size={11} /> Declare incident</button>
+            </div>
           </div>
           <div className="text-sm mt-8">{ki.symptoms}</div>
           {ki.workaround ? <div className="text-sm mt-8"><strong>Workaround:</strong> {ki.workaround}</div> : null}

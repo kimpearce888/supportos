@@ -65,6 +65,8 @@ export interface InboxViewParams {
   assigneeLocalId?: number | null;
   tag?: string | null;
   query?: string;
+  /** v2.0.0 (M4): exact conversation-number lookup (deep links, incident linking). */
+  number?: number | null;
   // ---- v1.7.0 activity filters ----
   /** Activity column date window (resolved UTC [from, to)). */
   activityColumn?: string | null;
@@ -386,6 +388,11 @@ export class ConversationRepository {
     // positional fragments, and better-sqlite3 forbids mixing named and
     // positional binds in one statement.
     const args: unknown[] = [];
+    // v2.0.0 (M4): exact conversation-number lookup (parameterized).
+    if (params.number != null && Number.isFinite(params.number)) {
+      where.push('c.number = ?');
+      args.push(params.number);
+    }
 
     switch (params.view) {
       case 'my-tickets':

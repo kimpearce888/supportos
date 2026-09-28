@@ -88,6 +88,8 @@ export interface ConversationDetail {
     };
   };
   ticket_states: TicketStateDef[];
+  // v2.0.0 (M4): active incident exposure chip
+  active_incident: { incident_id: number; code: string; title: string; severity: string; status: string } | null;
 }
 
 export function useConversationDetail(id: number | null) {

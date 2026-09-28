@@ -150,6 +150,9 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
       pageSize,
       assigneeLocalId,
       tag: q.tag ?? null,
+      // v2.0.0 (M4): exact number lookup (?number=N) for deep links and the
+      // incident link-by-number flow; NaN/garbage is ignored, never a 500.
+      number: q.number != null && q.number !== '' && Number.isFinite(Number(q.number)) ? Number(q.number) : null,
       activityColumn,
       activityFrom,
       activityTo,
@@ -227,6 +230,8 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
     const agesHuman: Record<string, string | null> = {};
     for (const [k, v] of Object.entries(ages)) agesHuman[k] = formatAgeMinutes(v);
     const eventCounts = ctx.activityRepo.eventCounts(id);
+    // v2.0.0 (M4): active incident exposure chip on the detail payload.
+    const activeIncident = ctx.incidents.activeIncidentForConversation(id);
     return {
       conversation: summary,
       threads,
@@ -251,6 +256,7 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
         state_history: stateHistory,
         state_lifecycle: stateLifecycle
       },
+      active_incident: activeIncident,
       ticket_states: ctx.ticketStateRepo.listStates()
     };
   });

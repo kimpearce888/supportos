@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   RefreshCw, Reply, StickyNote, Send, Bookmark, ExternalLink, Paperclip, Download,
   ChevronLeft, ChevronRight, Bot, User, Clock, Trash2, CheckCircle2, XCircle,   ShieldCheck, Sparkles, Wand2, ChevronDown, ChevronUp, Tag, Mail, Building2,
-  AlertTriangle, Workflow, MessageCircle
+  AlertTriangle, Workflow, MessageCircle, Flame
 } from 'lucide-react';
 import { api } from '../api/client.js';
 import { useConversations, useConversationDetail, useReference } from '../api/hooks.js';
@@ -393,6 +393,15 @@ function ConversationHeader({ data, onRefresh }: { data: NonNullable<ReturnType<
             <ResponseStateBadge state={c.response_state} />
             {data.activity.ticket_state ? <TicketStateBadge state={data.activity.ticket_state} /> : null}
             <span className="badge">#{c.number}</span>
+            {data.active_incident ? (
+              <Link
+                to={`/incidents/${data.active_incident.incident_id}`}
+                className={`badge ${data.active_incident.severity === 'sev1' || data.active_incident.severity === 'sev2' ? 'err' : 'warn'}`}
+                title={`This conversation is counted in active incident ${data.active_incident.code} (${data.active_incident.status})`}
+              >
+                <Flame size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /> {data.active_incident.code} · {data.active_incident.title.slice(0, 40)}
+              </Link>
+            ) : null}
             {c.mailbox_name ? <span className="badge">{c.mailbox_name}</span> : null}
             <span className="text-xs muted"><Mail size={11} style={{ display: 'inline', verticalAlign: 'middle' }} /> {c.customer_email ?? c.customer_name}</span>
             <RelativeTime iso={c.remote_created_at} prefix="opened " />

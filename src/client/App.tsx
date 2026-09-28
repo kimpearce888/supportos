@@ -2,7 +2,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Routes, Route, NavLink, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard, Inbox, Search, Users, Building2, Bot, AlertTriangle, BookOpen, BookMarked,
-  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command, Megaphone, Bell, Activity
+  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command, Megaphone, Bell, Activity, Flame, Boxes, Plug
 } from 'lucide-react';
 import { useUiStore } from './state/uiStore.js';
 import { Toasts } from './components/common/overlays.js';
@@ -25,6 +25,9 @@ import { OnboardingPage } from './pages/Onboarding.js';
 import { OutreachPage } from './pages/Outreach.js';
 import { NotificationCenterPage } from './pages/NotificationCenter.js';
 import { OperationsCenterPage } from './pages/OperationsCenter.js';
+import { IncidentsPage, IncidentDetailPage } from './pages/Incidents.js';
+import { CustomObjectsPage } from './pages/CustomObjects.js';
+import { ConnectorsPage } from './pages/Connectors.js';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './api/client.js';
 import { useUnreadNotificationCount } from './api/hooks.js';
@@ -132,8 +135,11 @@ export function App(): ReactNode {
         <div className="nav-section">Intelligence</div>
         <NavItem to="/ai" icon={<Bot />} label="AI Center" />
         <NavItem to="/issues" icon={<AlertTriangle />} label="Issues" />
+        <NavItem to="/incidents" icon={<Flame />} label="Incidents" />
         <NavItem to="/knowledge" icon={<BookOpen />} label="Knowledge" />
         <NavItem to="/docs" icon={<BookMarked />} label="Docs" />
+        <NavItem to="/custom-objects" icon={<Boxes />} label="Objects" />
+        <NavItem to="/connectors" icon={<Plug />} label="Connectors" />
         <div className="nav-section">Operations</div>
         <NavItem to="/operations" icon={<Activity />} label="Operations" />
         <NavItem to="/reports" icon={<BarChart3 />} label="Reports" />
@@ -164,6 +170,10 @@ export function App(): ReactNode {
           <Route path="/organizations/:id" element={<OrganizationDetailPage />} />
           <Route path="/ai" element={<AiCenterPage />} />
           <Route path="/issues" element={<IssuesPage />} />
+          <Route path="/incidents" element={<IncidentsPage />} />
+          <Route path="/incidents/:id" element={<IncidentDetailPage />} />
+          <Route path="/custom-objects" element={<CustomObjectsPage />} />
+          <Route path="/connectors" element={<ConnectorsPage />} />
           <Route path="/knowledge" element={<KnowledgePage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/reports" element={<ReportsPage />} />

@@ -14,9 +14,15 @@ import { htmlToText } from '../../shared/utils.js';
  * context, customer history, similar conversations, issue clusters, AI
  * analyses, SupportOS ticket metadata and the AI attribute layer. Everything
  * stays read-only by construction, bounded, and redacted before it reaches
- * the model. Custom objects / connectors (plan Phase 21-22) are NOT exposed
- * yet: they do not exist in this version, and the honest answer is that no
- * such tool exists rather than a stub that pretends.
+ * the model.
+ *
+ * v2.0.0 (M4, plan Phases 18-23): incident workspace search, custom object
+ * search, customer event timeline and connector data search join the
+ * surface. The connector tool is gated by the EXPLICIT allowed_ai flag on
+ * each connector (plan Phase 22: "The AI must only access explicitly allowed
+ * connector data") - anything not explicitly allowed returns a refusal, and
+ * custom object search only exposes LOCAL objects, never Help Scout mirror
+ * data beyond what other tools already provide.
  */
 export class AiToolRegistry {
   private search: SearchEngine;
@@ -135,6 +141,39 @@ export class AiToolRegistry {
           name: 'get_ai_attributes',
           description: 'Get the current local AI attribute snapshot for a conversation: intent, urgency, frustration cues, technical familiarity, question count, risk, escalation signal, known issue link etc., each with confidence and evidence excerpts. Attributes without values are listed as unknown.',
           parameters: { type: 'object', properties: { number: { type: 'number', description: 'Conversation number' } }, required: ['number'] }
+        }
+      },
+      // ---------------- v2.0.0 (M4): workspace tools ----------------
+      {
+        type: 'function',
+        function: {
+          name: 'search_incidents',
+          description: 'List local incidents (master issues) with status, severity and affected counts, optionally filtered by keyword. Use for "is there an ongoing incident" / "why are customers writing in about X" questions.',
+          parameters: { type: 'object', properties: { query: { type: 'string', description: 'Optional keyword filter on code/title' }, limit: { type: 'number', description: 'Max incidents (default 5, max 10)' } } }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'search_custom_objects',
+          description: 'Search local custom objects (user-defined records like accounts, subscriptions, deployments) by keyword, optionally narrowed to a type slug (e.g. "account"). Returns titles, types and property values. These are locally defined records, not Help Scout data.',
+          parameters: { type: 'object', properties: { query: { type: 'string', description: 'Keywords to search for' }, type: { type: 'string', description: 'Optional type slug (e.g. account, deployment)' }, limit: { type: 'number', description: 'Max results (default 5, max 10)' } } }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'get_customer_timeline',
+          description: 'Get the recent local event timeline for the customer of a conversation: signups, support conversations, first messages, campaign sends/replies, ratings, incident exposure and custom object events. Use for "what happened with this customer over time".',
+          parameters: { type: 'object', properties: { number: { type: 'number', description: 'Any conversation number belonging to the customer' }, limit: { type: 'number', description: 'Max events (default 10, max 20)' } } }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'search_connector_data',
+          description: 'Search rows from an APPROVED local data connector. Only connectors explicitly marked AI-visible are searchable - data that is not explicitly allowed stays private. Use for account/deployment/release data the operator has connected and approved.',
+          parameters: { type: 'object', properties: { connector: { type: 'string', description: 'Connector name' }, query: { type: 'string', description: 'Keyword filter on row contents' }, limit: { type: 'number', description: 'Max rows (default 5, max 10)' } }, required: ['connector'] }
         }
       }
     ];
@@ -339,6 +378,103 @@ export class AiToolRegistry {
           return { attribute: r.attribute, value: r.value, confidence: r.confidence, source: r.source, computed_at: r.computed_at, evidence: evidence.map((e) => ({ excerpt: this.red(e.excerpt.slice(0, 200)) })) };
         });
         return { attributes, note: 'Attributes absent from this list are unknown (not yet computed or no evidence).' };
+      }
+      // ---------------- v2.0.0 (M4): workspace tools ----------------
+      case 'search_incidents': {
+        const q = args.query == null ? '' : String(args.query).slice(0, 200).toLowerCase();
+        const rows = this.db
+          .prepare(
+            `SELECT i.id, i.code, i.title, i.status, i.severity, i.product, i.feature,
+               (SELECT COUNT(*) FROM incident_conversations ic WHERE ic.incident_id = i.id) AS conversation_count,
+               (SELECT COUNT(DISTINCT c.customer_local_id) FROM incident_conversations ic
+                  JOIN conversations c ON c.id = ic.conversation_id
+                  WHERE ic.incident_id = i.id AND c.customer_local_id IS NOT NULL AND c.deleted_at IS NULL) AS customer_count
+             FROM incidents i ORDER BY CASE i.status WHEN 'resolved' THEN 1 ELSE 0 END, i.updated_at DESC LIMIT 20`
+          )
+          .all() as Record<string, unknown>[];
+        const filtered = rows
+          .filter((r) => !q || `${r.code} ${r.title} ${r.product ?? ''}`.toLowerCase().includes(q))
+          .slice(0, Math.min(10, Math.max(1, limit)));
+        return filtered.map((r) => ({
+          code: r.code, title: this.red(String(r.title ?? '').slice(0, 200)), status: r.status, severity: r.severity,
+          product: r.product ?? null, feature: r.feature ?? null,
+          affected_conversations: Number(r.conversation_count ?? 0), affected_customers: Number(r.customer_count ?? 0),
+          note: 'Affected customers are distinct customers, never ticket counts.'
+        }));
+      }
+      case 'search_custom_objects': {
+        const q = String(args.query ?? '').slice(0, 200);
+        const typeSlug = args.type == null ? null : String(args.type).slice(0, 60);
+        const typeIdRow = typeSlug ? this.db.prepare('SELECT id FROM custom_object_types WHERE slug = ? AND deleted_at IS NULL').get(typeSlug) as { id: number } | undefined : undefined;
+        const tokens = q.replace(/["*()]/g, ' ').split(/\s+/).filter((t) => t.length > 1).slice(0, 6).map((t) => `"${t}"*`).join(' ');
+        if (!tokens) return [];
+        const sql = `SELECT o.id, o.title, o.properties, t.name AS type_name, t.slug AS type_slug,
+            snippet(fts_custom_objects, 1, '[', ']', '...', 12) AS snippet
+          FROM fts_custom_objects f
+          JOIN custom_objects o ON o.id = f.object_id AND o.deleted_at IS NULL
+          JOIN custom_object_types t ON t.id = o.type_id
+          WHERE fts_custom_objects MATCH ? ${typeIdRow ? 'AND o.type_id = ?' : ''}
+          ORDER BY rank LIMIT ${Math.min(10, Math.max(1, limit))}`;
+        const rows = (typeIdRow
+          ? this.db.prepare(sql).all(tokens, typeIdRow.id)
+          : this.db.prepare(sql).all(tokens)) as { id: number; title: string; properties: string; type_name: string; type_slug: string; snippet: string }[];
+        return rows.map((r) => {
+          let properties: Record<string, unknown> = {};
+          try { properties = JSON.parse(r.properties) as Record<string, unknown>; } catch { properties = {}; }
+          const clean: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(properties).slice(0, 12)) {
+            clean[k] = typeof v === 'string' ? this.red(v.slice(0, 200)) : v;
+          }
+          return { type: r.type_name, title: this.red(r.title.slice(0, 200)), properties: clean };
+        });
+      }
+      case 'get_customer_timeline': {
+        const num = Number(args.number);
+        if (!Number.isFinite(num)) return { error: 'Invalid number' };
+        const customer = (this.db
+          .prepare('SELECT c.customer_local_id FROM conversations c WHERE c.number = ? AND c.deleted_at IS NULL')
+          .get(num) as { customer_local_id: number | null } | undefined)?.customer_local_id;
+        if (!customer) return { error: 'Conversation not found or has no customer' };
+        const rows = this.db
+          .prepare(
+            `SELECT event_kind, occurred_at, title, detail, source FROM customer_events
+             WHERE customer_local_id = ? ORDER BY COALESCE(occurred_at, created_at) DESC, id DESC LIMIT ${Math.min(20, Math.max(1, limit))}`
+          )
+          .all(customer) as { event_kind: string; occurred_at: string | null; title: string; detail: string | null; source: string }[];
+        return {
+          events: rows.map((r) => ({
+            kind: r.event_kind, at: r.occurred_at,
+            title: this.red(String(r.title ?? '').slice(0, 160)), source: r.source
+          }))
+        };
+      }
+      case 'search_connector_data': {
+        const connectorName = String(args.connector ?? '').slice(0, 80);
+        if (!connectorName) return { error: 'Invalid connector name' };
+        const q = String(args.query ?? '').slice(0, 200);
+        const row = this.db.prepare('SELECT id, name, allowed_ai, enabled FROM connectors WHERE name = ?').get(connectorName) as { id: number; name: string; allowed_ai: number; enabled: number } | undefined;
+        if (!row) {
+          const available = (this.db.prepare('SELECT name FROM connectors WHERE allowed_ai = 1 AND enabled = 1 LIMIT 10').all() as { name: string }[]).map((r) => r.name);
+          return { error: 'Connector not found', ai_visible_connectors: available };
+        }
+        if (row.allowed_ai !== 1) return { error: `Connector "${row.name}" is not marked as AI-visible. Its data stays private to the UI.` };
+        if (row.enabled !== 1) return { error: `Connector "${row.name}" is disabled.` };
+        const dataRows = this.db
+          .prepare(`SELECT data FROM connector_rows WHERE connector_id = ? ORDER BY id DESC LIMIT 100`)
+          .all(row.id) as { data: string }[];
+        const qLower = q.toLowerCase();
+        const results = dataRows
+          .map((r) => { try { return JSON.parse(r.data) as Record<string, unknown>; } catch { return {}; } })
+          .filter((d) => !qLower || JSON.stringify(d).toLowerCase().includes(qLower))
+          .slice(0, Math.min(10, Math.max(1, limit)))
+          .map((d) => {
+            const out: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(d).slice(0, 15)) {
+              out[k] = typeof v === 'string' ? this.red(v.slice(0, 300)) : v;
+            }
+            return out;
+          });
+        return { connector: row.name, results };
       }
       default:
         return { error: `Unknown tool ${name} - allowed tools are read-only search tools` };

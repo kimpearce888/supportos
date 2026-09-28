@@ -41,7 +41,8 @@ export const NOTIFICATION_TYPES = [
   'campaign_reply',          // a customer replied to an outreach campaign message
   'sync_failure',            // the sync state machine entered ERROR
   'job_failure',             // a background job exhausted its retries
-  'customer_event'           // important customer event (e.g. a not-good rating)
+  'customer_event',           // important customer event (e.g. a not-good rating)
+  'incident_update'           // v2.0.0 (M4): incident created / status-severity change / new conversation linked / resolved
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -63,7 +64,8 @@ export const NOTIFICATION_TYPE_DEFAULT_ENABLED: Record<NotificationType, boolean
   campaign_reply: true,
   sync_failure: true,
   job_failure: true,
-  customer_event: true
+  customer_event: true,
+  incident_update: true
 };
 
 export const NOTIFICATION_SEVERITY_BY_TYPE: Record<NotificationType, NotificationSeverity> = {
@@ -80,7 +82,8 @@ export const NOTIFICATION_SEVERITY_BY_TYPE: Record<NotificationType, Notificatio
   campaign_reply: 'info',
   sync_failure: 'critical',
   job_failure: 'warning',
-  customer_event: 'info'
+  customer_event: 'info',
+  incident_update: 'warning'
 };
 
 export interface NotificationRecord {
