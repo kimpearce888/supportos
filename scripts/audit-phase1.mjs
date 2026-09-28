@@ -297,6 +297,124 @@ async function main() {
     }
   }
 
+  console.log('\n== J. v1.8.0 collaboration layer — black-box ==');
+  // J1. Operations Center: hostile scope + params never 500
+  for (const p of [
+    '/api/operations/center?mailboxes=1,abc,-5,99999999999999999999',
+    '/api/operations/center?mailboxes=' + encodeURIComponent("' OR 1=1 --"),
+    '/api/operations/center?mailboxes=1&mailboxes=2',
+    '/api/conversations?view=active&ops=urgent;DROP TABLE conversations;--',
+    '/api/conversations?view=active&ops=' + encodeURIComponent("')( OR '1'='1"),
+    '/api/operations/suggested-assignees?limit=abc',
+    '/api/operations/suggested-assignees?limit=-999',
+    '/api/operations/suggested-assignees?limit=1e9'
+  ]) {
+    r = await req('GET', p);
+    if (r.status >= 500) finding('high', `operations route crashed: ${p}`, `status ${r.status}`);
+  }
+  // J2. Tile count == drill-down total (the one-fragment invariant, live)
+  {
+    const snap = (await req('GET', '/api/operations/center')).json;
+    const tiles = new Map((snap?.tiles ?? []).map((t) => [t.key, t.count]));
+    if ((snap?.tiles ?? []).length !== 16) finding('medium', 'operations center does not expose 16 tiles', `${(snap?.tiles ?? []).length} tiles`);
+    for (const key of ['unassigned', 'needs_first_response', 'customer_waiting', 'urgent', 'high_effort', 'known_issue', 'ai_escalation']) {
+      const list = await req('GET', `/api/conversations?view=active&ops=${key}&pageSize=100`);
+      if (list.status !== 200) { finding('high', `ops drill broken for ${key}`, `status ${list.status}`); continue; }
+      if (list.json?.total !== tiles.get(key)) finding('medium', `tile/drill mismatch for ${key}`, `tile=${tiles.get(key)} list=${list.json?.total}`);
+    }
+  }
+  // J3. Capacity model + threshold: hostile values rejected, never stored corrupt
+  for (const body of [
+    { default_max_open: -5, per_user_max: {}, weights: { urgent: 3, sla: 2, waiting: 1.5, open: 1 } },
+    { default_max_open: 1e9, per_user_max: {}, weights: { urgent: 3, sla: 2, waiting: 1.5, open: 1 } },
+    { default_max_open: 'lots', per_user_max: {}, weights: { urgent: 3, sla: 2, waiting: 1.5, open: 1 } },
+    { default_max_open: 10, per_user_max: { "'; DROP TABLE users;--": 5 }, weights: { urgent: 3, sla: 2, waiting: 1.5, open: 1 } },
+    { default_max_open: 10, per_user_max: {}, weights: { urgent: -99, sla: 2, waiting: 1.5, open: 1 } },
+    null
+  ]) {
+    r = await req('PUT', '/api/operations/capacity', body);
+    if (r.status !== 422) finding('medium', 'hostile capacity model accepted', JSON.stringify(body).slice(0, 80));
+  }
+  r = await req('PUT', '/api/operations/waiting-threshold', { minutes: -1 });
+  if (r.status !== 422) finding('medium', 'negative waiting threshold accepted', `status ${r.status}`);
+  r = await req('PUT', '/api/operations/waiting-threshold', { minutes: 'soon' });
+  if (r.status !== 422) finding('medium', 'string waiting threshold accepted', `status ${r.status}`);
+  // J4. Notification hardening: hostile ids/types/bodies
+  for (const p of [
+    '/api/notifications?type=' + encodeURIComponent("' OR 1=1 --"),
+    '/api/notifications?limit=abc&page=-5',
+    '/api/notifications?unreadOnly=maybe'
+  ]) {
+    r = await req('GET', p);
+    if (r.status >= 500) finding('high', `notifications route crashed: ${p}`, `status ${r.status}`);
+  }
+  r = await req('POST', '/api/notifications/0/read', { read: true });
+  if (r.status !== 422) finding('medium', 'notification id 0 not rejected', `status ${r.status}`);
+  r = await req('POST', '/api/notifications/-1/read', { read: true });
+  if (r.status !== 422) finding('medium', 'negative notification id not rejected', `status ${r.status}`);
+  r = await req('POST', '/api/notifications/1/read', { read: 'yes please' });
+  if (r.status !== 422) finding('medium', 'non-boolean read flag not rejected', `status ${r.status}`);
+  r = await req('PUT', '/api/notifications/prefs/' + encodeURIComponent("'; DROP TABLE notification_prefs;--"), { enabled: false });
+  if (r.status !== 422) finding('medium', 'hostile pref type not rejected', `status ${r.status}`);
+  // J5. Sweep idempotence over HTTP: run twice, second run creates nothing
+  {
+    const s1 = await req('POST', '/api/notifications/sweep');
+    if (s1.status !== 200) finding('high', 'manual sweep failed', `status ${s1.status}`);
+    const s2 = await req('POST', '/api/notifications/sweep');
+    if (s2.status !== 200 || (s2.json?.created ?? 0) !== 0) finding('medium', 'sweep not idempotent over HTTP', `second run created ${s2.json?.created}`);
+  }
+  // J6. Side threads: XSS-shaped payloads stored safely, hostile tokens inert
+  {
+    const convs = (await req('GET', '/api/conversations?view=active&pageSize=1')).json?.conversations ?? [];
+    if (convs.length > 0) {
+      const xss = '<script>alert(1)</script><img src=x onerror=alert(2)> @DROP TABLE users @1=1';
+      r = await req('POST', `/api/conversations/${convs[0].id}/side-threads`, { title: `t ${xss}`, first_message: `m ${xss}` });
+      if (r.status !== 200) finding('medium', 'xss-shaped side thread refused at create', `status ${r.status}`);
+      else {
+        const tid = r.json?.side_thread?.id;
+        const detail = await req('GET', `/api/side-threads/${tid}`);
+        if (detail.status !== 200) finding('high', 'side thread unreadable after xss payload', `status ${detail.status}`);
+        // hostile mention tokens must resolve to NOTHING (no notifications)
+        const before = (await req('GET', '/api/notifications?limit=200')).json?.notifications?.length ?? 0;
+        r = await req('POST', `/api/side-threads/${tid}/messages`, { body: '@DROP TABLE users @1=1 @nonexistent-person @' + "x'.repeat(50)" });
+        if (r.status !== 200) finding('medium', 'hostile-mention message refused', `status ${r.status}`);
+        const after = (await req('GET', '/api/notifications?limit=200')).json?.notifications?.length ?? 0;
+        if (after > before) finding('high', 'hostile @token created a notification (identity guessing!)', `before=${before} after=${after}`);
+        // resolve/reopen conflict cycle: 409s, never 500
+        await req('POST', `/api/side-threads/${tid}/resolve`);
+        r = await req('POST', `/api/side-threads/${tid}/resolve`);
+        if (r.status >= 500) finding('high', 'double resolve crashed', `status ${r.status}`);
+        r = await req('POST', `/api/side-threads/${tid}/messages`, { body: 'too late' });
+        if (r.status !== 409) finding('medium', 'message to resolved thread not 409', `status ${r.status}`);
+        await req('POST', `/api/side-threads/${tid}/reopen`);
+      }
+      // hostile participant payloads
+      r = await req('POST', `/api/conversations/${convs[0].id}/side-threads`, { title: 'p' });
+      if (r.status === 200) {
+        const tid2 = r.json?.side_thread?.id;
+        for (const body of [{ user_local_ids: [-5] }, { user_local_ids: [1e12] }, { user_local_ids: 'not-array' }, { user_local_ids: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }]) {
+          const pr = await req('POST', `/api/side-threads/${tid2}/participants`, body);
+          if (pr.status !== 422 && pr.status !== 200) finding('medium', 'hostile participant payload mis-handled', `${JSON.stringify(body).slice(0, 50)} -> ${pr.status}`);
+          if (pr.status >= 500) finding('high', 'participant payload crashed route', JSON.stringify(body).slice(0, 50));
+        }
+      }
+      // oversized bodies
+      r = await req('POST', `/api/conversations/${convs[0].id}/side-threads`, { title: 'x'.repeat(500) });
+      if (r.status !== 422) finding('medium', 'oversized side-thread title accepted', `status ${r.status}`);
+      r = await req('POST', `/api/conversations/${convs[0].id}/side-threads`, { title: 'ok', first_message: 'x'.repeat(9000) });
+      if (r.status !== 422) finding('medium', 'oversized first_message accepted', `status ${r.status}`);
+    }
+    // mention directory shape
+    r = await req('GET', '/api/mention-directory');
+    if (r.status !== 200 || !Array.isArray(r.json?.users) || !Array.isArray(r.json?.teams)) finding('high', 'mention directory broken', `status ${r.status}`);
+    // mentions queue never 500s even when empty
+    r = await req('GET', '/api/notifications/mentions');
+    if (r.status !== 200) finding('high', 'mentions queue broken', `status ${r.status}`);
+  }
+  // J7. The conversations table must still answer after all injection probes
+  r = await req('GET', '/api/conversations?view=active&pageSize=1');
+  if (r.status !== 200) finding('high', 'conversations table damaged by J-section probes', `status ${r.status}`);
+
   console.log('\n== I. rate limiting on mutations ==');
   let last429 = 0;
   for (let i = 0; i < 320; i++) {

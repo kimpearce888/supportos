@@ -25,6 +25,7 @@ export class WorkerManager {
   private processing = false;
   private stopped = false;
   private refreshingRatings = false;
+  private sweepingNotifications = false;
   private lastAiHealthCheck: { at: string; connected: boolean } | null = null;
 
   constructor(private ctx: AppContext) {
@@ -86,7 +87,17 @@ export class WorkerManager {
     // Maintenance: backup + cluster trends + cleanup every 6h
     const maintenanceTimer = setInterval(() => void this.maintenance(), 6 * 3600_000);
     this.timers.push(maintenanceTimer);
-    this.logger.info('Background workers started', { operation: 'start', sync_interval_minutes: syncMinutes, ratings_refresh_seconds: ratingsSeconds });
+    // v1.8.0: notification sweep - the single producer of Notification Center
+    // rows (customer replies, assignments, mentions, SLA, jobs, campaigns...).
+    // Light + idempotent (dedup keys); a malformed stored interval collapses
+    // safely to the default instead of a runaway loop.
+    const rawSweepSeconds = Number(this.ctx.settingsRepo.get('notification_sweep_seconds', 15));
+    const sweepSeconds = Number.isFinite(rawSweepSeconds) ? Math.min(3600, Math.max(5, rawSweepSeconds)) : 15;
+    const sweepTimer = setInterval(() => this.notificationSweepTick(), sweepSeconds * 1000);
+    this.timers.push(sweepTimer);
+    // Catch-up sweep at boot (a fresh database initializes its cursor silently).
+    this.notificationSweepTick();
+    this.logger.info('Background workers started', { operation: 'start', sync_interval_minutes: syncMinutes, ratings_refresh_seconds: ratingsSeconds, notification_sweep_seconds: sweepSeconds });
   }
 
   stop(): void {
@@ -165,6 +176,9 @@ export class WorkerManager {
   private async maintenance(): Promise<void> {
     try {
       this.ctx.issueRepo.computeTrends();
+      // v1.8.0: notification sweep piggybacks on maintenance so long-idle
+      // instances (sweep disabled by interval) still produce state notifications.
+      this.notificationSweepTick();
       // v1.6.0 audit fix: the timer fires every 6h and used to create a backup
       // on EVERY tick whenever backup_interval_hours was set - with the default
       // 24h interval that meant 4x the configured rate, and nothing ever pruned
@@ -183,6 +197,22 @@ export class WorkerManager {
       this.enforceRetention();
     } catch (e) {
       this.logger.warn('Maintenance failed', { operation: 'maintenance', error: String(e) });
+    }
+  }
+
+  /** v1.8.0: one notification sweep pass (re-entrancy-guarded, never throws out). */
+  private notificationSweepTick(): void {
+    if (this.stopped || this.sweepingNotifications) return;
+    this.sweepingNotifications = true;
+    try {
+      const result = this.ctx.notificationSweep.sweep();
+      if (result.created > 0) {
+        this.logger.debug('Notification sweep created notifications', { operation: 'notification_sweep', created: result.created });
+      }
+    } catch (e) {
+      this.logger.warn('Notification sweep failed', { operation: 'notification_sweep', error: String(e) });
+    } finally {
+      this.sweepingNotifications = false;
     }
   }
 
@@ -210,6 +240,13 @@ export class WorkerManager {
       } catch {
         /* table/column missing on older schemas - skip */
       }
+    }
+    // v1.8.0: notifications are local operational data too - same window.
+    try {
+      const removed = this.ctx.notificationRepo.pruneOlderThan(cutoff);
+      if (removed > 0) this.logger.info('Retention pruning', { operation: 'retention', table: 'notifications', removed });
+    } catch {
+      /* notifications table missing on older schemas - skip */
     }
   }
 

@@ -58,12 +58,28 @@ export interface CampaignUpdatedEvent {
   at: string;
 }
 
+/** v1.8.0: a NEW notification was created (Notification Center, M2). */
+export interface NotificationReceivedEvent {
+  id: number;
+  type: string;
+  severity: 'info' | 'warning' | 'critical';
+  title: string;
+  conversationId: number | null;
+  conversationNumber: number | null;
+  customerId: number | null;
+  /** null = broadcast to the operator; otherwise the target local user id. */
+  targetUserLocalId: number | null;
+  unreadCount: number;
+  at: string;
+}
+
 export interface ServerEventMap {
   'rating-received': RatingReceivedEvent;
   'ratings-refreshed': RatingsRefreshedEvent;
   'sync-completed': SyncCompletedEvent;
   'conversation-updated': ConversationUpdatedEvent;
   'campaign-updated': CampaignUpdatedEvent;
+  'notification-received': NotificationReceivedEvent;
 }
 
 type Handler<K extends keyof ServerEventMap> = (payload: ServerEventMap[K]) => void;

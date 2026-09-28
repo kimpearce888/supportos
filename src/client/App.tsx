@@ -2,7 +2,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Routes, Route, NavLink, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard, Inbox, Search, Users, Building2, Bot, AlertTriangle, BookOpen, BookMarked,
-  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command, Megaphone
+  BarChart3, Workflow, HeartPulse, Settings, PanelLeft, Sun, Moon, Command, Megaphone, Bell, Activity
 } from 'lucide-react';
 import { useUiStore } from './state/uiStore.js';
 import { Toasts } from './components/common/overlays.js';
@@ -23,8 +23,11 @@ import { SyncHealthPage } from './pages/SyncHealth.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { OnboardingPage } from './pages/Onboarding.js';
 import { OutreachPage } from './pages/Outreach.js';
+import { NotificationCenterPage } from './pages/NotificationCenter.js';
+import { OperationsCenterPage } from './pages/OperationsCenter.js';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './api/client.js';
+import { useUnreadNotificationCount } from './api/hooks.js';
 
 function NavItem({ to, icon, label, count }: { to: string; icon: ReactNode; label: string; count?: number }): ReactNode {
   return (
@@ -56,6 +59,9 @@ export function App(): ReactNode {
     queryFn: () => api.get<{ total: number }>('/api/conversations?view=active&pageSize=1').then((r) => ({ active: r.total, unassigned: 0 })),
     refetchInterval: 30_000
   });
+
+  // v1.8.0: Notification Center unread badge (SSE-invalidated + 30s refetch).
+  const { data: unread } = useUnreadNotificationCount();
 
   // Keyboard shortcuts (spec #94): Cmd/Ctrl+K search, g+d dashboard, g+i inbox, ? shortcuts
   useEffect(() => {
@@ -118,6 +124,7 @@ export function App(): ReactNode {
         </div>
         <NavItem to="/" icon={<LayoutDashboard />} label="Dashboard" />
         <NavItem to="/inbox" icon={<Inbox />} label="Inbox" count={counts?.active} />
+        <NavItem to="/notifications" icon={<Bell />} label="Notifications" count={unread?.unread} />
         <NavItem to="/search" icon={<Search />} label="Search" />
         <div className="nav-section">Directory</div>
         <NavItem to="/customers" icon={<Users />} label="Customers" />
@@ -128,6 +135,7 @@ export function App(): ReactNode {
         <NavItem to="/knowledge" icon={<BookOpen />} label="Knowledge" />
         <NavItem to="/docs" icon={<BookMarked />} label="Docs" />
         <div className="nav-section">Operations</div>
+        <NavItem to="/operations" icon={<Activity />} label="Operations" />
         <NavItem to="/reports" icon={<BarChart3 />} label="Reports" />
         <NavItem to="/outreach" icon={<Megaphone />} label="Outreach" />
         <NavItem to="/automation" icon={<Workflow />} label="Automation" />
@@ -160,6 +168,8 @@ export function App(): ReactNode {
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/outreach" element={<OutreachPage />} />
+          <Route path="/operations" element={<OperationsCenterPage />} />
+          <Route path="/notifications" element={<NotificationCenterPage />} />
           <Route path="/automation" element={<AutomationPage />} />
           <Route path="/sync-health" element={<SyncHealthPage />} />
           <Route path="/settings" element={<SettingsPage />} />

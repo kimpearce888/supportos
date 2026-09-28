@@ -1,6 +1,6 @@
 {
   "name": "supportos",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "SupportOS - local-first AI-powered support operating system for Help Scout",
   "type": "module",
   "private": true,

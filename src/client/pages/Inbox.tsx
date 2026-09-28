@@ -15,6 +15,9 @@ import { SafeHtml } from '../components/common/SafeHtml.js';
 import { useUiStore } from '../state/uiStore.js';
 import { FilterBar, SavedViewsManager, type FilterBarValues } from '../components/inbox/FilterBar.js';
 import { PriorityBadge, ResponseStateBadge, TicketStateBadge, ActivityTimeline, PriorityPicker, TicketStatePicker } from '../components/inbox/ActivityUI.js';
+import { SideThreadsPanel } from '../components/inbox/SideThreads.js';
+import { MentionTextarea } from '../components/inbox/MentionTextarea.js';
+import { useMentionDirectory } from '../api/hooks.js';
 import type { } from '../../shared/types.js';
 
 const VIEWS = [
@@ -333,6 +336,7 @@ function ConversationDetail({ id }: { id: number }): ReactNode {
         </div>
       ) : null}
       <ActivityTimeline conversationId={id} historyComplete={data.activity.history_complete} />
+      <SideThreadsPanel conversationId={id} />
       <ContextPane data={data} onRefresh={invalidate} />
     </>
   );
@@ -661,6 +665,7 @@ function ThreadItem({ thread, conversationId, onRefresh }: { thread: NonNullable
           <RelativeTime iso={thread.remote_created_at} />
         </div>
         <SafeHtml html={thread.body_html} fallbackText={thread.body_text} />
+        {isNote ? <NoteMentionChips bodyText={thread.body_text} /> : null}
         {thread.cc.length > 0 ? <div className="text-xs muted">cc: {thread.cc.join(', ')}</div> : null}
         {thread.attachments.length > 0 ? (
           <div className="mt-8">
@@ -714,6 +719,38 @@ function ThreadItem({ thread, conversationId, onRefresh }: { thread: NonNullable
 }
 
 // ====================================================================
+
+/**
+ * v1.8.0: @mention chips under internal notes. Shows which identity tokens
+ * in the note text resolve to real agents/teams (matching the server-side
+ * parser's rules). Purely informational highlighting - notifications for
+ * mentions are produced by the server sweep from new note events.
+ */
+function NoteMentionChips({ bodyText }: { bodyText: string | null }): ReactNode {
+  const { data: directory } = useMentionDirectory();
+  if (!bodyText) return null;
+  const tokens = bodyText.match(/@([A-Za-z0-9._-]+)/g) ?? [];
+  if (tokens.length === 0) return null;
+  const known = new Map<string, string>();
+  for (const u of directory?.users ?? []) {
+    if (u.mention) known.set(u.mention.toLowerCase(), u.display_name);
+    const first = (u.display_name.split(' ')[0] ?? '').toLowerCase();
+    if (first) known.set(first, u.display_name);
+    known.set(u.display_name.toLowerCase().replace(/\s+/g, ''), u.display_name);
+    known.set(u.display_name.toLowerCase(), u.display_name);
+  }
+  for (const t of directory?.teams ?? []) known.set(t.name.toLowerCase(), `${t.name} (team)`);
+  const resolved = [...new Set(tokens.map((t) => t.slice(1).toLowerCase()))]
+    .filter((t) => known.has(t))
+    .map((t) => `@${t}`);
+  if (resolved.length === 0) return null;
+  return (
+    <div className="text-xs mt-8" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span className="muted">mentions:</span>
+      {resolved.map((r) => <span key={r} className="mention-token">{r}</span>)}
+    </div>
+  );
+}
 
 interface ComposerState {
   mode: 'reply' | 'note';
@@ -896,14 +933,23 @@ function Composer({ conversationId, customerId: _customerId, customerEmail, draf
           <p className="text-xs muted mt-8">Generated locally by AI - review before sending. Nothing is sent to the customer automatically.</p>
         </div>
       ) : null}
-      <textarea
-        ref={textareaRef}
-        className="input"
-        placeholder={state.mode === 'note' ? 'Internal note (never sent to the customer)…' : `Reply to ${customerEmail ?? 'customer'}…`}
-        value={state.text}
-        onChange={(e) => setState((s) => ({ ...s, text: e.target.value }))}
-        aria-label={state.mode === 'note' ? 'Internal note text' : 'Reply text'}
-      />
+      {state.mode === 'note' ? (
+        <MentionTextarea
+          value={state.text}
+          onChange={(text) => setState((s) => ({ ...s, text }))}
+          placeholder="Internal note (never sent to the customer)… @mention a teammate or team to notify them"
+          rows={3}
+        />
+      ) : (
+        <textarea
+          ref={textareaRef}
+          className="input"
+          placeholder={`Reply to ${customerEmail ?? 'customer'}…`}
+          value={state.text}
+          onChange={(e) => setState((s) => ({ ...s, text: e.target.value }))}
+          aria-label="Reply text"
+        />
+      )}
       {state.mode === 'reply' ? (
         <div className="flex wrap mt-8" style={{ gap: 8 }}>
           <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="cc (comma-separated)" value={state.cc} onChange={(e) => setState((s) => ({ ...s, cc: e.target.value }))} aria-label="CC recipients" />

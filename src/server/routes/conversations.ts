@@ -3,6 +3,7 @@ import type { AppContext } from '../services/context.js';
 import { replyRequestSchema, noteRequestSchema, statusRequestSchema, assignRequestSchema, tagsRequestSchema, fieldsRequestSchema, snoozeRequestSchema, scheduleRequestSchema, schedulePublishRequestSchema, bulkRequestSchema, subjectRequestSchema, moveToInboxRequestSchema } from '../../shared/schemas.js';
 import { sanitizeThreadHtml } from '../security/sanitize.js';
 import { inboxFilterQuerySchema, setPriorityRequestSchema, setStateRequestSchema, ACTIVITY_FIELD_COLUMN } from '../../shared/activity.js';
+import { isConversationOpsTile, tileFragment } from '../operations/tileFragments.js';
 import { resolveDateRange, resolveTimezone, formatAgeMinutes } from '../services/dateRange.js';
 import { responseStateOf, responseAgesOf } from '../inbox/responseState.js';
 import { ViewEngine, ViewCompileError } from '../inbox/viewEngine.js';
@@ -77,6 +78,19 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
     // Saved view (dynamic: conditions compiled at open time)
     let extraWhere: string | null = null;
     let extraParams: unknown[] = [];
+    // v1.8.0 Operations Center drill-down (?ops=<tileKey>): the SAME whitelisted
+    // fragment the tile count uses, so a tile can never disagree with its list.
+    if (f.ops != null && f.ops !== '') {
+      if (!isConversationOpsTile(f.ops)) {
+        reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: `ops must be one of: unassigned, needs_first_response, customer_waiting, waiting_over_threshold, urgent, high_effort, repeated_issue, known_issue, ai_escalation.` });
+        return;
+      }
+      const threshold = ctx.operationsCenter.waitingThresholdMinutes();
+      const frag = tileFragment(f.ops, threshold);
+      extraWhere = frag.whereSql;
+      extraParams = frag.params;
+      notes.push(`Operations Center tile '${f.ops}' applied.`);
+    }
     if (f.savedViewId != null) {
       const saved = ctx.inboxViewRepo.getView(Number(f.savedViewId));
       if (!saved) {

@@ -233,3 +233,110 @@ export function useConversationEvents(id: number | null) {
     enabled: id != null && id > 0
   });
 }
+
+// ---------------- v1.8.0 collaboration (M2) ----------------
+
+export interface NotificationRow {
+  id: number;
+  type: string;
+  severity: string;
+  title: string;
+  body: string | null;
+  target_user_local_id: number | null;
+  actor_user_local_id: number | null;
+  conversation_id: number | null;
+  conversation_number: number | null;
+  customer_local_id: number | null;
+  issue_id: number | null;
+  campaign_id: number | null;
+  job_id: number | null;
+  side_thread_id: number | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export function useNotifications(opts: { unreadOnly?: boolean; type?: string | null; limit?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.unreadOnly) params.set('unreadOnly', 'true');
+  if (opts.type) params.set('type', opts.type);
+  params.set('limit', String(opts.limit ?? 100));
+  return useQuery({
+    queryKey: ['notifications', opts.unreadOnly ?? false, opts.type ?? null, opts.limit ?? 100],
+    queryFn: () => api.get<{ notifications: NotificationRow[]; total: number; unread: number }>(`/api/notifications?${params.toString()}`),
+    refetchInterval: 60_000
+  });
+}
+
+export function useUnreadNotificationCount() {
+  return useQuery({
+    queryKey: ['notification-unread'],
+    queryFn: () => api.get<{ unread: number }>('/api/notifications/unread-count'),
+    refetchInterval: 30_000
+  });
+}
+
+export function useNotificationPrefs() {
+  return useQuery({
+    queryKey: ['notification-prefs'],
+    queryFn: () => api.get<{ prefs: { type: string; enabled: boolean; default_enabled: boolean }[] }>('/api/notifications/prefs')
+  });
+}
+
+export function useMentionQueue() {
+  return useQuery({
+    queryKey: ['mention-queue'],
+    queryFn: () => api.get<{
+      me: number | null;
+      notifications: NotificationRow[];
+      side_thread_mentions: { message_id: number; thread_id: number; thread_title: string; conversation_id: number; conversation_number: number | null; author: string | null; body: string; created_at: string }[];
+    }>('/api/notifications/mentions')
+  });
+}
+
+export function useOperationsCenter(mailboxIds: number[] | null) {
+  const mailboxes = mailboxIds && mailboxIds.length > 0 ? mailboxIds.join(',') : 'all';
+  return useQuery({
+    queryKey: ['operations-center', mailboxes],
+    queryFn: () => api.get<import('../../shared/collaboration.js').OperationsSnapshot>(`/api/operations/center?mailboxes=${encodeURIComponent(mailboxes)}`),
+    refetchInterval: 30_000
+  });
+}
+
+export function useWorkload() {
+  return useQuery({
+    queryKey: ['operations-workload'],
+    queryFn: () => api.get<import('../../shared/collaboration.js').WorkloadSnapshotResponse>('/api/operations/workload'),
+    refetchInterval: 60_000
+  });
+}
+
+export function useSuggestedAssignees(limit = 10) {
+  return useQuery({
+    queryKey: ['suggested-assignees', limit],
+    queryFn: () => api.get<{ suggestions: import('../../shared/collaboration.js').SuggestedAssigneeResponse[] }>(`/api/operations/suggested-assignees?limit=${limit}`),
+    refetchInterval: 60_000
+  });
+}
+
+export function useMentionDirectory() {
+  return useQuery({
+    queryKey: ['mention-directory'],
+    queryFn: () => api.get<{ users: { user_local_id: number; display_name: string; mention: string | null }[]; teams: { team_local_id: number; name: string }[] }>('/api/mention-directory')
+  });
+}
+
+export function useSideThreads(conversationId: number | null) {
+  return useQuery({
+    queryKey: ['side-threads', conversationId],
+    queryFn: () => api.get<{ side_threads: import('../../shared/collaboration.js').SideThread[] }>(`/api/conversations/${conversationId}/side-threads`),
+    enabled: conversationId != null && conversationId > 0
+  });
+}
+
+export function useSideThread(threadId: number | null) {
+  return useQuery({
+    queryKey: ['side-thread', threadId],
+    queryFn: () => api.get<{ side_thread: import('../../shared/collaboration.js').SideThreadDetail }>(`/api/side-threads/${threadId}`),
+    enabled: threadId != null && threadId > 0
+  });
+}

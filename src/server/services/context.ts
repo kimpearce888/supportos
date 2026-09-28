@@ -42,6 +42,12 @@ import { WorkerManager } from './workers.js';
 import { ActivityRepository } from '../database/repositories/activityRepo.js';
 import { TicketStateRepository } from '../database/repositories/ticketStateRepo.js';
 import { InboxViewRepository } from '../database/repositories/inboxViewRepo.js';
+import { NotificationRepository } from '../database/repositories/notificationRepo.js';
+import { SideThreadRepository } from '../database/repositories/sideThreadRepo.js';
+import { NotificationSweep } from '../notifications/notificationSweep.js';
+import { OperationsCenterService } from '../operations/operationsCenter.js';
+import { WorkloadService } from '../operations/workloadService.js';
+import { SideThreadService } from '../collaboration/sideThreadService.js';
 
 /**
  * ApplicationContext: a modular monolith (spec #163) - one process, one SQLite
@@ -88,6 +94,13 @@ export class AppContext {
   activityRepo: ActivityRepository;
   ticketStateRepo: TicketStateRepository;
   inboxViewRepo: InboxViewRepository;
+  // v1.8.0 collaboration (M2)
+  notificationRepo: NotificationRepository;
+  sideThreadRepo: SideThreadRepository;
+  notificationSweep: NotificationSweep;
+  operationsCenter: OperationsCenterService;
+  workload: WorkloadService;
+  sideThreads: SideThreadService;
 
   constructor(opts: { dbPath?: string; demoMode?: boolean } = {}) {
     this.config = config;
@@ -152,6 +165,15 @@ export class AppContext {
     this.qdrant = new QdrantAdapter({ url: this.settingsRepo.getQdrant().url, enabled: this.settingsRepo.getQdrant().enabled });
     this.analytics = new AnalyticsService(this.db);
     this.sla = new SlaService(this.db);
+    // v1.8.0 (M2): notification center, operations center, workload/capacity,
+    // mentions + side threads. Constructed after SlaService - all three
+    // services reuse the exact SLA business-minutes logic.
+    this.notificationRepo = new NotificationRepository(this.db);
+    this.sideThreadRepo = new SideThreadRepository(this.db);
+    this.notificationSweep = new NotificationSweep(this.db, this.notificationRepo, this.sla, this.settingsRepo);
+    this.operationsCenter = new OperationsCenterService(this.db, this.sla, this.settingsRepo);
+    this.workload = new WorkloadService(this.db, this.sla, this.settingsRepo);
+    this.sideThreads = new SideThreadService(this.db, this.notificationSweep);
     this.automation = new AutomationEngine(this.db);
     this.knowledge = new KnowledgeIngestor(this.db);
     this.backup = new BackupService(this.db, getDatabasePath(), this.settingsRepo, this.config.backupsPath);

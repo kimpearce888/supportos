@@ -391,5 +391,7 @@ export const inboxFilterQuerySchema = z.object({
   ticketStateId: z.string().regex(/^\d+$/).optional(),
   sort: z.enum(['newest_activity', 'oldest_activity', 'newest_created', 'oldest_created', 'waiting_longest', 'priority', 'priority_then_waiting']).optional(),
   savedViewId: z.string().regex(/^\d+$/).optional(),
-  timezone: z.string().max(60).optional()
+  timezone: z.string().max(60).optional(),
+  /** v1.8.0 Operations Center drill-down: whitelisted tile key compiled to the exact tile fragment. */
+  ops: z.string().max(40).optional()
 });

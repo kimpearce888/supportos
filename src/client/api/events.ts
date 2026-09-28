@@ -43,7 +43,8 @@ function ensureSource(): void {
   // subscribed, so the v1.4.0 webhook-push UX (toast + live invalidation) was
   // silently dead. Verified live with a raw EventSource receiving events the
   // app ignored.
-  for (const name of ['hello', 'ratings', 'sync', 'conversation', 'campaign', 'error']) {
+  // v1.8.0: 'notification' - Notification Center updates (M2).
+  for (const name of ['hello', 'ratings', 'sync', 'conversation', 'campaign', 'notification', 'error']) {
     source.addEventListener(name, forward(name) as EventListener);
   }
 }
@@ -95,6 +96,19 @@ export interface CampaignEventData {
   at: string;
 }
 
+export interface NotificationEventData {
+  id: number;
+  type: string;
+  severity: 'info' | 'warning' | 'critical';
+  title: string;
+  conversationId: number | null;
+  conversationNumber: number | null;
+  customerId: number | null;
+  targetUserLocalId: number | null;
+  unreadCount: number;
+  at: string;
+}
+
 const RATING_LABEL: Record<string, string> = { great: 'Great', okay: 'Okay', 'not-good': 'Not good' };
 
 /** Mount once: wires server events into query invalidation + rating toasts. */
@@ -124,6 +138,7 @@ export function ServerEventsBridge(): null {
         void qc.invalidateQueries({ queryKey: ['conversation'] });
         void qc.invalidateQueries({ queryKey: ['dashboard'] });
         void qc.invalidateQueries({ queryKey: ['nav-counts'] });
+        void qc.invalidateQueries({ queryKey: ['operations-center'] });
         if (d.kind === 'incremental' && d.processed > 0) {
           void qc.invalidateQueries({ queryKey: ['docs'] });
         }
@@ -134,6 +149,9 @@ export function ServerEventsBridge(): null {
         void qc.invalidateQueries({ queryKey: ['conversation', d.conversationId] });
         void qc.invalidateQueries({ queryKey: ['nav-counts'] });
         void qc.invalidateQueries({ queryKey: ['dashboard'] });
+        // v1.8.0: operational aggregates change with every conversation write.
+        void qc.invalidateQueries({ queryKey: ['operations-center'] });
+        void qc.invalidateQueries({ queryKey: ['operations-workload'] });
         if (d.reason === 'webhook' && d.conversationNumber != null) {
           pushToast({
             kind: 'info',
@@ -149,6 +167,19 @@ export function ServerEventsBridge(): null {
           pushToast({ kind: 'success', message: `Campaign #${d.campaignId} completed — ${d.sent} sent${d.failed > 0 ? `, ${d.failed} failed` : ''}.` });
         } else if (d.failed > 0 && d.remaining === 0) {
           pushToast({ kind: 'warning', message: `Campaign #${d.campaignId} finished with ${d.failed} failed recipient(s).` });
+        }
+      } else if (event === 'notification') {
+        // v1.8.0: a new Notification Center row was created by the sweep.
+        const d = data as NotificationEventData;
+        void qc.invalidateQueries({ queryKey: ['notifications'] });
+        void qc.invalidateQueries({ queryKey: ['notification-unread'] });
+        void qc.invalidateQueries({ queryKey: ['mention-queue'] });
+        void qc.invalidateQueries({ queryKey: ['operations-center'] });
+        void qc.invalidateQueries({ queryKey: ['operations-workload'] });
+        // Only CRITICAL notifications interrupt with a toast (SLA breach,
+        // sync failure) - the rest wait in the bell badge.
+        if (d.severity === 'critical') {
+          pushToast({ kind: 'error', message: d.title });
         }
       }
     });
