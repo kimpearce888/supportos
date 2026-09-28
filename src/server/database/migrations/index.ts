@@ -12,8 +12,9 @@ import { migration009 } from './009_outreach_semantic_sync.js';
 import { migration010 } from './010_audit_hardening.js';
 import { migration011 } from './011_activity_engine.js';
 import { migration012 } from './012_m2_collaboration.js';
+import { migration013 } from './013_m3_copilot_attributes.js';
 
-export const migrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012];
+export const migrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013];
 
 export function applyMigrations(db: DB): { applied: number; total: number } {
   return runMigrations(db, migrations);

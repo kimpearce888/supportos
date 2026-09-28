@@ -1,4 +1,5 @@
 import type { DB } from '../database/connection.js';
+import { AI_ATTRIBUTE_CATALOG } from '../../shared/constants.js';
 import type {
   SegmentDefinition,
   SegmentNode,
@@ -361,6 +362,63 @@ export class SegmentEngine {
         where.push(`EXISTS (SELECT 1 FROM conversation_tags ct JOIN tags tg ON tg.id = ct.tag_local_id WHERE ct.conversation_id = c.id AND LOWER(tg.name) IN (${tagParams}))`);
         params.push(...tags.map((s) => s.toLowerCase()));
       }
+    }
+
+    // v1.9.0 (M3, plan Phase 16 "usable by Outreach"): local AI attribute
+    // condition on the qualifying conversation. Closed catalog + bound params
+    // (same policy as every other node); an unknown attribute key matches
+    // NOTHING (safe deny) and a missing row only matches 'unknown'.
+    if (t.aiAttribute && typeof t.aiAttribute.attribute === 'string') {
+      const aa = t.aiAttribute;
+      const def = AI_ATTRIBUTE_CATALOG.find((d) => d.key === aa.attribute);
+      if (!def) {
+        notes.push(`AI attribute '${aa.attribute}' is not in the catalog - condition matched no conversations.`);
+        return [];
+      }
+      if (aa.value.toLowerCase() === 'unknown') {
+        if (aa.op !== 'equals') return [];
+        where.push(
+          `NOT EXISTS (SELECT 1 FROM ai_attributes a WHERE a.conversation_id = c.id AND a.attribute = ? AND a.superseded_at IS NULL)`
+        );
+        params.push(aa.attribute);
+      } else if (def.value_type === 'number') {
+        const n = Number(aa.value);
+        if (!Number.isFinite(n)) return [];
+        const opSql = aa.op === 'gt' ? '>' : aa.op === 'gte' ? '>=' : aa.op === 'lt' ? '<' : aa.op === 'lte' ? '<=' : null;
+        if (opSql == null) return [];
+        where.push(
+          `EXISTS (SELECT 1 FROM ai_attributes a WHERE a.conversation_id = c.id AND a.attribute = ? AND a.superseded_at IS NULL AND CAST(a.value AS REAL) ${opSql} ?)`
+        );
+        params.push(aa.attribute, n);
+      } else {
+        switch (aa.op) {
+          case 'equals':
+            where.push(`EXISTS (SELECT 1 FROM ai_attributes a WHERE a.conversation_id = c.id AND a.attribute = ? AND a.superseded_at IS NULL AND LOWER(a.value) = LOWER(?))`);
+            params.push(aa.attribute, aa.value);
+            break;
+          case 'not_equals':
+            where.push(`NOT EXISTS (SELECT 1 FROM ai_attributes a WHERE a.conversation_id = c.id AND a.attribute = ? AND a.superseded_at IS NULL AND LOWER(a.value) = LOWER(?))`);
+            params.push(aa.attribute, aa.value);
+            break;
+          case 'contains':
+            where.push(`EXISTS (SELECT 1 FROM ai_attributes a WHERE a.conversation_id = c.id AND a.attribute = ? AND a.superseded_at IS NULL AND a.value LIKE ? ESCAPE '\\')`);
+            params.push(aa.attribute, `%${aa.value.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`);
+            break;
+          case 'gt': case 'gte': case 'lt': case 'lte': {
+            const vocab = def.values ?? [];
+            const idx = vocab.indexOf(aa.value);
+            if (idx < 0) return [];
+            const list = aa.op === 'gt' || aa.op === 'gte' ? vocab.slice(aa.op === 'gt' ? idx + 1 : idx) : vocab.slice(0, aa.op === 'lt' ? idx : idx + 1);
+            if (list.length === 0) return [];
+            where.push(`EXISTS (SELECT 1 FROM ai_attributes a WHERE a.conversation_id = c.id AND a.attribute = ? AND a.superseded_at IS NULL AND a.value IN (${list.map(() => '?').join(',')}))`);
+            params.push(aa.attribute, ...list);
+            break;
+          }
+          default:
+            return [];
+        }
+      }
+      notes.push(`AI attribute '${def.label}' ${aa.op} '${aa.value}' evaluated over current local attribute rows (missing = unknown).`);
     }
 
     const sql = `SELECT DISTINCT c.customer_local_id AS cid FROM conversations c WHERE ${where.join(' AND ')}`;

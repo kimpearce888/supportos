@@ -16,6 +16,8 @@ import { useUiStore } from '../state/uiStore.js';
 import { FilterBar, SavedViewsManager, type FilterBarValues } from '../components/inbox/FilterBar.js';
 import { PriorityBadge, ResponseStateBadge, TicketStateBadge, ActivityTimeline, PriorityPicker, TicketStatePicker } from '../components/inbox/ActivityUI.js';
 import { SideThreadsPanel } from '../components/inbox/SideThreads.js';
+import { CopilotPanel } from '../components/inbox/CopilotPanel.js';
+import { AttributeSnapshotCard } from '../components/inbox/AttributeSnapshotCard.js';
 import { MentionTextarea } from '../components/inbox/MentionTextarea.js';
 import { useMentionDirectory } from '../api/hooks.js';
 import type { } from '../../shared/types.js';
@@ -55,7 +57,11 @@ export function InboxPage(): ReactNode {
     priority: params.get('priority'),
     ticketStateId: params.get('ticketStateId'),
     sort: params.get('sort'),
-    savedViewId: params.get('savedViewId')
+    savedViewId: params.get('savedViewId'),
+    // v1.9.0 (M3): live AI-attribute filter (closed catalog, server-validated).
+    aiAttribute: params.get('aiAttribute'),
+    aiAttrOp: params.get('aiAttrOp'),
+    aiAttrValue: params.get('aiAttrValue')
   };
   const setFilters = (patch: Partial<FilterBarValues>): void => {
     const next = new URLSearchParams(params);
@@ -1007,7 +1013,7 @@ function Composer({ conversationId, customerId: _customerId, customerEmail, draf
 // ====================================================================
 
 function ContextPane({ data, onRefresh }: { data: NonNullable<ReturnType<typeof useConversationDetail>['data']>; onRefresh: () => void }): ReactNode {
-  const [tab, setTab] = useState<'customer' | 'ai'>('ai');
+  const [tab, setTab] = useState<'customer' | 'ai' | 'copilot'>('ai');
   const contextOpen = useUiStore((s) => s.contextPaneOpen);
   const setContextPane = useUiStore((s) => s.setContextPane);
   if (!contextOpen) {
@@ -1023,12 +1029,15 @@ function ContextPane({ data, onRefresh }: { data: NonNullable<ReturnType<typeof 
         <div className="tabs" style={{ margin: 0, borderBottom: 'none' }}>
           <button className={`tab ${tab === 'ai' ? 'active' : ''}`} onClick={() => setTab('ai')}>AI</button>
           <button className={`tab ${tab === 'customer' ? 'active' : ''}`} onClick={() => setTab('customer')}>Customer</button>
+          {/* v1.9.0 (M3, plan Phase 15): the interactive Local Copilot lives here -
+              read-only tools, evidence-cited answers, never sends anything. */}
+          <button className={`tab ${tab === 'copilot' ? 'active' : ''}`} onClick={() => setTab('copilot')} title="Ask the Local Copilot about this ticket (read-only, evidence-cited)"><Bot size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} />Copilot</button>
         </div>
         <button className="btn ghost small" aria-label="Hide context pane" onClick={() => setContextPane(false)}>
           <ChevronRight size={12} />
         </button>
       </div>
-      {tab === 'ai' ? <AiSidebar data={data} onRefresh={onRefresh} /> : <CustomerSidebar data={data} />}
+      {tab === 'ai' ? <AiSidebar data={data} onRefresh={onRefresh} /> : tab === 'customer' ? <CustomerSidebar data={data} /> : <CopilotPanel conversationId={data.conversation.id} />}
     </aside>
   );
 }
@@ -1061,6 +1070,9 @@ function AiSidebar({ data, onRefresh }: { data: NonNullable<ReturnType<typeof us
   return (
     <>
       <ClientIntelligenceCard conversationId={data.conversation.id} onRefresh={onRefresh} />
+      {/* v1.9.0 (M3, plan Phase 16): the per-ticket AI attribute snapshot -
+          deterministic + AI layers, honest unknowns, one-click recompute. */}
+      <AttributeSnapshotCard conversationId={data.conversation.id} />
       <div className="ai-sidebar-section">
         <h4><Bot size={12} /> What is the customer asking?</h4>
         {analyzing ? <Spinner label="Analyzing…" /> : null}

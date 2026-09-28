@@ -3,6 +3,45 @@
 All notable changes to SupportOS are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-09-28
+
+The intelligence release: SupportOS gains a **Local Copilot** and a **general AI attribute layer**, and automation learns to act on both — safely. The **Local Copilot** (plan phase 15) is an interactive, read-only assistant living in every conversation's context pane: it answers questions like *What is this customer asking? Have we seen this issue before? What solved the previous cases? Why is this ticket urgent?* using an allowlisted read-only tool registry (current conversation, customer history, similar conversations, knowledge, known issues, issue clusters, saved replies, AI analyses, SupportOS metadata, the attribute layer). The model never sees SQL, every tool result is server-validated, bounded and redacted, the tool loop is hard-bounded, and **citations are machine-generated** — the source list is built by the server from the tools it actually executed, so a model cannot fabricate a source that survives. The Copilot performs zero writes by construction; if LM Studio is off, it says so instead of pretending. The **general AI attribute layer** (plan phase 16) gives every conversation first-class local attributes — intent, product, feature, issue, urgency, frustration cues, technical familiarity, customer goal, question count, risk, known issue, issue cluster, response style, escalation signal — in two layers: deterministic slots computed from observable local facts with zero AI, and AI slots extracted by LM Studio with evidence excerpts and enum-closed values. Every snapshot is **versioned** (recompute supersedes, history is preserved), confidence-aware, and honest: a missing attribute IS `unknown` and is never fabricated. Attributes are searchable, filterable and reportable: a live inbox filter (compiled through the *same* viewEngine code path as saved views — one implementation, never two), saved Inbox Views, Outreach segments, and an AI Center coverage report with per-attribute drill-downs. **AI escalation rules** (plan phase 17) extend automation with `ai_attribute` and `ai_verification` conditions: high urgency can route to the review queue, but the AI never performs a write — conditions only decide whether a rule matches, actions flow through the same approval tiers as before, and an unknown attribute never matches a concrete value. 462/462 tests green (+54 over v1.8.0), the black-box audit grew a v1.9.0 section (383 checks, 0 HIGH / 0 MEDIUM after fixes), and the human-like browser pass walked all 17 pages with zero console errors.
+
+### Added — Local Copilot (plan phase 15)
+- Interactive read-only assistant in the conversation context pane (third tab), plus a Copilot sessions browser in the AI Center.
+- 7 new read-only tools join the registry: `get_conversation_context`, `get_customer_history`, `get_similar_conversations`, `get_issue_clusters`, `get_ai_analysis`, `get_supportos_metadata`, `get_ai_attributes` — every result bounded and redacted before the model sees it.
+- Machine-generated citations from real tool executions (the model cannot fabricate sources); answers must cite evidence with inline markers.
+- Bounded tool loop (max rounds + max calls per turn): a tool-looping model gets a hard stop and must answer from what it has, honestly.
+- Persistent sessions and messages (`copilot_sessions` / `copilot_messages`), every turn audited with `ai_involvement=true` and recorded in `ai_runs` with model, prompt version and latency.
+- Deterministic starter questions personalized from local facts (prior tickets, known-issue links, analysis state).
+- Honest degradation: AI disabled or LM Studio unreachable → clear 503s and in-UI error states, never fake answers.
+
+### Added — general AI attribute layer (plan phase 16)
+- Closed 14-key catalog (`ai_attributes` table, migration 013) with per-key value types and vocabularies; every stored row is validated against the catalog at write time.
+- Deterministic layer (zero AI): urgency, frustration cues, technical familiarity, escalation signal, question count, risk composite, known-issue and issue-cluster membership, customer goal, response style — always computable from observable local facts.
+- AI layer (LM Studio only): intent, product, feature, issue, customer goal, response style — evidence excerpts required for medium/high confidence, thread references validated against ids that were actually in the prompt, enum violations are dropped rather than stored.
+- Versioned snapshots: recompute retires prior rows (`superseded_at`), full history preserved per attribute; a key with no record reads as honest `unknown`.
+- Searchable / filterable / reportable: live inbox filter (`aiAttribute`/`aiAttrOp`/`aiAttrValue` — compiled by the same viewEngine path as saved views), saved-view conditions, Outreach segment conditions (`aiAttribute`), AI Center coverage report with known/unknown percentages and conversation drill-downs.
+- Per-conversation snapshot card in the AI sidebar with confidence, source (deterministic/AI), evidence excerpts and one-click recompute.
+- `compute_attributes` worker job + bounded v1.9.0 backfill (analyzed conversations without attribute rows, capped at 500).
+
+### Added — AI escalation rules (plan phase 17)
+- Automation conditions can test `ai_attribute` (with a required catalog key) and `ai_verification` (`failed`/`passed`/`none`), all Zod-validated at the API boundary.
+- Operator semantics follow the attribute's value type; ordered enum comparisons use vocabulary position; missing attributes match `equals unknown` and nothing else.
+- Safety invariant preserved: conditions only decide matches — actions flow through the existing read / non-destructive / higher-risk approval tiers; nothing customer-facing ever happens silently.
+- The Automation UI exposes the new condition fields with the closed attribute-key selector and the safety note.
+
+### Fixed
+- Copilot citations now deep-link conversations for every tool result shape (conversation-shaped results carry `id`+`number`; similar-conversation results keep their `conversation_id`; number-only results are resolved server-side).
+- `ai_runs` rows for copilot chats now record the model column, not just the output JSON.
+- Copilot chat with an unknown session id returns a clean 404 (client error) instead of a service-shaped 503.
+- Boolean attributes get closed true/false/unknown selects in the filter UI (no free-text guessing).
+
+### Security & integrity
+- Black-box audit section K (22 new checks; 383 total): injection-shaped attribute keys/values, LIKE-wildcard probes, live-filter parity vs. the snapshot, hostile copilot bodies, oversized questions, unknown sessions/conversations, closed-vocabulary automation conditions — final: 0 HIGH / 0 MEDIUM.
+- The model never receives SQL, raw thread bodies beyond bounded redacted excerpts, or write-shaped tools; the tools endpoint publishes the allowlist for transparency.
+- Attributes are local intelligence only — they never write to Help Scout and never overwrite source data.
+
 ## [1.8.0] — 2026-09-28
 
 The collaboration release: SupportOS stops being a single-operator mirror and becomes a **team operating system**. A live **Operations Center** puts the whole support operation on one screen — 16 tiles (unassigned, needs first response, customer waiting, waiting over threshold, urgent, SLA at risk/breached, high customer effort, repeated issue, known issue, AI escalation, issue spike, automation approvals, failed jobs, sync problems, campaign activity), scoped by mailbox, every conversation tile drilling into the *exact same filtered inbox list* (one SQL fragment is the single source of truth for both the count and the drill-down — they can never disagree). A **workload & capacity engine** exposes per-agent and per-team load with an explicit, configurable capacity model (never inferred from anything about a person), Help Scout-synced availability, and a **suggested assignee** that is a read-only recommendation with its reasoning exposed — nothing ever reassigns automatically. A persistent **Notification Center** produces 14 notification types from a single idempotent sweep (customer replies, assignments, mentions, SLA states, approvals, AI escalations, known issues, spikes, campaign replies, sync/job failures, customer events) with targeting, per-type preferences, unread badge and live SSE delivery. **@mentions** work in internal notes and side threads (exact identity matching against the Help Scout mirror — unknown tokens stay plain text, never guessed), and **side collaboration threads** give conversations internal-only discussion spaces (Support / Engineering / Billing style) that never touch the customer-visible Help Scout thread. 408/408 tests green (+64 over v1.7.0), the black-box audit grew a v1.8.0 section (361 checks, 0 HIGH / 0 MEDIUM after fixes), and the human-like browser pass walked all 16 pages with zero console errors.

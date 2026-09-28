@@ -58,6 +58,7 @@ export class WorkerManager {
     if (recovered > 0) this.logger.info('Recovered stale jobs after restart', { operation: 'recover', count: recovered });
     // v1.5.0: one-time backfills for pre-1.5 databases (ticket chunks + property values)
     this.backfillV150();
+    this.backfillV190();
     // Recover webhook events that were persisted but never processed (v1.4.0):
     // the endpoint persists FIRST and acknowledges, so a crash in between used
     // to leave events pending forever.
@@ -377,6 +378,16 @@ export class WorkerManager {
         // ---------- ai queue ----------
         case 'analyze_ticket': {
           await this.pipeline.processNewTicket(Number(payload.conversationId));
+          // v1.9.0 (M3): refresh the AI attribute layer right after analysis so
+          // attribute-driven Views / automation see fresh values without
+          // waiting for the next sweep.
+          await this.ctx.attributes.compute(Number(payload.conversationId)).catch(() => undefined);
+          break;
+        }
+        case 'compute_attributes': {
+          // v1.9.0 (M3): deterministic always; the AI layer is cached by input
+          // hash so re-runs are cheap. Failure is honest: rows just stay as-is.
+          await this.ctx.attributes.compute(Number(payload.conversationId), { force: payload.force === true });
           break;
         }
         case 'generate_draft': {
@@ -583,6 +594,33 @@ export class WorkerManager {
       }
     } catch (e) {
       this.logger.warn('v1.5.0 backfill failed (non-fatal)', { operation: 'backfill', error: String(e) });
+    }
+  }
+
+  /**
+   * v1.9.0 (M3): one-time bounded backfill - enqueue attribute computation for
+   * conversations that already have an AI analysis but no attribute rows yet
+   * (pre-1.9.0 databases). Bounded to 500 so a huge archive cannot stall boot;
+   * everything else computes lazily on its next analysis / sweep.
+   */
+  private backfillV190(): void {
+    try {
+      const ids = (
+        this.ctx.db
+          .prepare(
+            `SELECT ar.conversation_id AS id FROM ai_runs ar
+             WHERE ar.type = 'ticket_analysis' AND ar.status = 'completed' AND ar.conversation_id IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM ai_attributes a WHERE a.conversation_id = ar.conversation_id)
+             GROUP BY ar.conversation_id LIMIT 500`
+          )
+          .all() as { id: number }[]
+      ).map((r) => r.id);
+      if (ids.length > 0) {
+        for (const id of ids) this.ctx.jobsRepo.enqueue('ai', 'compute_attributes', { conversationId: id }, PRIORITY.INDEXING, 2);
+        this.logger.info('v1.9.0 backfill: attribute computation queued', { operation: 'backfill', conversations: ids.length });
+      }
+    } catch (e) {
+      this.logger.warn('v1.9.0 backfill failed (non-fatal)', { operation: 'backfill', error: String(e) });
     }
   }
 

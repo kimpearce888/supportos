@@ -1,8 +1,8 @@
 import type { SettingsRepository } from '../database/repositories/settingsRepo.js';
 import { LmStudioClient, LmStudioError, type ChatMessage } from '../integrations/lmstudio/lmStudioClient.js';
-import type { AiProvider } from './provider.js';
-import { buildTicketAnalysisUser, buildCustomerDraftUser, buildDraftVerificationUser, buildIssueClusterUser, buildReportNarrativeUser, buildMemoryExtractionUser, buildInteractionObservationUser, buildInteractionRecommendationUser, TICKET_ANALYSIS_SYSTEM, CUSTOMER_DRAFT_SYSTEM, DRAFT_VERIFICATION_SYSTEM, ISSUE_CLUSTER_SYSTEM, REPORT_NARRATIVE_SYSTEM, MEMORY_EXTRACTION_SYSTEM, INTERACTION_OBSERVATION_SYSTEM, INTERACTION_RECOMMENDATION_SYSTEM, type EvidenceContext, type InteractionObservationInput, type InteractionRecommendationInput } from './prompts.js';
-import { ticketAnalysisOutputSchema, draftVerificationOutputSchema, clusteringOutputSchema, interactionObservationOutputSchema, interactionRecommendationOutputSchema } from '../../shared/schemas.js';
+import type { AiProvider, AttributeExtractionInput, ExtractedAttribute } from './provider.js';
+import { buildTicketAnalysisUser, buildCustomerDraftUser, buildDraftVerificationUser, buildIssueClusterUser, buildReportNarrativeUser, buildMemoryExtractionUser, buildInteractionObservationUser, buildInteractionRecommendationUser, buildAttributeExtractionUser, TICKET_ANALYSIS_SYSTEM, CUSTOMER_DRAFT_SYSTEM, DRAFT_VERIFICATION_SYSTEM, ISSUE_CLUSTER_SYSTEM, REPORT_NARRATIVE_SYSTEM, MEMORY_EXTRACTION_SYSTEM, INTERACTION_OBSERVATION_SYSTEM, INTERACTION_RECOMMENDATION_SYSTEM, ATTRIBUTE_EXTRACTION_SYSTEM, type EvidenceContext, type InteractionObservationInput, type InteractionRecommendationInput } from './prompts.js';
+import { ticketAnalysisOutputSchema, draftVerificationOutputSchema, clusteringOutputSchema, interactionObservationOutputSchema, interactionRecommendationOutputSchema, attributeExtractionOutputSchema } from '../../shared/schemas.js';
 import type { TicketAnalysis, DraftVerification, InteractionSignal, SupportApproach } from '../../shared/types.js';
 import { redactText } from '../security/redaction.js';
 import { sanitizeSignals, assertInteractionTextSafe, sanitizeInteractionText } from './interaction/safety.js';
@@ -155,6 +155,30 @@ export class LmStudioProvider implements AiProvider {
     return { memories, latencyMs: res.latencyMs };
   }
 
+  /** v1.9.0 (M3, plan Phase 16): evidence-backed attribute extraction. */
+  async extractAttributes(input: AttributeExtractionInput): Promise<{ attributes: ExtractedAttribute[]; latencyMs: number; model: string }> {
+    const res = await this.chatJson(ATTRIBUTE_EXTRACTION_SYSTEM, buildAttributeExtractionUser(input), { redact: true, maxTokens: 1200 });
+    const parsed = attributeExtractionOutputSchema.safeParse(res.json ?? {});
+    if (!parsed.success) {
+      this.lastErr = 'Attribute extraction returned an unparseable structure';
+      throw new LmStudioError('The local model did not return a valid attribute extraction JSON.', false);
+    }
+    // Evidence integrity (same policy as interaction observation): thread ids
+    // must be ids that were actually in the prompt; excerpts must pass the
+    // forbidden-claim scan - a hallucinated citation must never be stored.
+    const validThreadIds = new Set(input.messages.map((m) => m.thread_local_id));
+    const attributes = parsed.data.attributes
+      .map((a) => ({
+        attribute: a.attribute,
+        value: a.value.trim(),
+        confidence: a.confidence,
+        evidence_excerpt: a.evidence_excerpt && assertInteractionTextSafe(a.evidence_excerpt).ok ? a.evidence_excerpt : null,
+        evidence_thread_local_id: a.evidence_thread_local_id != null && validThreadIds.has(a.evidence_thread_local_id) ? a.evidence_thread_local_id : null
+      }))
+      .filter((a) => a.value.length > 0);
+    return { attributes, latencyMs: res.latencyMs, model: res.model };
+  }
+
   async embed(texts: string[]): Promise<number[][]> {
     this.client.refreshFromSettings();
     const results = await this.client.embed(texts);
@@ -285,6 +309,9 @@ export class DisabledAiProvider implements AiProvider {
     this.reject();
   }
   async recommendSupportApproach(): Promise<never> {
+    this.reject();
+  }
+  async extractAttributes(): Promise<never> {
     this.reject();
   }
   async embed(): Promise<never> {

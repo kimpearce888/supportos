@@ -5,6 +5,7 @@ import { api } from '../api/client.js';
 import { Spinner, EmptyState, ErrorState, RelativeTime } from '../components/common/ui.js';
 import { Modal } from '../components/common/overlays.js';
 import { useUiStore } from '../state/uiStore.js';
+import { AI_ATTRIBUTE_CATALOG } from '../../shared/constants.js';
 import type { AutomationRule } from '../../shared/types.js';
 
 interface RuleData {
@@ -95,7 +96,7 @@ export function AutomationPage(): ReactNode {
             </div>
           </div>
           <div className="rule-when mt-8">
-{`WHEN ${r.trigger}${r.conditions.length ? '\nAND ' + r.conditions.map((c) => `${c.field} ${c.operator} "${c.value}"`).join('\nAND ') : ''}\nTHEN ${r.actions.map((a) => a.kind + (Object.keys(a.params).length ? `(${JSON.stringify(a.params)})` : '')).join(' + ')}`}
+{`WHEN ${r.trigger}${r.conditions.length ? '\nAND ' + r.conditions.map((c) => `${c.field === 'ai_attribute' && c.attribute ? `ai_attribute.${c.attribute}` : c.field} ${c.operator} "${c.value}"`).join('\nAND ') : ''}\nTHEN ${r.actions.map((a) => a.kind + (Object.keys(a.params).length ? `(${JSON.stringify(a.params)})` : '')).join(' + ')}`}
           </div>
           <div className="text-xs muted mt-8">ran {r.run_count}× · last <RelativeTime iso={r.last_run_at} /> · priority {r.priority}</div>
         </div>
@@ -128,9 +129,16 @@ export function AutomationPage(): ReactNode {
 function RuleForm({ onSubmit, onClose }: { onSubmit: (body: Record<string, unknown>) => void; onClose: () => void }): ReactNode {
   const [name, setName] = useState('');
   const [trigger, setTrigger] = useState('new_conversation');
-  const [conditions, setConditions] = useState<{ field: string; operator: string; value: string }[]>([]);
+  const [conditions, setConditions] = useState<{ field: string; operator: string; value: string; attribute?: string }[]>([]);
   const [actions, setActions] = useState<{ kind: string; params: Record<string, string> }[]>([{ kind: 'analyze_ticket', params: {} }]);
   const actionKinds = ['analyze_ticket', 'search_similar', 'check_known_issues', 'create_ai_note', 'create_ai_draft', 'add_tag', 'set_status', 'assign', 'manual_review_queue'];
+  // v1.9.0 (M3, plan Phase 17): AI-derived attribute + draft-verification
+  // conditions join the closed field list. They only decide whether a rule
+  // MATCHES - actions still flow through the same approval tiers.
+  const fields = ['subject', 'body', 'tag', 'mailbox', 'confidence', 'known_issue_match', 'ai_attribute', 'ai_verification'];
+  const operators = ['contains', 'equals', 'not_equals', 'gt', 'gte', 'lt', 'lte'];
+  const conditionBody = (c: { field: string; operator: string; value: string; attribute?: string }): Record<string, unknown> =>
+    c.field === 'ai_attribute' ? { field: c.field, operator: c.operator, value: c.value, attribute: c.attribute ?? 'urgency' } : { field: c.field, operator: c.operator, value: c.value };
   return (
     <Modal
       title="New automation rule"
@@ -139,11 +147,11 @@ function RuleForm({ onSubmit, onClose }: { onSubmit: (body: Record<string, unkno
       footer={
         <>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={!name.trim()} onClick={() => onSubmit({ name, trigger, conditions, actions, priority: 100, requires_approval: true, enabled: false })}>Create (disabled)</button>
+          <button className="btn primary" disabled={!name.trim()} onClick={() => onSubmit({ name, trigger, conditions: conditions.map(conditionBody), actions, priority: 100, requires_approval: true, enabled: false })}>Create (disabled)</button>
         </>
       }
     >
-      <div className="form-row"><label className="field" htmlFor="r-name">Name *</label><input id="r-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Timezone triage" /></div>
+      <div className="form-row"><label className="field" htmlFor="r-name">Name *</label><input id="r-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. High-urgency review queue" /></div>
       <div className="form-row">
         <label className="field" htmlFor="r-trigger">Trigger</label>
         <select id="r-trigger" className="input" value={trigger} onChange={(e) => setTrigger(e.target.value)}>
@@ -157,17 +165,31 @@ function RuleForm({ onSubmit, onClose }: { onSubmit: (body: Record<string, unkno
         <label className="field">Conditions (all must match)</label>
         {conditions.map((c, i) => (
           <div key={i} className="flex mb-8">
-            <select className="input" value={c.field} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, field: e.target.value } : x)))}>
-              {['subject', 'body', 'tag', 'mailbox', 'confidence', 'known_issue_match'].map((f) => <option key={f} value={f}>{f}</option>)}
+            <select className="input" value={c.field} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, field: e.target.value, attribute: e.target.value === 'ai_attribute' ? (x.attribute ?? 'urgency') : x.attribute } : x)))}>
+              {fields.map((f) => <option key={f} value={f}>{f === 'ai_attribute' ? 'AI attribute' : f === 'ai_verification' ? 'AI draft verification' : f}</option>)}
             </select>
-            <select className="input" style={{ width: 110 }} value={c.operator} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, operator: e.target.value } : x)))}>
-              {['contains', 'equals', 'gt', 'lt'].map((o) => <option key={o} value={o}>{o}</option>)}
-            </select>
-            <input className="input" placeholder="value" value={c.value} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
+            {c.field === 'ai_attribute' ? (
+              <select className="input" title="Attribute key (closed catalog)" value={c.attribute ?? 'urgency'} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, attribute: e.target.value } : x)))}>
+                {AI_ATTRIBUTE_CATALOG.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+              </select>
+            ) : null}
+            {c.field === 'ai_verification' ? (
+              <select className="input" value={c.value || 'failed'} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, operator: 'equals', value: e.target.value } : x)))}>
+                {['failed', 'passed', 'none'].map((v) => <option key={v} value={v}>{v === 'none' ? 'no verification yet' : v}</option>)}
+              </select>
+            ) : (
+              <>
+                <select className="input" style={{ width: 110 }} value={c.operator} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, operator: e.target.value } : x)))}>
+                  {operators.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <input className="input" placeholder={c.field === 'ai_attribute' ? 'value (or unknown)' : 'value'} value={c.value} onChange={(e) => setConditions((cs) => cs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
+              </>
+            )}
             <button className="btn ghost" onClick={() => setConditions((cs) => cs.filter((_, j) => j !== i))}>×</button>
           </div>
         ))}
         <button className="btn small" onClick={() => setConditions((cs) => [...cs, { field: 'subject', operator: 'contains', value: '' }])}>+ condition</button>
+        <p className="text-xs muted" style={{ margin: '6px 0 0' }}>AI attribute conditions read the local attribute layer (missing value = 'unknown', which never matches a concrete value). They never trigger writes on their own.</p>
       </div>
       <div className="form-row">
         <label className="field">Actions</label>

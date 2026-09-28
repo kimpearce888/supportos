@@ -104,6 +104,17 @@ export interface TicketCondition {
   modifiedWithinDays?: number | null;
   numberMin?: number | null;
   numberMax?: number | null;
+  /**
+   * v1.9.0 (M3, plan Phase 16 "usable by Outreach"): conversation must carry a
+   * current local AI attribute matching this test. Attribute keys are the
+   * closed catalog; an unknown key matches NOTHING (safe deny). A missing
+   * attribute row is 'unknown' and only matches value 'unknown'.
+   */
+  aiAttribute?: {
+    attribute: string;
+    op: 'equals' | 'not_equals' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte';
+    value: string;
+  } | null;
 }
 
 export type HistoryMetric = 'ticket_count' | 'open_count' | 'closed_count' | 'last_contact_within_days' | 'first_contact_before_days';

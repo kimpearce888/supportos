@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { INTERACTION_DIMENSIONS, OPERATIONAL_CONFIDENCE_VALUES, RESPONSE_PREFERENCE_VALUES } from './constants.js';
+import { AI_ATTRIBUTE_KEYS, INTERACTION_DIMENSIONS, OPERATIONAL_CONFIDENCE_VALUES, RESPONSE_PREFERENCE_VALUES } from './constants.js';
 
 /** Runtime validation schemas for important boundaries (Help Scout API responses + local API requests). */
 
@@ -500,11 +500,24 @@ export const automationRuleSchema = z.object({
   trigger: z.enum(['new_conversation', 'customer_reply', 'ai_low_confidence', 'manual']),
   conditions: z
     .array(
-      z.object({
-        field: z.enum(['subject', 'body', 'tag', 'mailbox', 'confidence', 'known_issue_match']),
-        operator: z.enum(['contains', 'equals', 'gt', 'lt']),
-        value: z.string()
-      })
+      z
+        .object({
+          // v1.9.0 (M3, plan Phase 17): 'ai_attribute' + 'ai_verification' join the
+          // closed field list. Everything stays a flat validated structure -
+          // conditions are never SQL.
+          field: z.enum(['subject', 'body', 'tag', 'mailbox', 'confidence', 'known_issue_match', 'ai_attribute', 'ai_verification']),
+          operator: z.enum(['contains', 'equals', 'not_equals', 'gt', 'gte', 'lt', 'lte']),
+          value: z.string().max(200),
+          attribute: z.enum(AI_ATTRIBUTE_KEYS).optional()
+        })
+        .superRefine((c, ctx) => {
+          if (c.field === 'ai_attribute' && !c.attribute) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['attribute'], message: "field 'ai_attribute' requires the catalog attribute key (e.g. urgency)." });
+          }
+          if (c.field === 'ai_verification' && !['failed', 'passed', 'none'].includes(c.value)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['value'], message: "field 'ai_verification' value must be 'failed', 'passed' or 'none'." });
+          }
+        })
     )
     .default([]),
   actions: z
@@ -603,6 +616,38 @@ export const interactionRecommendationOutputSchema = z.object({
   de_escalation: z.boolean().default(false),
   escalation_recommendation: z.string().max(300).nullish(),
   why: z.array(z.string().max(300)).max(6).default([])
+});
+
+// ---------------- General AI Attribute Layer (v1.9.0 / M3, plan Phase 16) ----------------
+// One structured run extracts AI-fillable attributes. Every enum is closed;
+// missing/null = honest unknown (never stored). Evidence excerpts are bounded
+// and must reference real thread content the model was shown.
+
+export const attributeExtractionOutputSchema = z.object({
+  attributes: z
+    .array(
+      z.object({
+        attribute: z.enum(['intent', 'product', 'feature', 'issue', 'customer_goal', 'response_style']),
+        value: z.string().min(1).max(300),
+        confidence: z.enum(OPERATIONAL_CONFIDENCE_VALUES),
+        evidence_excerpt: z.string().min(1).max(500).nullish(),
+        evidence_thread_local_id: z.number().int().nullish()
+      })
+    )
+    .max(16)
+    .default([])
+});
+
+// ---------------- Local Copilot (v1.9.0 / M3, plan Phase 15) ----------------
+
+export const copilotChatSchema = z.object({
+  question: z.string().min(1).max(4000),
+  conversationId: z.number().int().positive().nullish(),
+  sessionId: z.number().int().positive().nullish()
+});
+
+export const copilotSessionListSchema = z.object({
+  limit: z.number().int().min(1).max(200).optional()
 });
 
 // API request bodies

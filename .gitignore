@@ -19,3 +19,4 @@ src-tauri/target/
 # never committed - CI regenerates them per platform before `tauri build`.
 src-tauri/resources/
 src-tauri/gen/
+screenshots/

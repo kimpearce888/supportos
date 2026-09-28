@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AI_ATTRIBUTE_KEYS, type AiAttributeKey } from './constants.js';
 
 /**
  * Conversation Activity Engine - shared contract (v1.7.0).
@@ -260,6 +261,7 @@ export type ViewCondition =
   | { kind: 'known_issue'; any: boolean; knownIssueIds?: number[] }
   | { kind: 'ai_analyzed'; analyzed: boolean }
   | { kind: 'interaction_signal'; dimension: string; value: string; negate: boolean }
+  | { kind: 'ai_attribute'; attribute: AiAttributeKey; op: 'equals' | 'not_equals' | 'contains' | 'not_contains' | 'gt' | 'gte' | 'lt' | 'lte'; value: string }
   | { kind: 'unread'; unread: boolean }
   | { kind: 'snoozed'; snoozed: boolean }
   | { kind: 'customer'; customerLocalIds: number[] };
@@ -311,6 +313,12 @@ export const viewConditionSchema: z.ZodType<ViewCondition> = z.discriminatedUnio
   z.object({ kind: z.literal('known_issue'), any: z.boolean(), knownIssueIds: idArray.optional() }),
   z.object({ kind: z.literal('ai_analyzed'), analyzed: z.boolean() }),
   z.object({ kind: z.literal('interaction_signal'), dimension: z.string().min(1).max(40), value: z.string().min(1).max(60), negate: z.boolean() }),
+  z.object({
+    kind: z.literal('ai_attribute'),
+    attribute: z.enum(AI_ATTRIBUTE_KEYS),
+    op: z.enum(['equals', 'not_equals', 'contains', 'not_contains', 'gt', 'gte', 'lt', 'lte']),
+    value: z.string().min(1).max(120)
+  }),
   z.object({ kind: z.literal('unread'), unread: z.boolean() }),
   z.object({ kind: z.literal('snoozed'), snoozed: z.boolean() }),
   z.object({ kind: z.literal('customer'), customerLocalIds: idArray })
@@ -379,6 +387,8 @@ export const setPriorityRequestSchema = z.object({
 
 // ---------------- Inbox filter query schema (GET /api/conversations) ----------------
 
+const AI_ATTR_FILTER_OPS = ['equals', 'not_equals', 'contains', 'not_contains', 'gt', 'gte', 'lt', 'lte'] as const;
+
 export const inboxFilterQuerySchema = z.object({
   activityField: z.enum(ACTIVITY_FIELDS).optional(),
   dateMode: z.enum(DATE_MODES).optional(),
@@ -393,5 +403,14 @@ export const inboxFilterQuerySchema = z.object({
   savedViewId: z.string().regex(/^\d+$/).optional(),
   timezone: z.string().max(60).optional(),
   /** v1.8.0 Operations Center drill-down: whitelisted tile key compiled to the exact tile fragment. */
-  ops: z.string().max(40).optional()
+  ops: z.string().max(40).optional(),
+  /**
+   * v1.9.0 (M3, plan Phase 16 "filterable"): live AI-attribute filter. The key
+   * must be a closed-catalog key; the operator vocabulary is fixed; the value
+   * is a bound parameter at compile time (never SQL). Compiled by the SAME
+   * viewEngine code path as saved views - no parallel implementation.
+   */
+  aiAttribute: z.enum(AI_ATTRIBUTE_KEYS).optional(),
+  aiAttrOp: z.enum(AI_ATTR_FILTER_OPS).optional(),
+  aiAttrValue: z.string().min(1).max(120).optional()
 });

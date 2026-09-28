@@ -17,6 +17,10 @@ export interface InboxFilters {
   ticketStateId?: string | null;
   sort?: string | null;
   savedViewId?: string | null;
+  /** v1.9.0 (M3): live AI-attribute filter (closed catalog key + op + value). */
+  aiAttribute?: string | null;
+  aiAttrOp?: string | null;
+  aiAttrValue?: string | null;
 }
 
 export function useConversations(view: string, page: number, tag?: string | null, channel?: string | null, filters?: InboxFilters) {
@@ -26,13 +30,13 @@ export function useConversations(view: string, page: number, tag?: string | null
   params.set('page', String(page));
   if (tag) params.set('tag', tag);
   if (channel) params.set('channel', channel);
-  for (const key of ['activityField', 'dateMode', 'from', 'to', 'fromTime', 'toTime', 'responseState', 'priority', 'ticketStateId', 'sort', 'savedViewId'] as const) {
+  for (const key of ['activityField', 'dateMode', 'from', 'to', 'fromTime', 'toTime', 'responseState', 'priority', 'ticketStateId', 'sort', 'savedViewId', 'aiAttribute', 'aiAttrOp', 'aiAttrValue'] as const) {
     const v = f[key];
     if (v) params.set(key, v);
   }
   const qs = params.toString();
   return useQuery({
-    queryKey: ['conversations', view, page, tag ?? null, channel ?? null, f.activityField ?? null, f.dateMode ?? null, f.from ?? null, f.to ?? null, f.fromTime ?? null, f.toTime ?? null, f.responseState ?? null, f.priority ?? null, f.ticketStateId ?? null, f.sort ?? null, f.savedViewId ?? null],
+    queryKey: ['conversations', view, page, tag ?? null, channel ?? null, f.activityField ?? null, f.dateMode ?? null, f.from ?? null, f.to ?? null, f.fromTime ?? null, f.toTime ?? null, f.responseState ?? null, f.priority ?? null, f.ticketStateId ?? null, f.sort ?? null, f.savedViewId ?? null, f.aiAttribute ?? null, f.aiAttrOp ?? null, f.aiAttrValue ?? null],
     queryFn: () => api.get<ConversationListResponse & { notes?: string[] }>(`/api/conversations?${qs}`)
   });
 }
@@ -339,4 +343,62 @@ export function useSideThread(threadId: number | null) {
     queryFn: () => api.get<{ side_thread: import('../../shared/collaboration.js').SideThreadDetail }>(`/api/side-threads/${threadId}`),
     enabled: threadId != null && threadId > 0
   });
+}
+
+// ---------------- v1.9.0 (M3): AI attributes + Local Copilot ----------------
+
+export function useAttributeSnapshot(conversationId: number | null) {
+  return useQuery({
+    queryKey: ['attributes-snapshot', conversationId],
+    queryFn: () => api.get<import('../../shared/types.js').ConversationAttributeSnapshot>(`/api/attributes/conversation/${conversationId}`),
+    enabled: conversationId != null && conversationId > 0
+  });
+}
+
+export function useAttributeReport() {
+  return useQuery({
+    queryKey: ['attributes-report'],
+    queryFn: () => api.get<{ distributions: import('../../shared/types.js').AiAttributeDistribution[] }>('/api/attributes/report'),
+    refetchInterval: 120_000
+  });
+}
+
+export function useAttributeCatalog() {
+  return useQuery({
+    queryKey: ['attributes-catalog'],
+    queryFn: () => api.get<{ catalog: { key: string; label: string; value_type: string; values?: readonly string[]; description: string }[]; schema_version: string; note: string }>('/api/attributes/catalog')
+  });
+}
+
+export function useAttributeConversations(attribute: string | null, op: string, value: string, limit = 25) {
+  return useQuery({
+    queryKey: ['attributes-conversations', attribute, op, value, limit],
+    queryFn: () => api.get<{ attribute: string; op: string; value: string; conversations: { conversation_id: number; number: number; subject: string | null; value: string; confidence: string; source: string; computed_at: string }[] }>(`/api/attributes/conversations?attribute=${encodeURIComponent(attribute ?? '')}&op=${encodeURIComponent(op)}&value=${encodeURIComponent(value)}&limit=${limit}`),
+    enabled: !!attribute
+  });
+}
+
+export function useCopilotStarterQuestions(conversationId: number | null) {
+  return useQuery({
+    queryKey: ['copilot-starters', conversationId],
+    queryFn: () => api.get<{ questions: { question: string; why: string }[] }>(`/api/copilot/starter-questions/${conversationId}`),
+    enabled: conversationId != null && conversationId > 0
+  });
+}
+
+export function useCopilotSessions(limit = 50) {
+  return useQuery({
+    queryKey: ['copilot-sessions', limit],
+    queryFn: () => api.get<{ sessions: import('../../shared/types.js').CopilotSession[] }>(`/api/copilot/sessions?limit=${limit}`)
+  });
+}
+
+export type CopilotChatResponse = import('../../shared/types.js').CopilotChatResult & { ok: boolean };
+
+export async function copilotChat(payload: { question: string; conversationId?: number | null; sessionId?: number | null }): Promise<CopilotChatResponse> {
+  return api.post<CopilotChatResponse>('/api/copilot/chat', payload);
+}
+
+export async function recomputeAttributes(conversationId: number, force = false): Promise<{ ok: boolean; snapshot: import('../../shared/types.js').ConversationAttributeSnapshot }> {
+  return api.post<{ ok: boolean; snapshot: import('../../shared/types.js').ConversationAttributeSnapshot }>(`/api/attributes/conversation/${conversationId}/recompute`, { force });
 }

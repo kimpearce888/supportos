@@ -1,10 +1,10 @@
 import type { DB } from '../database/connection.js';
-import type { AutomationRule, AutomationRunRecord, AutomationActionKind } from '../../shared/types.js';
+import type { AutomationRule, AutomationRunRecord, AutomationActionKind, AutomationCondition } from '../../shared/types.js';
 import { JobRepository } from '../database/repositories/jobRepo.js';
 import { SettingsRepository } from '../database/repositories/settingsRepo.js';
 import { AiRepository } from '../database/repositories/aiRepo.js';
+import { AI_ATTRIBUTE_CATALOG } from '../../shared/constants.js';
 
-type Condition = { field: string; operator: 'contains' | 'equals' | 'gt' | 'lt'; value: string };
 type Action = { kind: AutomationActionKind; params: Record<string, string> };
 
 /**
@@ -12,6 +12,13 @@ type Action = { kind: AutomationActionKind; params: Record<string, string> };
  * Safety tiers: read / non-destructive write / destructive-customer-facing write.
  * Higher-risk actions ALWAYS require explicit approval while
  * automation_write_actions_enabled is OFF (safe default).
+ *
+ * v1.9.0 (M3, plan Phase 17): conditions can now test AI-derived attributes
+ * (`ai_attribute`) and the AI draft verification outcome (`ai_verification`).
+ * The AI never performs a write: attribute conditions only decide whether a
+ * rule MATCHES; actions flow through the same approval tiers as before. A
+ * missing attribute reads as 'unknown' and never matches a concrete value
+ * (honest unknown - no fabricated matches).
  */
 export class AutomationEngine {
   private jobs: JobRepository;
@@ -43,7 +50,7 @@ export class AutomationEngine {
       name: String(r.name),
       enabled: Number(r.enabled) === 1 ? 1 : 0,
       trigger: String(r.trigger) as AutomationRule['trigger'],
-      conditions: JSON.parse(String(r.conditions ?? '[]')) as Condition[],
+      conditions: JSON.parse(String(r.conditions ?? '[]')) as AutomationCondition[],
       actions: JSON.parse(String(r.actions ?? '[]')) as Action[],
       priority: Number(r.priority),
       requires_approval: Number(r.requires_approval) === 1 ? 1 : 0,
@@ -52,7 +59,7 @@ export class AutomationEngine {
     }));
   }
 
-  createRule(rule: { name: string; enabled?: boolean; trigger: AutomationRule['trigger']; conditions: Condition[]; actions: Action[]; priority?: number; requires_approval?: boolean }): number {
+  createRule(rule: { name: string; enabled?: boolean; trigger: AutomationRule['trigger']; conditions: AutomationCondition[]; actions: Action[]; priority?: number; requires_approval?: boolean }): number {
     const r = this.db
       .prepare('INSERT INTO automation_rules (name, enabled, trigger, conditions, actions, priority, requires_approval) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(rule.name, rule.enabled ? 1 : 0, rule.trigger, JSON.stringify(rule.conditions), JSON.stringify(rule.actions), rule.priority ?? 100, rule.requires_approval === false ? 0 : 1);
@@ -121,9 +128,14 @@ export class AutomationEngine {
       | undefined;
     if (!conv) return [];
     const analysis = this.ai.getLatestAnalysis(conversationId);
+    // v1.9.0: load the CURRENT attribute snapshot once per fire (attributes are
+    // the local AI layer - deterministic slots exist immediately, AI slots after
+    // analysis; missing = 'unknown' and never matches a concrete value).
+    const attributes = this.currentAttributes(conversationId);
+    const verification = this.latestVerification(conversationId);
     const runs: AutomationRunRecord[] = [];
     for (const rule of this.listRules().filter((r) => r.enabled && r.trigger === trigger)) {
-      const matched = rule.conditions.every((cond) => this.matches(conv, analysis?.analysis ?? null, cond));
+      const matched = rule.conditions.every((cond) => this.matches(conv, analysis?.analysis ?? null, cond, attributes, verification));
       if (!matched) {
         this.record(rule.id, conversationId, 'skipped', 'Conditions not matched');
         continue;
@@ -155,7 +167,35 @@ export class AutomationEngine {
     return runs;
   }
 
-  private matches(conv: { subject: string | null; preview: string | null; tags: string | null; mailbox_name: string | null }, analysis: { intent: string | null; known_issue_candidate: string | null; confidence: string } | null, cond: Condition): boolean {
+  /** Current attribute values keyed by catalog attribute (missing = unknown). */
+  private currentAttributes(conversationId: number): Map<string, { value: string; value_type: string }> {
+    const rows = this.db
+      .prepare('SELECT attribute, value, value_type FROM ai_attributes WHERE conversation_id = ? AND superseded_at IS NULL')
+      .all(conversationId) as { attribute: string; value: string; value_type: string }[];
+    return new Map(rows.map((r) => [r.attribute, { value: r.value, value_type: r.value_type }]));
+  }
+
+  /** Latest AI draft verification outcome: 'failed' | 'passed' | 'none'. */
+  private latestVerification(conversationId: number): 'failed' | 'passed' | 'none' {
+    const row = this.db
+      .prepare("SELECT verification FROM ai_drafts WHERE conversation_id = ? AND verification IS NOT NULL ORDER BY id DESC LIMIT 1")
+      .get(conversationId) as { verification: string } | undefined;
+    if (!row) return 'none';
+    try {
+      const v = JSON.parse(row.verification) as { verified?: unknown };
+      return v.verified === true ? 'passed' : 'failed';
+    } catch {
+      return 'none';
+    }
+  }
+
+  private matches(
+    conv: { subject: string | null; preview: string | null; tags: string | null; mailbox_name: string | null },
+    analysis: { intent: string | null; known_issue_candidate: string | null; confidence: string } | null,
+    cond: AutomationCondition,
+    attributes: Map<string, { value: string; value_type: string }>,
+    verification: 'failed' | 'passed' | 'none'
+  ): boolean {
     const value = cond.value.toLowerCase();
     switch (cond.field) {
       case 'subject':
@@ -176,8 +216,80 @@ export class AutomationEngine {
       }
       case 'known_issue_match':
         return !!analysis?.known_issue_candidate && analysis.known_issue_candidate.toLowerCase().includes(value);
+      case 'ai_attribute':
+        return this.matchesAttribute(cond, attributes);
+      case 'ai_verification':
+        return verification === value;
       default:
         return false;
+    }
+  }
+
+  /**
+   * v1.9.0 (M3): AI-attribute condition matching. Operator semantics follow the
+   * attribute's value_type. A missing attribute is 'unknown': it matches value
+   * 'unknown' (equals) and nothing else - never a fabricated concrete value.
+   */
+  private matchesAttribute(cond: AutomationCondition, attributes: Map<string, { value: string; value_type: string }>): boolean {
+    const key = cond.attribute;
+    if (!key || !AI_ATTRIBUTE_CATALOG.some((d) => d.key === key)) return false; // closed catalog: unknown key never matches
+    const def = AI_ATTRIBUTE_CATALOG.find((d) => d.key === key)!;
+    const current = attributes.get(key);
+    const actual = current?.value ?? 'unknown';
+    const wanted = cond.value;
+    if (wanted.toLowerCase() === 'unknown') {
+      // Only 'equals unknown' matches a missing attribute.
+      return cond.operator === 'equals' ? actual === 'unknown' : false;
+    }
+    if (actual === 'unknown') return false; // honest unknown never matches a concrete value
+    switch (def.value_type) {
+      case 'number': {
+        const a = Number(actual);
+        const b = Number(wanted);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+        switch (cond.operator) {
+          case 'gt': return a > b;
+          case 'gte': return a >= b;
+          case 'lt': return a < b;
+          case 'lte': return a <= b;
+          case 'equals': return a === b;
+          case 'not_equals': return a !== b;
+          default: return false;
+        }
+      }
+      case 'boolean': {
+        if (wanted !== 'true' && wanted !== 'false') return false;
+        switch (cond.operator) {
+          case 'equals': return actual === wanted;
+          case 'not_equals': return actual !== wanted;
+          default: return false;
+        }
+      }
+      case 'enum': {
+        // Ordered vocabularies (urgency, frustration, risk...) support gt/lt.
+        const vocab = def.values ?? [];
+        const ai = vocab.indexOf(actual);
+        const bi = vocab.indexOf(wanted);
+        switch (cond.operator) {
+          case 'equals': return actual.toLowerCase() === wanted.toLowerCase();
+          case 'not_equals': return actual.toLowerCase() !== wanted.toLowerCase();
+          case 'contains': return actual.toLowerCase().includes(wanted.toLowerCase());
+          case 'gt': return ai >= 0 && bi >= 0 && ai > bi;
+          case 'gte': return ai >= 0 && bi >= 0 && ai >= bi;
+          case 'lt': return ai >= 0 && bi >= 0 && ai < bi;
+          case 'lte': return ai >= 0 && bi >= 0 && ai <= bi;
+          default: return false;
+        }
+      }
+      default: {
+        // text
+        switch (cond.operator) {
+          case 'equals': return actual.toLowerCase() === wanted.toLowerCase();
+          case 'not_equals': return actual.toLowerCase() !== wanted.toLowerCase();
+          case 'contains': return actual.toLowerCase().includes(wanted.toLowerCase());
+          default: return false;
+        }
+      }
     }
   }
 

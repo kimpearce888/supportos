@@ -2,7 +2,7 @@
  * Shared domain types for SupportOS.
  * These are the canonical shapes used by both server and client.
  */
-import type { InteractionDimension } from './constants.js';
+import type { AiAttributeKey, AiAttributeValueType, InteractionDimension } from './constants.js';
 
 // ---------------------------------------------------------------- Sync
 export type SyncState =
@@ -645,12 +645,41 @@ export type AutomationActionKind =
   | 'assign'
   | 'manual_review_queue';
 
+/**
+ * v1.9.0 (M3, plan Phase 17): automation conditions gain AI-derived attribute
+ * fields. `ai_attribute` matches the CURRENT attribute snapshot for the
+ * conversation (deterministic attributes exist immediately; AI attributes
+ * after analysis; a missing attribute reads as 'unknown' and never matches a
+ * concrete value). `ai_verification` matches the latest AI draft verification
+ * outcome ('failed' | 'passed' | 'none'). No new action kinds: higher-risk
+ * writes still always require explicit approval.
+ */
+export type AutomationConditionField =
+  | 'subject'
+  | 'body'
+  | 'tag'
+  | 'mailbox'
+  | 'confidence'
+  | 'known_issue_match'
+  | 'ai_attribute'
+  | 'ai_verification';
+
+export type AutomationConditionOperator = 'contains' | 'equals' | 'not_equals' | 'gt' | 'gte' | 'lt' | 'lte';
+
+export interface AutomationCondition {
+  field: AutomationConditionField;
+  operator: AutomationConditionOperator;
+  value: string;
+  /** Required when field='ai_attribute': which catalog attribute to test. */
+  attribute?: AiAttributeKey;
+}
+
 export interface AutomationRule {
   id: number;
   name: string;
   enabled: 0 | 1;
   trigger: 'new_conversation' | 'customer_reply' | 'ai_low_confidence' | 'manual';
-  conditions: { field: string; operator: 'contains' | 'equals' | 'gt' | 'lt'; value: string }[];
+  conditions: AutomationCondition[];
   actions: { kind: AutomationActionKind; params: Record<string, string> }[];
   priority: number;
   requires_approval: 0 | 1;
@@ -665,6 +694,91 @@ export interface AutomationRunRecord {
   triggered_at: string;
   status: 'completed' | 'failed' | 'awaiting_approval' | 'skipped';
   detail: string;
+}
+
+// ---------------------------------------------------------------- General AI Attribute Layer (v1.9.0 / M3, plan Phase 16)
+
+export interface AiAttributeEvidence {
+  excerpt: string;
+  thread_local_id: number | null;
+}
+
+export interface AiAttributeRow {
+  id: number;
+  conversation_id: number;
+  conversation_number: number | null;
+  attribute: AiAttributeKey;
+  value: string;
+  value_type: AiAttributeValueType;
+  confidence: 'high' | 'medium' | 'low' | 'unknown';
+  source: 'deterministic' | 'ai';
+  evidence: AiAttributeEvidence[];
+  run_id: number | null;
+  schema_version: string;
+  computed_at: string;
+}
+
+/** Attribute + catalog metadata + honest-unknown status for one conversation. */
+export interface ConversationAttributeSnapshot {
+  conversation_id: number;
+  conversation_number: number | null;
+  attributes: (AiAttributeRow & { status: 'known' })[];
+  unknown: AiAttributeKey[];
+  computed_at: string | null;
+}
+
+/** Aggregate distribution for the attribute report (coverage is honest: unknown counted separately). */
+export interface AiAttributeDistribution {
+  attribute: AiAttributeKey;
+  label: string;
+  value_type: AiAttributeValueType;
+  total_conversations: number;
+  known: number;
+  unknown: number;
+  values: { value: string; count: number }[];
+}
+
+// ---------------------------------------------------------------- Local Copilot (v1.9.0 / M3, plan Phase 15)
+
+export interface CopilotCitation {
+  index: number;
+  tool: string;
+  label: string;
+  conversation_id: number | null;
+  conversation_number: number | null;
+  customer_id: number | null;
+}
+
+export interface CopilotMessage {
+  id: number;
+  session_id: number;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  citations: CopilotCitation[];
+  tool_name: string | null;
+  tool_calls: number;
+  latency_ms: number | null;
+  created_at: string;
+}
+
+export interface CopilotSession {
+  id: number;
+  title: string;
+  conversation_id: number | null;
+  conversation_number: number | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CopilotChatResult {
+  session: CopilotSession;
+  user_message: CopilotMessage;
+  assistant_message: CopilotMessage;
+  tool_rounds: number;
+  citations: CopilotCitation[];
+  model: string;
+  latency_ms: number;
 }
 
 // ---------------------------------------------------------------- Health / system

@@ -48,6 +48,8 @@ import { NotificationSweep } from '../notifications/notificationSweep.js';
 import { OperationsCenterService } from '../operations/operationsCenter.js';
 import { WorkloadService } from '../operations/workloadService.js';
 import { SideThreadService } from '../collaboration/sideThreadService.js';
+import { AiAttributeService } from '../ai/attributes.js';
+import { CopilotService } from '../ai/copilot.js';
 
 /**
  * ApplicationContext: a modular monolith (spec #163) - one process, one SQLite
@@ -101,6 +103,9 @@ export class AppContext {
   operationsCenter: OperationsCenterService;
   workload: WorkloadService;
   sideThreads: SideThreadService;
+  // v1.9.0 (M3): AI attribute layer + Local Copilot
+  attributes: AiAttributeService;
+  copilot: CopilotService;
 
   constructor(opts: { dbPath?: string; demoMode?: boolean } = {}) {
     this.config = config;
@@ -174,6 +179,12 @@ export class AppContext {
     this.operationsCenter = new OperationsCenterService(this.db, this.sla, this.settingsRepo);
     this.workload = new WorkloadService(this.db, this.sla, this.settingsRepo);
     this.sideThreads = new SideThreadService(this.db, this.notificationSweep);
+    // v1.9.0 (M3): the attribute layer + Copilot reuse the same provider /
+    // tool registry plumbing as the analysis pipeline. The Copilot's chat
+    // dependency defaults to the shared LM Studio client (tests inject a
+    // deterministic fake).
+    this.attributes = new AiAttributeService(this.db, this.aiProvider);
+    this.copilot = new CopilotService(this.db, this.toolRegistry, (opts) => this.lmStudio.chat(opts));
     this.automation = new AutomationEngine(this.db);
     this.knowledge = new KnowledgeIngestor(this.db);
     this.backup = new BackupService(this.db, getDatabasePath(), this.settingsRepo, this.config.backupsPath);
@@ -196,6 +207,7 @@ export class AppContext {
     this.settingsRepo.set('ai_enabled', enabled);
     this.aiProvider = enabled ? new LmStudioProvider(this.settingsRepo) : new DisabledAiProvider();
     this.aiPipeline = new AiPipeline(this.db, this.aiProvider);
+    this.attributes = new AiAttributeService(this.db, this.aiProvider);
     this.workers.rebindPipeline(this.aiPipeline);
   }
 

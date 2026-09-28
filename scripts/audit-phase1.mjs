@@ -415,6 +415,104 @@ async function main() {
   r = await req('GET', '/api/conversations?view=active&pageSize=1');
   if (r.status !== 200) finding('high', 'conversations table damaged by J-section probes', `status ${r.status}`);
 
+  console.log('\n== K. v1.9.0 — Copilot, attribute layer, AI escalation rules ==');
+  // K1. catalog is the closed list with the honest-unknown note
+  r = await req('GET', '/api/attributes/catalog');
+  if (r.status !== 200) finding('high', 'attribute catalog broken', `status ${r.status}`);
+  else {
+    const keys = (r.json?.catalog ?? []).map((d) => d.key);
+    if (keys.length !== 14) finding('medium', 'catalog key count changed', `got ${keys.length}`);
+    if (!String(r.json?.note ?? '').includes('unknown')) finding('low', 'catalog note lost the honest-unknown wording', 'review note');
+  }
+  // K2. attribute routes: hostile ids and unknown keys
+  for (const p of ['/api/attributes/conversation/0', '/api/attributes/conversation/-1', '/api/attributes/conversation/abc']) {
+    r = await req('GET', p);
+    if (r.status !== 422) finding('medium', `hostile attribute id accepted (${p})`, `status ${r.status}`);
+  }
+  r = await req('GET', '/api/attributes/conversation/999999');
+  if (r.status !== 404) finding('medium', 'missing conversation should 404', `status ${r.status}`);
+  r = await req('GET', '/api/attributes/conversation/1/history/; DROP TABLE ai_attributes;--');
+  if (r.status !== 422) finding('medium', 'injection-shaped attribute key in history route', `status ${r.status}`);
+  r = await req('GET', '/api/attributes/values/../../etc/passwd');
+  if (r.status !== 422 && r.status !== 404) finding('medium', 'path-shaped attribute key mis-handled', `status ${r.status} (404 = Fastify path normalization keeps it out of the handler - safe)`);
+  // K3. drill-down with injection-shaped values (LIKE wildcard + SQL)
+  const injectAttr = "' OR 1=1 --; DROP TABLE ai_attributes;--";
+  r = await req('GET', `/api/attributes/conversations?attribute=product&op=contains&value=${encodeURIComponent(injectAttr)}&limit=5`);
+  if (r.status !== 200) finding('high', 'injection-shaped attribute value crashed drill-down', `status ${r.status}`);
+  r = await req('GET', `/api/attributes/conversations?attribute=product&op=contains&value=${encodeURIComponent('%'.repeat(50))}&limit=5`);
+  if (r.status !== 200) finding('medium', 'wildcard-only attribute value crashed drill-down', `status ${r.status}`);
+  r = await req('GET', '/api/attributes/conversations?attribute=known_issue&op=equals&value=TRUE&limit=999999');
+  if (r.status !== 200) finding('medium', 'case-variant boolean + giant limit crashed drill-down', `status ${r.status}`);
+  // K4. recompute on a real conversation, then live-filter parity
+  const convList = (await req('GET', '/api/conversations?view=active&pageSize=1')).json?.conversations ?? [];
+  if (convList.length > 0) {
+    const cid = convList[0].id;
+    r = await req('POST', `/api/attributes/conversation/${cid}/recompute`, { force: true });
+    if (r.status !== 200) finding('high', 'recompute failed on a real conversation', `status ${r.status}: ${r.text.slice(0, 120)}`);
+    else {
+      const snap = (await req('GET', `/api/attributes/conversation/${cid}`)).json;
+      const ki = (snap?.attributes ?? []).find((a) => a.attribute === 'known_issue');
+      if (!ki) finding('medium', 'known_issue missing after recompute (deterministic slot must always exist)', 'check deterministic layer');
+      // live inbox filter must agree with the snapshot (drill == list parity)
+      const filtered = await req('GET', `/api/conversations?aiAttribute=known_issue&aiAttrValue=${ki.value}&pageSize=100`);
+      if (filtered.status !== 200) finding('high', 'live ai-attribute filter crashed', `status ${filtered.status}`);
+      else if (!(filtered.json?.conversations ?? []).some((c) => c.id === cid)) finding('medium', 'live filter disagrees with attribute snapshot (parity break)', `snapshot=${ki.value}`);
+    }
+  }
+  // K5. live filter hostile parameters
+  r = await req('GET', `/api/conversations?aiAttribute=not_a_key&aiAttrValue=${encodeURIComponent(injectAttr)}`);
+  if (r.status !== 422) finding('high', 'unknown ai-attribute key accepted by live filter', `status ${r.status}`);
+  r = await req('GET', '/api/conversations?aiAttribute=urgency&aiAttrOp=hax&aiAttrValue=high');
+  if (r.status !== 422) finding('medium', 'unknown ai-attribute operator accepted', `status ${r.status}`);
+  r = await req('GET', '/api/conversations?aiAttribute=question_count&aiAttrOp=gt&aiAttrValue=1e999');
+  if (r.status !== 422 && r.status !== 200) finding('medium', 'infinity-shaped numeric value mis-handled', `status ${r.status}`);
+  // K6. saved views carrying ai_attribute conditions: save-time compile checks
+  r = await req('POST', '/api/inbox-views', { name: 'audit-attr-inject', definition: { combinator: 'all', conditions: [{ kind: 'ai_attribute', attribute: 'product', op: 'contains', value: injectAttr }] } });
+  if (r.status !== 200) finding('low', 'injection value in saved-view ai_attribute rejected (acceptable but check parity)', `status ${r.status}`);
+  else {
+    const vid = r.json?.view?.id;
+    const applied = await req('GET', `/api/conversations?savedViewId=${vid}&pageSize=5`);
+    if (applied.status !== 200) finding('high', 'saved view with injection-shaped attribute value crashes at open time', `status ${applied.status}`);
+    await req('DELETE', `/api/inbox-views/${vid}`);
+  }
+  r = await req('POST', '/api/inbox-views', { name: 'audit-attr-badkey', definition: { combinator: 'all', conditions: [{ kind: 'ai_attribute', attribute: 'nope', op: 'equals', value: 'x' }] } });
+  if (r.status < 400 || r.status >= 500) finding('high', 'unknown attribute key in saved view must be a clean 4xx', `status ${r.status}`);
+  // K7. copilot surface: read-only definitions, hostile bodies, honest 503
+  r = await req('GET', '/api/copilot/tools');
+  if (r.status !== 200) finding('high', 'copilot tools listing broken', `status ${r.status}`);
+  else {
+    const names = (r.json?.tools ?? []).map((t) => t.name);
+    if (names.includes('execute_sql') || names.includes('write_reply')) finding('high', 'write-shaped tool exposed to the model', JSON.stringify(names));
+    if (!String(r.json?.note ?? '').includes('read-only')) finding('low', 'tools note lost read-only wording', 'review note');
+  }
+  r = await req('POST', '/api/copilot/chat', {});
+  if (r.status !== 422) finding('medium', 'empty copilot chat body must 422', `status ${r.status}`);
+  r = await req('POST', '/api/copilot/chat', 'not-json', { 'Content-Type': 'application/json' });
+  if (r.status >= 500) finding('high', 'non-JSON copilot body crashed', `status ${r.status}`);
+  r = await req('POST', '/api/copilot/chat', { question: 'x'.repeat(5000) });
+  if (r.status !== 422) finding('medium', 'oversized copilot question accepted', `status ${r.status}`);
+  r = await req('POST', '/api/copilot/chat', { question: 'hi', conversationId: 999999 });
+  if (r.status !== 404) finding('medium', 'copilot chat with unknown conversation must 404', `status ${r.status}`);
+  r = await req('POST', '/api/copilot/chat', { question: 'hi', sessionId: 999999 });
+  if (r.status !== 404) finding('high', 'unknown copilot session must be a clean 404', `status ${r.status}`);
+  // honest degradation: with LM Studio unreachable the chat is a 503, never a hang or fake answer
+  r = await req('POST', '/api/copilot/chat', { question: 'what is this about?' });
+  if (r.status !== 503) finding('medium', 'copilot chat with AI offline should be an honest 503', `status ${r.status}`);
+  for (const p of ['/api/copilot/sessions/0', '/api/copilot/sessions/abc', '/api/copilot/starter-questions/-1']) {
+    r = await req('GET', p);
+    if (r.status !== 422) finding('medium', `hostile copilot id accepted (${p})`, `status ${r.status}`);
+  }
+  r = await req('DELETE', '/api/copilot/sessions/999999');
+  if (r.status !== 404) finding('medium', 'deleting a missing copilot session must 404', `status ${r.status}`);
+  // K8. AI escalation rules: closed vocabulary at the API boundary
+  r = await req('POST', '/api/automation/rules', { name: 'audit-bad', trigger: 'new_conversation', conditions: [{ field: 'ai_attribute', operator: 'equals', value: 'high' }], actions: [{ kind: 'analyze_ticket', params: {} }], requires_approval: true });
+  if (r.status !== 400) finding('medium', 'ai_attribute condition without catalog key must 400', `status ${r.status}`);
+  r = await req('POST', '/api/automation/rules', { name: 'audit-bad-2', trigger: 'new_conversation', conditions: [{ field: 'ai_verification', operator: 'equals', value: 'DROP TABLE' }], actions: [{ kind: 'analyze_ticket', params: {} }], requires_approval: true });
+  if (r.status !== 400) finding('medium', 'ai_verification condition outside closed values must 400', `status ${r.status}`);
+  // K9. attribute report still healthy after every probe above
+  r = await req('GET', '/api/attributes/report');
+  if (r.status !== 200 || !Array.isArray(r.json?.distributions)) finding('high', 'attribute report broken after K-section probes', `status ${r.status}`);
+
   console.log('\n== I. rate limiting on mutations ==');
   let last429 = 0;
   for (let i = 0; i < 320; i++) {

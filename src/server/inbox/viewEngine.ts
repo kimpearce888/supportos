@@ -1,6 +1,7 @@
 import type { DB } from '../database/connection.js';
 import type { ViewDefinition, ViewNode, ViewGroup, ViewCondition, ActivityField, DateMode } from '../../shared/activity.js';
 import { ACTIVITY_FIELD_COLUMN } from '../../shared/activity.js';
+import { AI_ATTRIBUTE_CATALOG } from '../../shared/constants.js';
 import { resolveDateRange, AGE_METRIC_SQL } from '../services/dateRange.js';
 import { RESPONSE_STATE_SQL } from './responseState.js';
 
@@ -275,6 +276,69 @@ export class ViewEngine {
           params: [cond.dimension, cond.value]
         };
         return cond.negate ? { sql: `NOT ${frag.sql}`, params: frag.params } : frag;
+      }
+      case 'ai_attribute': {
+        // v1.9.0 (M3, plan Phase 16 "usable by Views"): current local AI
+        // attributes. Keys are the closed catalog (whitelisted constant below),
+        // every value is a bound parameter - user input can never become SQL.
+        // Honest unknown: a missing current row IS 'unknown'.
+        const def = AI_ATTRIBUTE_CATALOG.find((d) => d.key === cond.attribute);
+        if (!def) throw new ViewCompileError(`Unknown AI attribute: ${cond.attribute as string}`);
+        const attr = cond.attribute;
+        if (cond.value.toLowerCase() === 'unknown') {
+          if (cond.op !== 'equals') throw new ViewCompileError("Only 'equals unknown' is supported for the unknown value.");
+          return { sql: `NOT EXISTS (SELECT 1 FROM ai_attributes aa WHERE aa.conversation_id = c.id AND aa.attribute = ? AND aa.superseded_at IS NULL)`, params: [attr] };
+        }
+        const isNumber = def.value_type === 'number';
+        if (isNumber) {
+          const n = Number(cond.value);
+          if (!Number.isFinite(n)) throw new ViewCompileError('ai_attribute numeric operator requires a numeric value.');
+          const opSql = cond.op === 'gt' ? '>' : cond.op === 'gte' ? '>=' : cond.op === 'lt' ? '<' : cond.op === 'lte' ? '<=' : null;
+          if (opSql == null) throw new ViewCompileError(`ai_attribute (number) does not support operator ${cond.op}.`);
+          return {
+            sql: `EXISTS (SELECT 1 FROM ai_attributes aa WHERE aa.conversation_id = c.id AND aa.attribute = ? AND aa.superseded_at IS NULL AND CAST(aa.value AS REAL) ${opSql} ?)`,
+            params: [attr, n]
+          };
+        }
+        switch (cond.op) {
+          case 'equals':
+            return {
+              sql: `EXISTS (SELECT 1 FROM ai_attributes aa WHERE aa.conversation_id = c.id AND aa.attribute = ? AND aa.superseded_at IS NULL AND LOWER(aa.value) = LOWER(?))`,
+              params: [attr, cond.value]
+            };
+          case 'not_equals':
+            return {
+              sql: `NOT EXISTS (SELECT 1 FROM ai_attributes aa WHERE aa.conversation_id = c.id AND aa.attribute = ? AND aa.superseded_at IS NULL AND LOWER(aa.value) = LOWER(?))`,
+              params: [attr, cond.value]
+            };
+          case 'contains':
+            return {
+              sql: `EXISTS (SELECT 1 FROM ai_attributes aa WHERE aa.conversation_id = c.id AND aa.attribute = ? AND aa.superseded_at IS NULL AND aa.value LIKE ? ESCAPE '\\')`,
+              params: [attr, `%${escapeLike(cond.value)}%`]
+            };
+          case 'not_contains':
+            return {
+              sql: `NOT EXISTS (SELECT 1 FROM ai_attributes aa WHERE aa.conversation_id = c.id AND aa.attribute = ? AND aa.superseded_at IS NULL AND aa.value LIKE ? ESCAPE '\\')`,
+              params: [attr, `%${escapeLike(cond.value)}%`]
+            };
+          case 'gt': case 'gte': case 'lt': case 'lte': {
+            // Ordered enum vocabularies support comparisons by position.
+            const vocab = def.values ?? [];
+            const idx = vocab.indexOf(cond.value);
+            if (idx < 0) throw new ViewCompileError(`ai_attribute '${attr}' comparison requires a value from its vocabulary (${vocab.join(', ')}).`);
+            const bounds =
+              cond.op === 'gt' || cond.op === 'gte'
+                ? { sql: `AND aa.value IN (${vocab.slice(idx + (cond.op === 'gt' ? 1 : 0)).map(() => '?').join(',')})`, params: vocab.slice(cond.op === 'gt' ? idx + 1 : idx) }
+                : { sql: `AND aa.value IN (${vocab.slice(0, cond.op === 'lt' ? idx : idx + 1).map(() => '?').join(',')})`, params: vocab.slice(0, cond.op === 'lt' ? idx : idx + 1) };
+            if (bounds.params.length === 0) return { sql: '1=0', params: [] };
+            return {
+              sql: `EXISTS (SELECT 1 FROM ai_attributes aa WHERE aa.conversation_id = c.id AND aa.attribute = ? AND aa.superseded_at IS NULL ${bounds.sql})`,
+              params: [attr, ...bounds.params]
+            };
+          }
+          default:
+            throw new ViewCompileError(`Unsupported ai_attribute operator: ${(cond as { op: string }).op}`);
+        }
       }
       case 'unread': {
         return { sql: 'c.is_unread = ?', params: [cond.unread ? 1 : 0] };

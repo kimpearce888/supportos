@@ -113,6 +113,35 @@ export async function registerConversationRoutes(app: FastifyInstance, ctx: AppC
       }
     }
 
+    // v1.9.0 (M3): live AI-attribute filter (plan Phase 16 "filterable").
+    // Compiled by the SAME viewEngine path as saved views - one implementation,
+    // closed key catalog, bound parameters. Composable with ops/saved views.
+    if (f.aiAttribute != null) {
+      if (f.aiAttrValue == null || f.aiAttrValue === '') {
+        reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: "aiAttribute requires aiAttrValue (use 'unknown' to find tickets without a value)." });
+        return;
+      }
+      const engine = new ViewEngine(ctx.db, { timezone: 'UTC', resolveSlaConversationIds: () => [] });
+      try {
+        const compiled = engine.compile({
+          combinator: 'all',
+          conditions: [{ kind: 'ai_attribute', attribute: f.aiAttribute, op: f.aiAttrOp ?? 'equals', value: f.aiAttrValue }]
+        });
+        const fragSql = compiled.whereSql === '1=1' ? null : compiled.whereSql;
+        if (fragSql != null) {
+          extraWhere = extraWhere != null ? `(${extraWhere}) AND (${fragSql})` : fragSql;
+          extraParams = [...extraParams, ...compiled.params];
+        }
+        notes.push(`AI attribute filter: ${f.aiAttribute} ${f.aiAttrOp ?? 'equals'} "${f.aiAttrValue}" (local layer; missing values read as unknown).`);
+      } catch (e) {
+        if (e instanceof ViewCompileError) {
+          reply.code(422).send({ statusCode: 422, error: 'ValidationError', message: `AI attribute filter rejected: ${e.message}` });
+          return;
+        }
+        throw e;
+      }
+    }
+
     const result = repo.listConversations({
       view,
       mailboxId: Number.isFinite(mailboxId) ? mailboxId : null,
