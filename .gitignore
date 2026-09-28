@@ -21,4 +21,4 @@ src-tauri/resources/
 src-tauri/gen/
 screenshots/
 # v2.0.0 (M4): connector data jail (local files, runtime-generated)
-connectors/
+/connectors/
